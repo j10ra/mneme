@@ -4,10 +4,9 @@
 // capture (or fetches the surface for SessionStart) to the Mneme server.
 // Fail-open: errors never block the harness.
 
-import { execSync } from "node:child_process";
-import { hostname } from "node:os";
 import { type MnemeConfig, loadConfig, serverUrl } from "./config.ts";
 import { drainOutbox, writeOutbox } from "./outbox.ts";
+import { baseScope as buildScope } from "./scope.ts";
 
 const event = process.argv[2] ?? "unknown";
 
@@ -21,24 +20,6 @@ async function readStdin(): Promise<Record<string, unknown>> {
     return JSON.parse(buf) as Record<string, unknown>;
   } catch {
     return { raw: buf };
-  }
-}
-
-function canonicalRepo(cwd: string | undefined): string | null {
-  try {
-    const url = execSync("git remote get-url origin", {
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8",
-      cwd: cwd ?? process.cwd(),
-    }).trim();
-    if (!url) return null;
-    const ssh = /^git@([^:]+):(.+?)(?:\.git)?$/.exec(url);
-    if (ssh) return `${ssh[1]}/${ssh[2]}`;
-    const https = /^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/.exec(url);
-    if (https) return `${https[1]}/${https[2]}`;
-    return url;
-  } catch {
-    return null;
   }
 }
 
@@ -120,22 +101,15 @@ async function main(): Promise<void> {
   // repo detection reflects the project the user is working in, not
   // wherever Claude Code spawned the hook script.
   const sessionCwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
-  const repo = canonicalRepo(sessionCwd);
-  const host = hostname();
   const sessionId =
     typeof payload.session_id === "string" ? payload.session_id : null;
-  const agent =
-    typeof process.env.CLAUDE_MODEL === "string" ? process.env.CLAUDE_MODEL : null;
 
   const baseScope = {
     source: "claude_hook",
-    machine_id: cfg.machine.id,
-    hostname: host,
-    repo,
-    harness: "claude-code",
-    agent,
+    ...buildScope(cfg, sessionCwd),
     session_id: sessionId,
   };
+  const repo = baseScope.repo;
 
   switch (event) {
     case "SessionStart": {
