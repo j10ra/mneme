@@ -7,16 +7,8 @@
 // line, each response is one line. Notifications (no id) get no
 // response. We forward bytes faithfully to /mcp.
 
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { createInterface } from "node:readline";
-
-type ConfigShape = {
-  server: { url: string };
-  auth: { key: string };
-  machine?: { id?: string; name?: string };
-};
+import { type MnemeConfig, configPath, loadConfig, serverUrl } from "./config.ts";
 
 function err(id: unknown, code: number, message: string): string {
   return JSON.stringify({
@@ -26,20 +18,18 @@ function err(id: unknown, code: number, message: string): string {
   });
 }
 
-let cfg: ConfigShape | undefined;
+let cfg: MnemeConfig | undefined;
 let cfgError: string | undefined;
-const cfgPath = join(homedir(), ".mneme", "config.json");
 try {
-  cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as ConfigShape;
-  if (!cfg.server?.url || !cfg.auth?.key) {
-    throw new Error("config missing server.url or auth.key");
-  }
+  cfg = loadConfig();
 } catch (e) {
   cfgError = e instanceof Error ? e.message : String(e);
-  process.stderr.write(`mneme-mcp: config load failed (${cfgPath}): ${cfgError}\n`);
+  process.stderr.write(
+    `mneme-mcp: config load failed (${configPath()}): ${cfgError}\n`,
+  );
 }
 
-const url = cfg ? `${cfg.server.url.replace(/\/$/, "")}/mcp` : "";
+const url = cfg ? serverUrl(cfg, "/mcp") : "";
 const key = cfg?.auth.key ?? "";
 
 process.stderr.write(
