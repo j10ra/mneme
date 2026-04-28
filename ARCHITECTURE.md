@@ -609,7 +609,7 @@ The skill encourages adding repo filters explicitly:
 | Tag stripping | `<private>...</private>` content removed at edge |
 | LLM provider | when paid: `data_collection: "deny"`. Free tiers banned for capture content. |
 | Embeddings | Voyage (no training on content per ToS) |
-| Auth | Bearer tokens in `Authorization` header, per-machine + scoped + revocable. Plaintext only on issuing machine in `~/.mneme/config.toml`; server stores `sha256` hash only. See §9.5 for full mechanism. |
+| Auth | Bearer tokens in `Authorization` header, per-machine + scoped + revocable. Plaintext only on issuing machine in `~/.mneme/config.json`; server stores `sha256` hash only. See §9.5 for full mechanism. |
 | DB role | MCP `sql` tool connects as `mneme_reader` (SELECT-only on the schema). Writes never go through SQL. |
 | SQL safety | server rejects DML/DDL by parser, injects `LIMIT` if missing, 5s query timeout, 1MB result cap |
 | Transport | HTTPS only |
@@ -645,7 +645,7 @@ Auth + scope details in §9.5.
 
 **MCP client shape — bundled stdio proxy:**
 The Mneme plugin ships a small **local stdio MCP proxy** (`packages/plugin/mcp/index.ts`, ~80 lines) so that `/plugin install j10ra/mneme-plugin` is the only install step a user takes — MCP works out of the box, no separate registration. The proxy:
-- reads `~/.mneme/config.toml` once (server URL, Bearer key, machine id, scope auto-detect)
+- reads `~/.mneme/config.json` once (server URL, Bearer key, machine id, scope auto-detect)
 - speaks MCP JSON-RPC over stdio with the harness
 - translates each tool call into `POST <server>/mcp` with `Authorization: Bearer <key>`
 - holds the local **outbox** (Phase 3) so failed `/api/capture` calls queue locally and drain on reconnect
@@ -775,7 +775,7 @@ Authorization: Bearer mneme_pat_<machine-name>_<random64>
 
 The `mneme_pat_<machine>_` prefix is informational so a glance at logs tells you which machine made the call. The actual auth check is on the random suffix.
 
-**Storage:** keys are hashed (`sha256`) before storage. Plaintext exists only on the issuing machine, in `~/.mneme/config.toml`. The server never has the plaintext.
+**Storage:** keys are hashed (`sha256`) before storage. Plaintext exists only on the issuing machine, in `~/.mneme/config.json`. The server never has the plaintext.
 
 **Per-machine keys, revocable independently.** Three machines = three keys. Lose one laptop, revoke its key, the other two keep working.
 
@@ -801,18 +801,21 @@ The `mneme_pat_<machine>_` prefix is informational so a glance at logs tells you
 
 `/health` skips auth. Internal handlers skip auth (in-process function calls have no header).
 
-**Client configuration** (`~/.mneme/config.toml` per machine):
+**Client configuration** (`~/.mneme/config.json` per machine):
 
-```toml
-[server]
-url = "https://mneme.<your-railway-domain>"
-
-[auth]
-key = "mneme_pat_macbook-pro_<random>"
-
-[machine]
-id   = "b3e2..."          # uuid
-name = "macbook-pro"
+```json
+{
+  "server": {
+    "url": "https://mneme.<your-railway-domain>"
+  },
+  "auth": {
+    "key": "mneme_pat_macbook-pro_<random>"
+  },
+  "machine": {
+    "id": "b3e2...",
+    "name": "macbook-pro"
+  }
+}
 ```
 
 **MCP client config** (`.mcp.json` in project, or `~/.claude/settings.json`):
@@ -849,7 +852,7 @@ FROM g
 RETURNING (SELECT plaintext FROM g) AS plaintext, id;
 ```
 
-Copy the returned `plaintext` into the issuing machine's `~/.mneme/config.toml`. The DB only ever stores the sha256.
+Copy the returned `plaintext` into the issuing machine's `~/.mneme/config.json`. The DB only ever stores the sha256.
 
 List keys:
 
@@ -960,7 +963,7 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 - [x] SQL migrations runner (`scripts/migrate.ts`, idempotent, tracks applied via `_ops.schema_migrations`)
 - [x] `pg_cron` daily prune of `_ops.traces` older than 14 days (`mneme_ops_prune` at `0 3 * * *`)
 - [x] Smoke test verified: `/health` 200, no-auth 401, wrong-scope 403, valid-scope 200, dedup path 200 with `deduped:true`, traces+spans+logs persisted in `_ops`
-- [x] First key issued via SQL (see §9.5), plaintext copied to `~/.mneme/config.toml`
+- [x] First key issued via SQL (see §9.5), plaintext copied to `~/.mneme/config.json`
 - [ ] Railway deploy (deferred — local first; needed before hooks fire in Phase 3)
 - [ ] Voyage credentials in Railway env (deferred — Phase 2)
 
@@ -988,7 +991,7 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 ### Phase 3 — Hooks and Plugin
 **Goal:** Claude Code captures automatically across all three machines, plugin install ships everything (MCP included).
 - [ ] Claude Code plugin scaffold (`packages/plugin/`)
-- [ ] **Bundled local stdio MCP proxy** (`packages/plugin/mcp/index.ts`): reads `~/.mneme/config.toml`, translates MCP JSON-RPC stdio → `POST <server>/mcp` with `Authorization: Bearer <key>`. One install gives the user MCP without any extra step. Inspired by claude-mem's local MCP, but proxies to our remote server instead of reading a local SQLite.
+- [ ] **Bundled local stdio MCP proxy** (`packages/plugin/mcp/index.ts`): reads `~/.mneme/config.json`, translates MCP JSON-RPC stdio → `POST <server>/mcp` with `Authorization: Bearer <key>`. One install gives the user MCP without any extra step. Inspired by claude-mem's local MCP, but proxies to our remote server instead of reading a local SQLite.
 - [ ] Plugin `mcp.json` declares stdio transport pointing at the bundled proxy (no `${MNEME_API_KEY}` substitution required at the harness layer — the proxy holds the key)
 - [ ] `PostToolUse`, `UserPromptSubmit` hooks → `POST /api/capture` with `source='claude_hook'`
 - [ ] `Stop` and `PreCompact` hooks → `POST /api/capture` with `source='claude_summary'`, `kind='summary'`
@@ -999,7 +1002,7 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 - [ ] `~/.mneme/machine.uuid` auto-registration on first run
 - [ ] Client-side scope enrichment (auto-inject `repo` from `git remote`, `machine_id` from uuid file, `harness=claude-code`, `agent` from session env)
 
-**Done when:** a fresh machine onboards with: (1) paste API key into `~/.mneme/config.toml`, (2) `/plugin install j10ra/mneme-plugin`, (3) restart session — MCP, hooks, slash commands, surface all work. A memory written on machine A is recalled from Codex on machine B.
+**Done when:** a fresh machine onboards with: (1) paste API key into `~/.mneme/config.json`, (2) `/plugin install j10ra/mneme-plugin`, (3) restart session — MCP, hooks, slash commands, surface all work. A memory written on machine A is recalled from Codex on machine B.
 
 ### Phase 4 — Process (extraction)
 **Goal:** raw captures become structured memories.
