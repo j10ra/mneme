@@ -822,14 +822,45 @@ name = "macbook-pro"
 }
 ```
 
-**Key issuance** (CLI, server-side):
+**Key management is manual via SQL** (Supabase SQL editor or psql). No CLI. The `pgcrypto` extension provides `digest()` so plaintext generation, hashing, and insertion happen in one statement; the `RETURNING` row gives you the plaintext exactly once.
 
-```
-mneme key new --name "macbook-pro" --machine-id <uuid> --scopes capture,read,mcp
-# prints the plaintext key once, never again. Server only stores the sha256.
+Issue a key:
+
+```sql
+WITH g AS (
+  SELECT 'mneme_pat_macbook-pro_' || encode(gen_random_bytes(32), 'hex') AS plaintext
+)
+INSERT INTO _ops.api_keys (key_hash, name, machine_id, scopes)
+SELECT
+  encode(digest(plaintext, 'sha256'), 'hex'),
+  'macbook-pro',
+  '<machine-uuid>',
+  ARRAY['capture','read','mcp']
+FROM g
+RETURNING (SELECT plaintext FROM g) AS plaintext, id;
 ```
 
-Revoke via `mneme key revoke <key-id-or-name>` — flips `revoked_at`.
+Copy the returned `plaintext` into the issuing machine's `~/.mneme/config.toml`. The DB only ever stores the sha256.
+
+List keys:
+
+```sql
+SELECT
+  substring(id::text, 1, 8) AS id,
+  name,
+  machine_id,
+  scopes,
+  last_used_at,
+  CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END AS status
+FROM _ops.api_keys
+ORDER BY created_at DESC;
+```
+
+Revoke a key:
+
+```sql
+UPDATE _ops.api_keys SET revoked_at = now() WHERE name = '<name>';
+```
 
 **Why not rotate keys automatically?** Personal tool, three machines. Manual rotation when needed (lost laptop, suspected compromise) is fine. Auto-rotation adds complexity for no practical benefit at this scale.
 
@@ -913,15 +944,14 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 - [x] Supabase project provisioned (project ref `qufxxkwvauaachhefwmy`)
 - [x] Mneme schema deployed (`captures`, `memories`, `ingest_jobs`)
 - [x] `_ops` schema deployed (`traces`, `spans`, `logs`, `api_keys`, `schema_migrations`)
-- [x] Bun monorepo scaffolded (`packages/server`, `packages/core`, `packages/cli`, `packages/shared`)
+- [x] Bun monorepo scaffolded (`packages/server`, `packages/core`, `packages/shared`)
 - [x] Hono server with `/health`, `/api/capture`, `/api/session/start`, `/mcp` routes
 - [x] `@mneme/core` observability (`mnemeRoute`, `mnemeFn`, `Logger`, AsyncLocalStorage context, 100ms buffered flush to `_ops.*`)
 - [x] Bearer-token auth middleware on `/api/*` and `/mcp` (sha256 lookup against `_ops.api_keys`, scope check, 401/403)
 - [x] SQL migrations runner (`scripts/migrate.ts`, idempotent, tracks applied via `_ops.schema_migrations`)
 - [x] `pg_cron` daily prune of `_ops.traces` older than 14 days (`mneme_ops_prune` at `0 3 * * *`)
 - [x] Smoke test verified: `/health` 200, no-auth 401, wrong-scope 403, valid-scope 200, dedup path 200 with `deduped:true`, traces+spans+logs persisted in `_ops`
-- [ ] `mneme key` CLI subcommand: `new`, `list`, `revoke`
-- [ ] First key issued for primary machine, written to `~/.mneme/config.toml`
+- [ ] First key issued via SQL (see §9.5), plaintext copied to `~/.mneme/config.toml`
 - [ ] Railway deploy (deferred — local first; needed before hooks fire in Phase 3)
 - [ ] Voyage credentials in Railway env (deferred — Phase 2)
 
