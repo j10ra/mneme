@@ -8,11 +8,14 @@
   ],
   "scripts": {
     "dev": "bun --watch packages/server/src/index.ts",
+    "migrate": "bun scripts/migrate.ts",
+    "migrate:dry": "bun scripts/migrate.ts --dry-run",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "postgres": "^3.4.5",
     "typescript": "^5.6.3"
   }
 }

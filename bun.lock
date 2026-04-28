@@ -6,6 +6,7 @@
       "name": "mneme",
       "devDependencies": {
         "@types/bun": "latest",
+        "postgres": "^3.4.5",
         "typescript": "^5.6.3",
       },
     },
