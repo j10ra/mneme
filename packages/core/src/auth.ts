@@ -29,7 +29,7 @@ type ApiKeyRow = {
   scopes: string[];
 };
 
-/** Bearer-token + scope check middleware. Run inside lensRoute. */
+/** Bearer-token + scope check middleware. Run inside mnemeRoute. */
 export function requireAuth(scope: string): MiddlewareHandler {
   return async (c, next) => {
     if (!_sql) {

@@ -11,7 +11,7 @@ import {
  * x-mneme-source header, captures request/response JSON (capped at 256KB),
  * propagates TraceContext via AsyncLocalStorage.
  */
-export function lensRoute(name: string): MiddlewareHandler {
+export function mnemeRoute(name: string): MiddlewareHandler {
   return async (c, next) => {
     const traceId = newId();
     const spanId = newId();

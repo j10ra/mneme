@@ -1,6 +1,6 @@
 export { Logger, configureLogger } from "./logger.ts";
-export { lensRoute } from "./lens-route.ts";
-export { lensFn } from "./lens-fn.ts";
+export { mnemeRoute } from "./mneme-route.ts";
+export { mnemeFn } from "./mneme-fn.ts";
 export {
   TraceStore,
   configureTraceStore,

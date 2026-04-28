@@ -6,7 +6,7 @@ import { getTraceStore, summarizeIO } from "./trace-store.ts";
  * via AsyncLocalStorage. If called outside any trace, runs the function
  * directly (no fabricated trace).
  */
-export function lensFn<TArgs extends unknown[], TReturn>(
+export function mnemeFn<TArgs extends unknown[], TReturn>(
   name: string,
   fn: (...args: TArgs) => Promise<TReturn>,
 ): (...args: TArgs) => Promise<TReturn> {
