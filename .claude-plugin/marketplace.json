@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "j10ra-mneme",
+  "description": "Mneme — cross-machine, cross-harness, cross-AI memory layer for Claude Code",
+  "owner": {
+    "name": "j10ra"
+  },
+  "plugins": [
+    {
+      "name": "mneme",
+      "description": "Personal memory across machines, harnesses, and AI providers. SQL-first MCP via mneme.sql, auto-capture hooks, slash commands, in-session pointer surface.",
+      "category": "productivity",
+      "source": "./packages/plugin"
+    }
+  ]
+}

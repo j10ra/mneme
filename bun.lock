@@ -18,6 +18,10 @@
         "postgres": "^3.4.5",
       },
     },
+    "packages/plugin": {
+      "name": "@mneme/plugin",
+      "version": "0.0.1",
+    },
     "packages/server": {
       "name": "@mneme/server",
       "version": "0.0.0",
@@ -34,6 +38,8 @@
   },
   "packages": {
     "@mneme/core": ["@mneme/core@workspace:packages/core"],
+
+    "@mneme/plugin": ["@mneme/plugin@workspace:packages/plugin"],
 
     "@mneme/server": ["@mneme/server@workspace:packages/server"],
 
