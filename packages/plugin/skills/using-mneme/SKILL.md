@@ -42,6 +42,39 @@ Mneme stores your memories in Postgres + pgvector. The agent talks to it through
 ### `ingest_jobs` — worker queue
 You usually don't query this. `phase` ∈ `extract`, `embed`, `dream`. `state` ∈ `queued`, `running`, `done`, `error`.
 
+## Which table to query (read this before recalling)
+
+The two real tables hold different things. Pick based on the user's intent:
+
+| User intent | Query | Why |
+|---|---|---|
+| "What did we talk about?" / "show me recent conversation" / "what tools did Claude run?" / "what was I working on yesterday?" | `captures` | Raw record of prompts, tool calls, session summaries. No processing required, always present. |
+| "Find me memories about X" / "what's our decision on Y?" / semantic recall | `memories` | Chunked + embedded + kind-tagged. Use the `embed()` macro for cosine similarity. |
+
+**Fallback rule:** if a `memories` query returns 0 rows for a recall request, immediately re-run the recall against `captures` before reporting "no memories" to the user. Captures are the source-of-truth event log; memories are a synthesized index built on top.
+
+### Recent conversation pattern (captures)
+
+```sql
+SELECT id, source, repo, machine_id, captured_at,
+       substring(content, 1, 200) AS preview
+FROM captures
+WHERE archived_at IS NULL
+  AND captured_at > now() - interval '24 hours'
+  -- optional: AND repo = '<canonical-repo>'
+ORDER BY captured_at DESC
+LIMIT 20;
+```
+
+The `source` column tells you what kind of event:
+- `claude_hook` — a prompt you typed OR a tool call Claude made
+- `claude_summary` — Stop / PreCompact session digest (full payload as JSON)
+- `claude_memory` — auto-memory write detected by the hook
+- `manual:/memory` — explicit `/memory` slash command
+- `manual` — `/pin`, `/unpin`, etc.
+
+For "what did I say" specifically, filter on `source = 'claude_hook'` and look at `content` — your prompts are short text, tool calls are JSON beginning with `{"tool":...}`.
+
 ## The `embed()` macro
 
 Inside any SELECT, `embed('your query text')` is replaced with a voyage-code-3 1024-dim vector before execution. Use with `<=>` (cosine distance):

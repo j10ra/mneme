@@ -31,4 +31,17 @@ Display the results as a tight list. For each row show:
 
 Don't editorialise — the user wants the raw recall, not a synthesis.
 
-If there are zero results, say so plainly and suggest broadening the query.
+**Fallback when memories is empty:** if the query above returns 0 rows, the `memories` table likely hasn't been populated yet for this corpus (Phase 4 worker, the extractor + embedder, hasn't processed the captures). **Re-run the recall against `captures.content` directly using ILIKE** before declaring no results:
+
+```sql
+SELECT id, source, repo, machine_id, captured_at, substring(content, 1, 200) AS preview
+FROM captures
+WHERE archived_at IS NULL
+  AND content ILIKE '%' || 'the user query' || '%'
+ORDER BY captured_at DESC
+LIMIT 10;
+```
+
+Captures hold every prompt and tool call you've ever sent in a Mneme-enabled session, so this fallback finds context even before semantic indexing runs.
+
+If both queries return zero rows, then say so plainly and suggest broadening.
