@@ -154,11 +154,11 @@ flowchart TD
 | Layer | Choice | Cost (personal) |
 |---|---|---|
 | Storage | Supabase (Postgres + pgvector + tsvector) | Free tier |
-| Embeddings | Voyage-3 (1024-dim) | ~$1-3/mo |
+| Embeddings | Voyage-code-3 (1024-dim, free tier 200M tokens/mo) | $0 |
 | LLM (extract + distill) | **TBD at Phase 4**: Groq free OR Ollama local OR OpenRouter paid | $0-4/mo |
 | Worker host | Railway Hobby | $5/mo |
 | Read interface | MCP (one tool) + a skill | included |
-| **Total** | | **~$6-12/mo** |
+| **Total** | | **~$5-9/mo** |
 
 ---
 
@@ -982,7 +982,7 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 ### Phase 2 — Recall (read MVP)
 **Goal:** agents can search via SQL with vector + keyword + hybrid.
 - [x] `mneme_reader` Postgres role (SELECT-only on `public.*`, blocked from `_ops.*`); separate connection pool in the server
-- [x] Voyage client (`embedText`, `embedBatch`), `voyage-3`, 1024-dim, wrapped by `mnemeFn` so each call lands as a child span
+- [x] Voyage client (`embedText`, `embedBatch`), `voyage-code-3`, 1024-dim, wrapped by `mnemeFn` so each call lands as a child span. Picked over `voyage-3` because Voyage's free tier covers `voyage-code-3` (200M tokens) and not the general `voyage-3` family (paid only). Quality is solid on prose despite the "code" label, and at personal scale 178M+ free tokens is years of headroom.
 - [x] `/mcp` JSON-RPC dispatcher: `initialize`, `tools/list`, `tools/call`, `notifications/initialized`, `ping`. No SDK dep.
 - [x] Single tool `mneme.sql(query)` with five safety layers: comment stripping, single-statement check, SELECT/WITH-only regex (rejects 17+ keywords), `embed('text')` macro substitution (batched), auto-`LIMIT 200`, 5s `statement_timeout` on the reader pool, 1MB result cap (truncate + flag)
 - [x] `mneme:using-mneme` skill at `packages/shared/skills/using-mneme/SKILL.md` (schema reference + 7 canned query templates)
@@ -1074,12 +1074,12 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 | Item | Frequency | Unit cost | Monthly est. |
 |---|---|---|---|
 | Railway Hobby | always-on | $5/mo | $5.00 |
-| Voyage embeddings (voyage-3) | ~50-200 chunks/day | $0.06/M tokens | $1-3 |
+| Voyage embeddings (voyage-code-3, free tier) | ~50-200 chunks/day | $0 (200M/mo free) | $0 |
 | LLM extract + distill | TBD at Phase 4 | varies | $0-4 |
 | Supabase | small DB, low bandwidth | free tier | $0 |
-| **Total** | | | **~$6-12/mo** |
+| **Total** | | | **~$5-9/mo** |
 
-Re-embed migration (one-time when switching embedding model): ~$5-15.
+Re-embed migration (one-time when switching embedding model): typically free under voyage-code-3's tier; would be ~$5-15 if upgrading to voyage-3-large or similar paid model.
 
 ---
 
@@ -1088,7 +1088,7 @@ Re-embed migration (one-time when switching embedding model): ~$5-15.
 1. **LLM provider for extraction.** Groq free, Ollama local, or OpenRouter paid. Decided at Phase 4 with real captures in hand.
 2. **Coalescing window length.** 5 min is a guess; tune with data.
 3. **Cluster algorithm.** Cosine-NN graph + connected components for v1 (simpler). HDBSCAN later if quality lags.
-4. **Voyage model.** `voyage-3` default; reconsider after Phase 4 if code-heavy captures want `voyage-code-3`.
+4. **Voyage model.** Locked on `voyage-code-3` for cost reasons (Voyage's free tier covers it; `voyage-3` is paid-only). Same 1024-dim, code-tuned but solid on prose. Re-embed migration planned via `chunk_id` model-scoped hashing if we ever switch.
 5. **MCP transport.** stdio for Claude Code local, HTTP for others, or HTTP-only? Pick after Phase 2.
 6. **Should `mneme.sql` accept multiple statements, or strictly one?** Default to one for safety.
 7. **When does the fourth table arrive?** It arrives the moment a query genuinely cannot be expressed against `meta jsonb` performantly. Not before.

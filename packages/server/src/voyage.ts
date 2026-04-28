@@ -1,6 +1,9 @@
 import { mnemeFn } from "@mneme/core";
 
-export const VOYAGE_MODEL = "voyage-3";
+// voyage-code-3: 1024-dim, code-tuned but solid on prose. Picked over
+// voyage-3 because Voyage's free tier covers code-3 (200M tokens) and
+// not voyage-3 (paid-only).
+export const VOYAGE_MODEL = "voyage-code-3";
 export const VOYAGE_DIM = 1024;
 
 const VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings";

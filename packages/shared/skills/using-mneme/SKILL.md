@@ -1,6 +1,6 @@
 ---
 name: using-mneme
-description: How to query Mneme — your cross-machine memory store. SQL-first via the mneme.sql tool. Use embed('text') for semantic search, ts_rank for keyword. Three tables (captures, memories, ingest_jobs). Default scope filters keep recall focused; the embed() macro is auto-substituted with a voyage-3 vector before execution.
+description: How to query Mneme — your cross-machine memory store. SQL-first via the mneme.sql tool. Use embed('text') for semantic search, ts_rank for keyword. Three tables (captures, memories, ingest_jobs). Default scope filters keep recall focused; the embed() macro is auto-substituted with a voyage-code-3 vector before execution.
 ---
 
 # Mneme: cross-machine memory via SQL
@@ -31,8 +31,8 @@ Mneme stores your memories in Postgres + pgvector. The agent talks to it through
 | `chunk_id` | text UNIQUE | composite hash; encodes embedding model so re-embed is safe |
 | `content` | text | |
 | `content_hash` | text | |
-| `embedding` | vector(1024) | voyage-3 |
-| `embedding_model` | text | currently `voyage-3` |
+| `embedding` | vector(1024) | voyage-code-3 |
+| `embedding_model` | text | currently `voyage-code-3` |
 | `tsv` | tsvector | for `ts_rank`, `websearch_to_tsquery` |
 | `kind` | text | `note`, `bugfix`, `feature`, `discovery`, `decision`, `preference`, `constraint`, `security_alert`, `reference`, `summary`, `cluster`, `claude_memory`, `pin` |
 | `importance` | real | decays over time (nap), boosts on reference |
@@ -44,7 +44,7 @@ You usually don't query this. `phase` ∈ `extract`, `embed`, `dream`. `state` �
 
 ## The `embed()` macro
 
-Inside any SELECT, `embed('your query text')` is replaced with a voyage-3 1024-dim vector before execution. Use with `<=>` (cosine distance):
+Inside any SELECT, `embed('your query text')` is replaced with a voyage-code-3 1024-dim vector before execution. Use with `<=>` (cosine distance):
 
 ```sql
 SELECT id, content, 1 - (embedding <=> embed('payment integration')) AS sim
