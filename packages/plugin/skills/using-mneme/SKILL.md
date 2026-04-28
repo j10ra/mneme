@@ -42,6 +42,20 @@ Mneme stores your memories in Postgres + pgvector. The agent talks to it through
 ### `ingest_jobs` — worker queue
 You usually don't query this. `phase` ∈ `extract`, `embed`, `dream`. `state` ∈ `queued`, `running`, `done`, `error`.
 
+### Common mistakes (READ THIS BEFORE WRITING SQL)
+
+These are real failure patterns observed in production. Don't repeat them:
+
+| Mistake | Why it fails | Fix |
+|---|---|---|
+| `SELECT title FROM ...` | No `title` column exists on any table | Memory/capture content is in `content`. Cluster summaries also use `content`. |
+| `FROM observations` | No `observations` table — that's claude-mem's schema, not Mneme | Use `memories` (chunked + embedded) or `captures` (raw events) |
+| `captures.created_at` | `captures` uses **`captured_at`**; only `memories` uses `created_at` | Match the column to the table: captures → `captured_at`, memories → `created_at` |
+| `captures.kind` / `captures.embedding` / `captures.tsv` | These columns are **only on `memories`**, not `captures` | If you need kind filtering / embeddings / BM25, you need the `memories` table. If `memories` is empty, fall back to keyword `ILIKE` on `captures.content` |
+| `WHERE source = 'note'` | `source` is the *event source* (`claude_hook`, `claude_summary`, `manual:/memory`, etc.). `note` is a `kind`. | Use `kind = 'note'` on memories, or `source = 'manual:/memory'` on captures |
+
+**Always read the schema table at the top of this skill before constructing a query.** Don't assume column names from other systems.
+
 ## Which table to query (read this before recalling)
 
 The two real tables hold different things. Pick based on the user's intent:

@@ -101,6 +101,14 @@ async function main(): Promise<void> {
   // repo detection reflects the project the user is working in, not
   // wherever Claude Code spawned the hook script.
   const sessionCwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
+
+  // Skip captures from Claude-internal directories (claude-mem's observer
+  // subagent runs in ~/.claude/observer-sessions/* and fires its own tool
+  // calls — that's noise, not the user's project work).
+  if (sessionCwd && /\/\.claude(\/|$)/.test(sessionCwd)) {
+    return;
+  }
+
   const sessionId =
     typeof payload.session_id === "string" ? payload.session_id : null;
 

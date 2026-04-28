@@ -21,6 +21,13 @@ export function mnemeFn<TArgs extends unknown[], TReturn>(
       startedAtMs: Date.now(),
     };
 
+    // Capture the call args so traces show what actually ran (e.g. the
+    // SQL string passed to mneme.sql.run). The scrubber on TraceStore
+    // still redacts secrets before flush.
+    const inputSummary = summarizeIO(args);
+    span.input = inputSummary.value;
+    span.inputSize = inputSummary.size;
+
     ctx.spanStack.push(span);
 
     let errorMessage: string | undefined;
