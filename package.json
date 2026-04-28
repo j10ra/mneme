@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "dev": "bun --watch packages/server/src/index.ts",
+    "start": "bun packages/server/src/index.ts",
     "migrate": "bun scripts/migrate.ts",
     "migrate:dry": "bun scripts/migrate.ts --dry-run",
     "test": "bun test",
