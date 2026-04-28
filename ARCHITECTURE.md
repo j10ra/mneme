@@ -661,8 +661,8 @@ Adopted from `@lens/core` (lightweight structured logging + tracing, AsyncLocalS
 
 **Wrappers (every entry point uses them):**
 
-- `lensRoute(name, handler)` — Hono middleware. Starts a root span on each request, captures request/response JSON (capped at 256 KB), tags `source` from `x-mneme-source` header.
-- `lensFn(name, fn)` — wraps async functions. Inherits parent span, adds child span. Used inside route handlers and worker jobs.
+- `mnemeRoute(name)` — Hono middleware. Starts a root span on each request, captures request/response JSON (capped at 256 KB), tags `source` from `x-mneme-source` header.
+- `mnemeFn(name, fn)` — wraps async functions. Inherits parent span, adds child span. Used inside route handlers and worker jobs.
 
 **Context propagation:** Node `AsyncLocalStorage` carries `TraceContext = { traceId, spanStack[] }` through await boundaries. No explicit threading.
 
@@ -778,7 +778,7 @@ The `mneme_pat_<machine>_` prefix is informational so a glance at logs tells you
 | `read` | `POST /api/session/start` (surface reads) |
 | `mcp` | `POST /mcp` (read-only SQL via the MCP tool) |
 
-**Middleware flow** (runs before `lensRoute` on every auth-gated route):
+**Middleware flow** (runs before `mnemeRoute` on every auth-gated route):
 
 ```
 1. Extract Authorization: Bearer <key> header
@@ -835,8 +835,8 @@ Revoke via `mneme key revoke <key-id-or-name>` — flips `revoked_at`.
 
 ### 9.6 Practical instrumentation rules
 
-1. Every Hono route handler is wrapped by `lensRoute`. No exceptions.
-2. Every async function called from a route or worker job that does external I/O (DB query, Voyage call, OpenRouter call) is wrapped by `lensFn`.
+1. Every Hono route handler is wrapped by `mnemeRoute`. No exceptions.
+2. Every async function called from a route or worker job that does external I/O (DB query, Voyage call, OpenRouter call) is wrapped by `mnemeFn`.
 3. Errors are logged with `Logger.error` *and* re-thrown — the wrapper records the error message on the span automatically.
 4. Sensitive inputs (`captures.content` may contain user code) are stored as input/output on spans; the same edge scrubber that runs on `/api/capture` runs on span input before write. `<private>` content never reaches `_ops.spans`.
 5. The trace dashboard is Supabase's built-in SQL console plus saved queries (no custom UI in v1):
@@ -910,17 +910,20 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 
 ### Phase 0 — Foundation
 **Goal:** infrastructure exists, with auth + observability from line one.
-- [ ] Supabase project provisioned
-- [ ] Mneme schema deployed (3 tables)
-- [ ] `_ops` schema deployed (`traces`, `spans`, `logs`, `api_keys`)
-- [ ] Railway service scaffold (single Hono app, healthcheck at `/health`)
-- [ ] Lens-pattern core in service: `lensRoute`, `lensFn`, `Logger`, AsyncLocalStorage context, 100ms buffered flush to `_ops.*`
-- [ ] Bearer-token auth middleware on `/api/*` and `/mcp` (sha256 lookup against `_ops.api_keys`, scope check, 401/403)
+- [x] Supabase project provisioned (project ref `qufxxkwvauaachhefwmy`)
+- [x] Mneme schema deployed (`captures`, `memories`, `ingest_jobs`)
+- [x] `_ops` schema deployed (`traces`, `spans`, `logs`, `api_keys`, `schema_migrations`)
+- [x] Bun monorepo scaffolded (`packages/server`, `packages/core`, `packages/cli`, `packages/shared`)
+- [x] Hono server with `/health`, `/api/capture`, `/api/session/start`, `/mcp` routes
+- [x] `@mneme/core` observability (`mnemeRoute`, `mnemeFn`, `Logger`, AsyncLocalStorage context, 100ms buffered flush to `_ops.*`)
+- [x] Bearer-token auth middleware on `/api/*` and `/mcp` (sha256 lookup against `_ops.api_keys`, scope check, 401/403)
+- [x] SQL migrations runner (`scripts/migrate.ts`, idempotent, tracks applied via `_ops.schema_migrations`)
+- [x] `pg_cron` daily prune of `_ops.traces` older than 14 days (`mneme_ops_prune` at `0 3 * * *`)
+- [x] Smoke test verified: `/health` 200, no-auth 401, wrong-scope 403, valid-scope 200, dedup path 200 with `deduped:true`, traces+spans+logs persisted in `_ops`
 - [ ] `mneme key` CLI subcommand: `new`, `list`, `revoke`
 - [ ] First key issued for primary machine, written to `~/.mneme/config.toml`
-- [ ] `pg_cron` daily prune of `_ops.traces` older than 14 days
-- [ ] Voyage credentials in Railway env
-- [ ] Smoke test: `curl -H "Authorization: Bearer <key>" POST /api/capture` → row in `captures`, full trace in `_ops.traces` + `_ops.spans` + at least one log in `_ops.logs`. Same call without the header → 401.
+- [ ] Railway deploy (deferred — local first; needed before hooks fire in Phase 3)
+- [ ] Voyage credentials in Railway env (deferred — Phase 2)
 
 **Done when:** an authed capture from any machine lands in Supabase **and** its full trace is queryable in `_ops`, **and** unauthed calls are rejected.
 
