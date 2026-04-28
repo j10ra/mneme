@@ -7,5 +7,10 @@
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts"
+  },
+  "dependencies": {
+    "@mneme/core": "workspace:*",
+    "hono": "^4.6.0",
+    "postgres": "^3.4.5"
   }
 }

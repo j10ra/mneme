@@ -28,6 +28,11 @@
     "packages/server": {
       "name": "@mneme/server",
       "version": "0.0.0",
+      "dependencies": {
+        "@mneme/core": "workspace:*",
+        "hono": "^4.6.0",
+        "postgres": "^3.4.5",
+      },
     },
     "packages/shared": {
       "name": "@mneme/shared",
