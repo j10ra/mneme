@@ -970,14 +970,14 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 **Done when:** an authed capture from any machine lands in Supabase **and** its full trace is queryable in `_ops`, **and** unauthed calls are rejected.
 
 ### Phase 1 — Capture
-**Goal:** captures land reliably.
-- [ ] `POST /api/capture` with PAT auth
-- [ ] Sha256 + machine_id dedup
-- [ ] Edge scrubber (secrets regex + `<private>` strip)
-- [ ] `ingest_jobs` enqueued
-- [ ] Local outbox + retry on hook side
+**Goal:** captures land reliably, with secrets stripped at the edge.
+- [x] `POST /api/capture` with Bearer auth (Phase 0)
+- [x] Sha256 + machine_id dedup (Phase 0)
+- [x] Edge scrubber: `<private>...</private>` blocks + 9 secret patterns (AWS, GitHub PAT classic + fine, Anthropic, OpenAI, Slack, JWT, Bearer header, SSH private key). Hash computed on cleaned content; `_ops.spans` input/output also scrubbed via the `TraceStore` scrubber hook. 20 unit tests passing.
+- [x] `ingest_jobs` enqueued (Phase 0)
+- [ ] Local outbox + retry on hook side *(moved to Phase 3, lives in plugin)*
 
-**Done when:** posting the same content twice from one machine produces one row; from two machines produces two.
+**Done when:** content with `<private>...</private>` and embedded secrets posts successfully but the secrets are absent from `captures.content` AND `_ops.spans.input`. Verified: AWS access key, GitHub PAT, and `<private>` block all redacted from both.
 
 ### Phase 2 — Recall (read MVP)
 **Goal:** agents can search.

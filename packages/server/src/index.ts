@@ -10,14 +10,16 @@ import {
   requireAuth,
 } from "@mneme/core";
 import { sql, sha256Hex } from "./db.ts";
+import { scrub, scrubData } from "./scrub.ts";
 
-// Wire core to DB and env.
+// Wire core to DB and env. Scrubber runs on every span input/output so
+// `_ops.spans` never see raw secrets either.
 configureLogger({
   jsonMode: process.env.NODE_ENV === "production",
   minLevel: "debug",
 });
 configureAuth(sql);
-configureTraceStore(new TraceStore({ sql }));
+configureTraceStore(new TraceStore({ sql, scrubber: scrubData }));
 
 const app = new Hono();
 
@@ -60,7 +62,11 @@ app.post(
       }
     }
 
-    const hash = await sha256Hex(body.content);
+    // Scrub at the edge: secrets and <private> blocks redacted before
+    // hashing or storage. Hash is computed on cleaned content so dedup keys
+    // align across captures whose only difference was a redacted secret.
+    const cleaned = scrub(body.content);
+    const hash = await sha256Hex(cleaned);
 
     const inserted = await sql<{ id: string }[]>`
       INSERT INTO captures (
@@ -68,7 +74,7 @@ app.post(
         repo, harness, agent, session_id, topics, private, raw_meta
       )
       VALUES (
-        ${body.content}, ${hash}, ${body.source}, ${body.machine_id}, ${body.hostname},
+        ${cleaned}, ${hash}, ${body.source}, ${body.machine_id}, ${body.hostname},
         ${body.repo ?? null}, ${body.harness}, ${body.agent ?? null}, ${body.session_id ?? null},
         ${body.topics ?? []}, ${body.private ?? false}, ${sql.json((body.raw_meta ?? {}) as never)}
       )
