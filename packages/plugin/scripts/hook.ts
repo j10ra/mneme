@@ -24,11 +24,12 @@ async function readStdin(): Promise<Record<string, unknown>> {
   }
 }
 
-function canonicalRepo(): string | null {
+function canonicalRepo(cwd: string | undefined): string | null {
   try {
     const url = execSync("git remote get-url origin", {
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf8",
+      cwd: cwd ?? process.cwd(),
     }).trim();
     if (!url) return null;
     const ssh = /^git@([^:]+):(.+?)(?:\.git)?$/.exec(url);
@@ -115,7 +116,11 @@ async function main(): Promise<void> {
   }
 
   const payload = await readStdin();
-  const repo = canonicalRepo();
+  // Claude Code includes the session's working dir as `cwd`. Use it so
+  // repo detection reflects the project the user is working in, not
+  // wherever Claude Code spawned the hook script.
+  const sessionCwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
+  const repo = canonicalRepo(sessionCwd);
   const host = hostname();
   const sessionId =
     typeof payload.session_id === "string" ? payload.session_id : null;
