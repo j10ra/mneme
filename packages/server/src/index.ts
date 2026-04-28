@@ -10,6 +10,7 @@ import {
   requireAuth,
 } from "@mneme/core";
 import { sql, sha256Hex } from "./db.ts";
+import { handleHttp as handleMcp } from "./mcp.ts";
 import { scrub, scrubData } from "./scrub.ts";
 
 // Wire core to DB and env. Scrubber runs on every span input/output so
@@ -132,11 +133,15 @@ app.post(
 );
 
 // ---------------------------------------------------------------------------
-// POST /mcp — read, scope=mcp. Placeholder until Phase 2.
+// POST /mcp — read, scope=mcp. JSON-RPC dispatcher; one tool: mneme.sql.
 // ---------------------------------------------------------------------------
-app.post("/mcp", mnemeRoute("mcp"), requireAuth("mcp"), (c) =>
-  c.json({ error: "not_implemented", phase: 2 }),
-);
+app.post("/mcp", mnemeRoute("mcp"), requireAuth("mcp"), async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (body === null) return c.json({ error: "invalid_json" }, 400);
+  const result = await handleMcp(body);
+  if (result === null) return c.body(null, 204);
+  return c.json(result as never);
+});
 
 // ---------------------------------------------------------------------------
 // Boot

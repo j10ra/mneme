@@ -980,13 +980,14 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 **Done when:** content with `<private>...</private>` and embedded secrets posts successfully but the secrets are absent from `captures.content` AND `_ops.spans.input`. Verified: AWS access key, GitHub PAT, and `<private>` block all redacted from both.
 
 ### Phase 2 — Recall (read MVP)
-**Goal:** agents can search.
-- [ ] MCP server: one tool, `mneme.sql(query)`
-- [ ] `embed()` macro substitution (Voyage call before execution)
-- [ ] SELECT-only enforcement, LIMIT injection, timeout, result cap
-- [ ] `mneme:using-mneme` skill v1 (schema + 5 query patterns)
+**Goal:** agents can search via SQL with vector + keyword + hybrid.
+- [x] `mneme_reader` Postgres role (SELECT-only on `public.*`, blocked from `_ops.*`); separate connection pool in the server
+- [x] Voyage client (`embedText`, `embedBatch`), `voyage-3`, 1024-dim, wrapped by `mnemeFn` so each call lands as a child span
+- [x] `/mcp` JSON-RPC dispatcher: `initialize`, `tools/list`, `tools/call`, `notifications/initialized`, `ping`. No SDK dep.
+- [x] Single tool `mneme.sql(query)` with five safety layers: comment stripping, single-statement check, SELECT/WITH-only regex (rejects 17+ keywords), `embed('text')` macro substitution (batched), auto-`LIMIT 200`, 5s `statement_timeout` on the reader pool, 1MB result cap (truncate + flag)
+- [x] `mneme:using-mneme` skill at `packages/shared/skills/using-mneme/SKILL.md` (schema reference + 7 canned query templates)
 
-**Done when:** Claude Code on machine A can `/recall pgvector` and get back rows from machine B.
+**Done when:** verified end-to-end: MCP `initialize` → handshake works; `tools/list` returns the schema; `tools/call mneme.sql` runs vector / kind-filter / hybrid queries against seeded memories; INSERT/DELETE/multi-statement/`_ops.*` access all rejected (regex rejects writes, DB role rejects `_ops`).
 
 ### Phase 3 — Hooks and Plugin
 **Goal:** Claude Code captures automatically across all three machines, plugin install ships everything (MCP included).
