@@ -960,7 +960,7 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 - [x] SQL migrations runner (`scripts/migrate.ts`, idempotent, tracks applied via `_ops.schema_migrations`)
 - [x] `pg_cron` daily prune of `_ops.traces` older than 14 days (`mneme_ops_prune` at `0 3 * * *`)
 - [x] Smoke test verified: `/health` 200, no-auth 401, wrong-scope 403, valid-scope 200, dedup path 200 with `deduped:true`, traces+spans+logs persisted in `_ops`
-- [ ] First key issued via SQL (see §9.5), plaintext copied to `~/.mneme/config.toml`
+- [x] First key issued via SQL (see §9.5), plaintext copied to `~/.mneme/config.toml`
 - [ ] Railway deploy (deferred — local first; needed before hooks fire in Phase 3)
 - [ ] Voyage credentials in Railway env (deferred — Phase 2)
 
