@@ -643,6 +643,15 @@ Auth + scope details in §9.5.
 - The dream worker emits cluster summaries by calling its own `/api/capture` handler **as a function**, not as an HTTP request.
 - All entry points propagate the same `TraceContext` via AsyncLocalStorage (see §9.3).
 
+**MCP client shape — bundled stdio proxy:**
+The Mneme plugin ships a small **local stdio MCP proxy** (`packages/plugin/mcp/index.ts`, ~80 lines) so that `/plugin install j10ra/mneme-plugin` is the only install step a user takes — MCP works out of the box, no separate registration. The proxy:
+- reads `~/.mneme/config.toml` once (server URL, Bearer key, machine id, scope auto-detect)
+- speaks MCP JSON-RPC over stdio with the harness
+- translates each tool call into `POST <server>/mcp` with `Authorization: Bearer <key>`
+- holds the local **outbox** (Phase 3) so failed `/api/capture` calls queue locally and drain on reconnect
+
+Mirrors claude-mem's "plugin contains the MCP" UX, but the proxy speaks to a remote `/mcp` instead of a local SQLite. From the harness's perspective it's a normal stdio MCP server. From our perspective it's just an HTTP client with extra resilience features.
+
 ### 9.2 Why one service
 
 | Concern | Single service | Two services |
@@ -977,16 +986,20 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 **Done when:** Claude Code on machine A can `/recall pgvector` and get back rows from machine B.
 
 ### Phase 3 — Hooks and Plugin
-**Goal:** Claude Code captures automatically across all three machines.
-- [ ] Claude Code plugin scaffold (hooks + skill + slash commands)
+**Goal:** Claude Code captures automatically across all three machines, plugin install ships everything (MCP included).
+- [ ] Claude Code plugin scaffold (`packages/plugin/`)
+- [ ] **Bundled local stdio MCP proxy** (`packages/plugin/mcp/index.ts`): reads `~/.mneme/config.toml`, translates MCP JSON-RPC stdio → `POST <server>/mcp` with `Authorization: Bearer <key>`. One install gives the user MCP without any extra step. Inspired by claude-mem's local MCP, but proxies to our remote server instead of reading a local SQLite.
+- [ ] Plugin `mcp.json` declares stdio transport pointing at the bundled proxy (no `${MNEME_API_KEY}` substitution required at the harness layer — the proxy holds the key)
 - [ ] `PostToolUse`, `UserPromptSubmit` hooks → `POST /api/capture` with `source='claude_hook'`
 - [ ] `Stop` and `PreCompact` hooks → `POST /api/capture` with `source='claude_summary'`, `kind='summary'`
 - [ ] `PostToolUse(Write|Edit)` with path matcher `~/.claude/projects/*/memory/*.md` → `POST /api/capture` with `source='claude_memory'` and frontmatter `type:` mapped to `meta.original_type`
 - [ ] `SessionStart` hook → `POST /api/session/start` (3s timeout, prints stdout)
 - [ ] Slash commands: `/memory`, `/recall`, `/summarise`, `/pin`, `/unpin`
-- [ ] `~/.mneme/machine.uuid` auto-registration
+- [ ] Local outbox (`~/.mneme/outbox/`) for failed captures, drained at next session start
+- [ ] `~/.mneme/machine.uuid` auto-registration on first run
+- [ ] Client-side scope enrichment (auto-inject `repo` from `git remote`, `machine_id` from uuid file, `harness=claude-code`, `agent` from session env)
 
-**Done when:** working on machine A produces searchable memories on machine B within ~30 seconds, *and* a Claude auto-memory written on A appears in Mneme too.
+**Done when:** a fresh machine onboards with: (1) paste API key into `~/.mneme/config.toml`, (2) `/plugin install j10ra/mneme-plugin`, (3) restart session — MCP, hooks, slash commands, surface all work. A memory written on machine A is recalled from Codex on machine B.
 
 ### Phase 4 — Process (extraction)
 **Goal:** raw captures become structured memories.
