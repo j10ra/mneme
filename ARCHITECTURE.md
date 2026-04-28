@@ -989,21 +989,29 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 
 **Done when:** verified end-to-end: MCP `initialize` → handshake works; `tools/list` returns the schema; `tools/call mneme.sql` runs vector / kind-filter / hybrid queries against seeded memories; INSERT/DELETE/multi-statement/`_ops.*` access all rejected (regex rejects writes, DB role rejects `_ops`).
 
-### Phase 3 — Hooks and Plugin
+### Phase 3 — Hooks and Plugin (v1.0.0 shipped)
 **Goal:** Claude Code captures automatically across all three machines, plugin install ships everything (MCP included).
-- [ ] Claude Code plugin scaffold (`packages/plugin/`)
-- [ ] **Bundled local stdio MCP proxy** (`packages/plugin/mcp/index.ts`): reads `~/.mneme/config.json`, translates MCP JSON-RPC stdio → `POST <server>/mcp` with `Authorization: Bearer <key>`. One install gives the user MCP without any extra step. Inspired by claude-mem's local MCP, but proxies to our remote server instead of reading a local SQLite.
-- [ ] Plugin `mcp.json` declares stdio transport pointing at the bundled proxy (no `${MNEME_API_KEY}` substitution required at the harness layer — the proxy holds the key)
-- [ ] `PostToolUse`, `UserPromptSubmit` hooks → `POST /api/capture` with `source='claude_hook'`
-- [ ] `Stop` and `PreCompact` hooks → `POST /api/capture` with `source='claude_summary'`, `kind='summary'`
-- [ ] `PostToolUse(Write|Edit)` with path matcher `~/.claude/projects/*/memory/*.md` → `POST /api/capture` with `source='claude_memory'` and frontmatter `type:` mapped to `meta.original_type`
-- [ ] `SessionStart` hook → `POST /api/session/start` (3s timeout, prints stdout)
-- [ ] Slash commands: `/memory`, `/recall`, `/summarise`, `/pin`, `/unpin`
-- [ ] Local outbox (`~/.mneme/outbox/`) for failed captures, drained at next session start
-- [ ] `~/.mneme/machine.uuid` auto-registration on first run
-- [ ] Client-side scope enrichment (auto-inject `repo` from `git remote`, `machine_id` from uuid file, `harness=claude-code`, `agent` from session env)
+- [x] Claude Code plugin scaffold (`packages/plugin/`) — installable via `/plugin marketplace add j10ra/mneme && /plugin install mneme@j10ra-mneme`
+- [x] **Bundled local stdio MCP proxy** (`packages/plugin/scripts/mcp-proxy.ts`): reads `~/.mneme/config.json`, translates MCP JSON-RPC stdio → `POST <server>/mcp` with `Authorization: Bearer <key>`. Answers `initialize` / `tools/list` / `ping` locally so the MCP attaches even when the upstream server is unreachable; only `tools/call` is forwarded.
+- [x] Plugin `.mcp.json` declares stdio transport pointing at the bundled proxy
+- [x] `PostToolUse`, `UserPromptSubmit` hooks → `POST /api/capture` with `source='claude_hook'`
+- [x] `Stop` and `PreCompact` hooks → `POST /api/capture` with `source='claude_summary'`
+- [x] `PostToolUse(Write|Edit)` with path matcher `~/.claude/projects/*/memory/*.md` → `source='claude_memory'`
+- [x] `SessionStart` hook → drains outbox + `POST /api/session/start` + prints surface markdown to stdout (3s timeout, fail-empty)
+- [x] Slash commands: `/setup`, `/memory`, `/recall`, `/summarise`, `/pin`, `/unpin`
+- [x] Local outbox (`~/.mneme/outbox/`) for failed captures, drained at next session start
+- [x] `machine.id` auto-generation on first `/setup` run (uuid; preserves existing on subsequent runs)
+- [x] Client-side scope enrichment: `repo` from session payload's `cwd` (Claude Code provides it; falls back to hook process cwd), `machine_id` from config, `harness=claude-code`, `agent` from `CLAUDE_MODEL` env
+- [x] Pin actuation: `/api/capture` with `raw_meta.kind='pin'` triggers `UPDATE memories SET meta.pinned = ...` server-side (uuid-validated, try/catch wrapped, defense in depth in slash dispatcher too)
 
-**Done when:** a fresh machine onboards with: (1) paste API key into `~/.mneme/config.json`, (2) `/plugin install j10ra/mneme-plugin`, (3) restart session — MCP, hooks, slash commands, surface all work. A memory written on machine A is recalled from Codex on machine B.
+**Done when:** a fresh machine onboards with **3 commands**:
+```
+/plugin marketplace add j10ra/mneme
+/plugin install mneme@j10ra-mneme
+/setup <server-url> <api-key> [machine-name]
+/reload-plugins
+```
+After that, MCP, hooks, slash commands, and the SessionStart surface all work. A memory written on machine A is recalled from any other harness on machine B.
 
 ### Phase 4 — Process (extraction)
 **Goal:** raw captures become structured memories.

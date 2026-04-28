@@ -3,6 +3,15 @@
 // /recall and /summarise are agent-driven (use mneme.sql via MCP), no
 // shell-out needed for those.
 
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, hostname } from "node:os";
+import { join } from "node:path";
 import { type MnemeConfig, loadConfig, serverUrl } from "./config.ts";
 import { baseScope } from "./scope.ts";
 
@@ -52,7 +61,15 @@ async function memory(): Promise<void> {
 }
 
 async function pin(id: string, value: boolean): Promise<void> {
-  if (!id) throw new Error(`${value ? "pin" : "unpin"} requires a memory id`);
+  const verb = value ? "pin" : "unpin";
+  if (!id) throw new Error(`${verb} requires a memory id`);
+  const isUuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!isUuid.test(id)) {
+    throw new Error(
+      `${verb} requires a valid memory uuid (got: "${id}"). Use mneme.sql to find the id first.`,
+    );
+  }
   const cfg = loadConfig();
   const r = await postCapture(cfg, {
     ...baseScope(cfg),
@@ -65,9 +82,61 @@ async function pin(id: string, value: boolean): Promise<void> {
   );
 }
 
+async function setup(
+  url: string,
+  key: string,
+  name?: string,
+): Promise<void> {
+  if (!url) throw new Error("server-url required");
+  if (!key) throw new Error("api-key required");
+
+  const cfgDir = join(homedir(), ".mneme");
+  const cfgPath = join(cfgDir, "config.json");
+
+  // Read existing config if present so we preserve machine.id across runs.
+  let existing: Partial<MnemeConfig> = {};
+  if (existsSync(cfgPath)) {
+    try {
+      existing = JSON.parse(readFileSync(cfgPath, "utf8")) as Partial<MnemeConfig>;
+    } catch {
+      // If existing is corrupt, overwrite with a fresh config.
+    }
+  }
+
+  const machineId = existing.machine?.id ?? crypto.randomUUID();
+  const machineName =
+    name ??
+    existing.machine?.name ??
+    hostname().toLowerCase().split(".")[0] ??
+    "unknown";
+
+  const config: MnemeConfig = {
+    server: { url: url.replace(/\/$/, "") },
+    auth: { key },
+    machine: { id: machineId, name: machineName },
+  };
+
+  if (!existsSync(cfgDir)) mkdirSync(cfgDir, { recursive: true });
+  writeFileSync(cfgPath, `${JSON.stringify(config, null, 2)}\n`);
+  chmodSync(cfgPath, 0o600);
+
+  console.log("✓ wrote ~/.mneme/config.json (mode 600)");
+  console.log(`  server:  ${config.server.url}`);
+  console.log(`  machine: ${machineName} (${machineId})`);
+  console.log(`  key:     ${key.slice(0, 22)}…`);
+  console.log("\n  next step: /reload-plugins");
+}
+
 async function main(): Promise<void> {
   const cmd = process.argv[2];
   switch (cmd) {
+    case "setup":
+      await setup(
+        process.argv[3] ?? "",
+        process.argv[4] ?? "",
+        process.argv[5],
+      );
+      return;
     case "memory":
       await memory();
       return;
@@ -79,7 +148,7 @@ async function main(): Promise<void> {
       return;
     default:
       console.error(`unknown subcommand: ${cmd}`);
-      console.error("usage: slash.ts <memory|pin|unpin> [id]");
+      console.error("usage: slash.ts <setup|memory|pin|unpin> [args]");
       process.exit(1);
   }
 }

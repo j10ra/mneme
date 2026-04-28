@@ -10,6 +10,31 @@
 import { createInterface } from "node:readline";
 import { type MnemeConfig, configPath, loadConfig, serverUrl } from "./config.ts";
 
+const PROTOCOL_VERSION = "2024-11-05";
+const SERVER_NAME = "mneme";
+const SERVER_VERSION = "1.0.0";
+
+const TOOL_DEF = {
+  name: "mneme.sql",
+  description:
+    "Execute a read-only SELECT against Mneme's Postgres. " +
+    "Use embed('text') macro for semantic search (substituted with a voyage-code-3 vector before execution). " +
+    "Combine with `<=>` for cosine distance and `ts_rank(tsv, websearch_to_tsquery(...))` for keyword. " +
+    "Auto-LIMIT 200 if absent. 5s timeout, 1MB result cap. " +
+    "See the using-mneme skill for the schema and query templates.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "SQL SELECT statement" },
+    },
+    required: ["query"],
+  },
+};
+
+function ok(id: unknown, result: unknown): string {
+  return JSON.stringify({ jsonrpc: "2.0", id: id ?? null, result });
+}
+
 function err(id: unknown, code: number, message: string): string {
   return JSON.stringify({
     jsonrpc: "2.0",
@@ -50,13 +75,39 @@ for await (const rawLine of rl) {
     continue;
   }
 
+  // Handshake methods are answered locally so the MCP attaches even when
+  // the upstream server is unreachable. Only tools/call (and anything
+  // that genuinely needs server state) is forwarded.
+  if (req.method === "initialize") {
+    process.stdout.write(
+      ok(req.id, {
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: { tools: {} },
+        serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+      }) + "\n",
+    );
+    continue;
+  }
+  if (req.method === "notifications/initialized") {
+    // Notification: no response.
+    continue;
+  }
+  if (req.method === "ping") {
+    process.stdout.write(ok(req.id, {}) + "\n");
+    continue;
+  }
+  if (req.method === "tools/list") {
+    process.stdout.write(ok(req.id, { tools: [TOOL_DEF] }) + "\n");
+    continue;
+  }
+
   if (!cfg) {
     if (req.id !== undefined) {
       process.stdout.write(
         err(
           req.id,
           -32603,
-          `mneme proxy not configured (${cfgError ?? "missing config"})`,
+          `mneme proxy not configured (${cfgError ?? "missing config"}). Run /setup to configure.`,
         ) + "\n",
       );
     }
@@ -77,8 +128,6 @@ for await (const rawLine of rl) {
 
     const text = await resp.text();
     if (resp.status >= 400 && req.id !== undefined) {
-      // Translate HTTP-level errors (auth, server fault) into JSON-RPC errors
-      // so the harness shows a clean message instead of dropping the call.
       let detail = text;
       try {
         const j = JSON.parse(text);

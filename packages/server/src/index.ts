@@ -111,24 +111,39 @@ app.post(
     // Side-effect for kind=pin captures: flip meta.pinned on the target
     // memory. Keeps writes converging on /api/capture without needing a
     // separate route. Phase 4 worker will handle other actuated kinds.
+    // Wrapped in try/catch so a malformed pin never breaks the capture
+    // ingest path.
     const meta = body.raw_meta as Record<string, unknown> | undefined;
     if (
       meta &&
       meta.kind === "pin" &&
       typeof meta.target === "string"
     ) {
-      const value = meta.value !== false;
-      const updated = await sql<{ id: string }[]>`
-        UPDATE memories
-        SET meta = jsonb_set(meta, '{pinned}', to_jsonb(${value}::boolean), true)
-        WHERE id = ${meta.target} AND archived_at IS NULL
-        RETURNING id
-      `;
-      Logger.info(
-        updated[0]
-          ? `pin actuated id=${meta.target} value=${value}`
-          : `pin requested but target not found: ${meta.target}`,
-      );
+      const isUuid =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!isUuid.test(meta.target)) {
+        Logger.warn(`pin requested with invalid uuid: ${meta.target}`);
+      } else {
+        try {
+          const value = meta.value !== false;
+          const updated = await sql<{ id: string }[]>`
+            UPDATE memories
+            SET meta = jsonb_set(meta, '{pinned}', to_jsonb(${value}::boolean), true)
+            WHERE id = ${meta.target} AND archived_at IS NULL
+            RETURNING id
+          `;
+          Logger.info(
+            updated[0]
+              ? `pin actuated id=${meta.target} value=${value}`
+              : `pin requested but target not found: ${meta.target}`,
+          );
+        } catch (e) {
+          Logger.error(
+            `pin actuation failed for ${meta.target}`,
+            e,
+          );
+        }
+      }
     }
 
     return c.json({ id, deduped });
