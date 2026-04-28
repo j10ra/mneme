@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mneme": {
+      "type": "stdio",
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-proxy.ts"]
+    }
+  }
+}
