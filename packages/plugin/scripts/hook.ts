@@ -191,7 +191,19 @@ async function main(): Promise<void> {
       const discovered = sessionCwd ? discoverRepos(sessionCwd) : [];
       const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
       const surface = await fetchSurface(cfg, payload, repos);
-      if (surface) process.stdout.write(surface);
+      if (surface) {
+        // Claude Code injects SessionStart context only when the hook returns
+        // a JSON envelope with hookSpecificOutput.additionalContext. Raw
+        // markdown on stdout is silently dropped.
+        process.stdout.write(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "SessionStart",
+              additionalContext: surface,
+            },
+          }),
+        );
+      }
       return;
     }
 
