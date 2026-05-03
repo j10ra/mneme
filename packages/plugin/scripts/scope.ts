@@ -49,21 +49,23 @@ export function canonicalRepo(cwd?: string): string | null {
  * sub-repos when the workspace root is itself not a git repo.
  *
  * Strategy:
- *  1. cwd itself if it resolves to a canonical (non-`dir:`) repo.
+ *  1. cwd itself — always included, even when it falls back to `dir:*`.
+ *     This is essential: captures from a workspace cwd are tagged with the
+ *     same `dir:*` value, so the surface query must include it to find them.
  *  2. Immediate children with a `.git` entry (file or dir). Worktrees use a
  *     `.git` *file* pointing into a parent gitdir, but `git remote get-url`
  *     still works from inside them.
  *  3. The `wt/*` convention: one extra level under a `wt/` directory if it
  *     exists, to catch worktrees grouped by ticket number.
  *
- * Skips `dir:*` fallbacks — we want resolvable git URLs, not basename guesses.
- * Always returns the deduped set; an empty result means no git repos under cwd.
+ * Children and worktrees are filtered to canonical URLs only (skip `dir:*`)
+ * since those would be random non-git folders we don't want to query.
  */
 export function discoverRepos(cwd: string): string[] {
   const out: string[] = [];
 
   const self = canonicalRepo(cwd);
-  if (self && !self.startsWith("dir:")) out.push(self);
+  if (self) out.push(self);
 
   let entries: import("node:fs").Dirent[];
   try {
