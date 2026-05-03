@@ -605,8 +605,11 @@ The skill encourages adding repo filters explicitly:
 
 | Layer | Control |
 |---|---|
-| Edge scrubber | regex strip secrets (AWS keys, GitHub PATs, OpenAI/Anthropic keys, JWT, Bearer tokens, SSH keys) before INSERT |
+| Edge scrubber | regex strip secrets (AWS keys, GitHub PATs, OpenAI/Anthropic/Groq/Voyage keys, JWT, Bearer tokens, SSH keys) before INSERT |
 | Tag stripping | `<private>...</private>` content removed at edge |
+| **Hook hard blacklist** | Hooks short-circuit before any HTTP call when `cwd` matches `/.claude/`, `/tmp/`, `/var/tmp/`, `/private/var/folders/`, `/proc/`, `/sys/`. Catches ghost-agent activity (e.g., claude-mem observer subagents). |
+| **Hook tool-name blacklist** | `TodoWrite`, `Skill`, `Task*`, `EnterPlanMode`, `AskUserQuestion`, `ListMcpResourcesTool`, anything matching `/mneme/i` or `/claude.?mem/i` — drops meta-tool noise and breaks the "agent recalls Mneme → that recall becomes a memory" loop. |
+| **Hook project allowlist** | `~/.mneme/config.json` `projects[]` array; any non-`SessionStart` event with a `cwd` outside a registered project root is rejected. `SessionStart` auto-registers the cwd if it passes the hard blacklist. Defends against subprocess Claude Code instances spawned by other plugins. |
 | LLM provider | when paid: `data_collection: "deny"`. Free tiers banned for capture content. |
 | Embeddings | Voyage (no training on content per ToS) |
 | Auth | Bearer tokens in `Authorization` header, per-machine + scoped + revocable. Plaintext only on issuing machine in `~/.mneme/config.json`; server stores `sha256` hash only. See §9.5 for full mechanism. |
@@ -1013,17 +1016,32 @@ Each phase has explicit "done when" criteria. Phases 0-3 give you a usable syste
 ```
 After that, MCP, hooks, slash commands, and the SessionStart surface all work. A memory written on machine A is recalled from any other harness on machine B.
 
-### Phase 4 — Process (extraction)
-**Goal:** raw captures become structured memories.
-- [ ] Coalescing window (group by `session_id`, 5 min)
-- [ ] **Urgent bypass**: hook tags `kind ∈ {security_alert, decision}` skip the window, extract immediately
-- [ ] LLM provider chosen and benchmarked: **Groq free vs Ollama local vs OpenRouter paid** — pick by extraction quality on real captures
-- [ ] Extraction prompt with `kind` taxonomy
-- [ ] Memory chunks created with composite `chunk_id`
-- [ ] Voyage embed + tsv update
-- [ ] Initial importance computed
+Once registered (Phase 4.1), the **first `SessionStart` in any project automatically adds it to `~/.mneme/config.json` `projects[]`** — no per-project setup step. Subsequent events in unregistered cwd are rejected (defends against subagent / ghost-process leakage).
 
-**Done when:** `mneme.sql` returns relevance-ranked, kind-filtered memories rather than chronological raw text.
+### Phase 4 — Process (extraction) (v1.0.4 shipped)
+**Goal:** raw captures become structured memories.
+- [x] Coalescing window: extract worker locks an oldest-queued seed job + all session siblings within ±5 min, runs one LLM call on the bundle
+- [x] LLM provider: **Groq free tier**, `openai/gpt-oss-20b` (strict `json_schema` mode, `max_completion_tokens: 2048`). 20b chosen over 120b for higher TPM headroom on the free tier; provider-agnostic interface via `packages/server/src/groq.ts` makes the swap trivial.
+- [x] Extraction prompt with `kind` taxonomy (`bugfix`, `feature`, `discovery`, `decision`, `preference`, `constraint`, `security_alert`, `reference`, `summary`, `note`) + explicit `DO NOT extract` anti-pattern list (assistant meta, tool-call events, trivial status). Empty `observations: []` is the valid common answer.
+- [x] Input caps: 1500 chars/capture × 6000 chars/window keep us under the 8K TPM cap on free tier
+- [x] Memory chunks: composite `chunk_id = sha256(content_hash + ":" + embedding_model)` so re-embedding under a new model creates fresh rows instead of overwriting
+- [x] Voyage `embedBatch` (up to 32 memories per call) + `to_tsvector('english', content)` at insert time
+- [x] Initial importance: LLM self-rated 0.1-1.0, clamped at write time
+- [x] Two-phase queue: `extract` enqueued by `/api/capture`; `embed` enqueued by extract worker per memory (migration 0006 added `memory_id` FK on `ingest_jobs`)
+- [x] Rate-limit handling: `GroqRateLimitError` parses Groq's `try again in Ns`; worker re-queues without burning attempts and sleeps the parsed duration. Voyage 429 same path.
+- [x] Retry policy: jobs in `state='error'` with `attempts < 5` are picked up again on the next tick (transient errors self-heal without manual reset)
+
+**Done when:** `mneme.sql` returns relevance-ranked, kind-filtered memories rather than chronological raw text. ✓ Verified by hybrid recall returning embedded memories with cosine + ts_rank scoring.
+
+### Phase 4.1 — Hardening (v1.0.5 shipped)
+**Goal:** keep the noise out so recall stays high-signal.
+- [x] Hook hard blacklist: skip captures from `/.claude/`, `/tmp/`, `/var/tmp/`, `/private/var/folders/`, `/proc/`, `/sys/` — kills ghost-agent activity (claude-mem observer subagents and any subprocess Claude Code instances spawned by other plugins) at the edge
+- [x] Hook tool-name blacklist: `TodoWrite`, `Skill`, `Task*`, `EnterPlanMode`/`ExitPlanMode`, `AskUserQuestion`, `ListMcpResourcesTool`, `ReadMcpResourceTool`, `ScheduleWakeup`, `Monitor`, `ToolSearch`. Plus regex match on `/mneme/i` and `/claude.?mem/i` to break the recursive memory-about-the-memory-system loop.
+- [x] Hook project allowlist: `~/.mneme/config.json` grows a `projects: { path, registered_at }[]` array. `SessionStart` auto-registers the current `cwd` if it passes the hard blacklist; non-`SessionStart` events check `cwd.startsWith(project.path)` and reject otherwise. Zero-friction onboarding (no manual `register` step) with auto-defense against future plugins.
+- [x] Strengthened extraction prompt: explicit `DO NOT extract` examples (assistant meta, tool-call events, trivial status); importance floor 0.3 (drop anything below).
+- [x] Scrubber adds `groq_key` (`gsk_*`) and `voyage_key` (`pa-*`) patterns.
+
+**Done when:** a single recall returns mostly signal, not self-referential agent meta. ✓ Verified by archiving 16 noise rows + bulk-deleting 51 captures + 21 memories tagged `dir:observer-sessions`.
 
 ### Phase 5 — Nap
 **Goal:** quiet importance management.

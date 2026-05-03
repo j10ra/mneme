@@ -114,6 +114,7 @@ async function setup(
     server: { url: url.replace(/\/$/, "") },
     auth: { key },
     machine: { id: machineId, name: machineName },
+    ...(existing.projects ? { projects: existing.projects } : {}),
   };
 
   if (!existsSync(cfgDir)) mkdirSync(cfgDir, { recursive: true });

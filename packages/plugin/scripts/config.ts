@@ -1,11 +1,14 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+export type ProjectEntry = { path: string; registered_at: string };
 
 export type MnemeConfig = {
   server: { url: string };
   auth: { key: string };
   machine: { id: string; name?: string };
+  projects?: ProjectEntry[];
 };
 
 export function configPath(): string {
@@ -24,4 +27,43 @@ export function loadConfig(): MnemeConfig {
 
 export function serverUrl(cfg: MnemeConfig, path: string): string {
   return `${cfg.server.url.replace(/\/$/, "")}${path.startsWith("/") ? "" : "/"}${path}`;
+}
+
+// Paths we never auto-register. Anything under these is treated as ghost
+// agent activity (claude-mem observers, transient subprocess workdirs, etc).
+const BLACKLIST_PATTERNS: RegExp[] = [
+  /\/\.claude(\/|$)/,
+  /^\/tmp(\/|$)/,
+  /^\/var\/tmp(\/|$)/,
+  /^\/private\/var\/folders(\/|$)/,
+  /^\/proc(\/|$)/,
+  /^\/sys(\/|$)/,
+];
+
+export function isBlacklistedPath(cwd: string): boolean {
+  return BLACKLIST_PATTERNS.some((re) => re.test(cwd));
+}
+
+/** True if cwd is under a registered project root (exact or path-prefix match). */
+export function isProjectRegistered(cfg: MnemeConfig, cwd: string): boolean {
+  const projects = cfg.projects ?? [];
+  return projects.some(
+    (p) => cwd === p.path || cwd.startsWith(`${p.path}/`),
+  );
+}
+
+/** Append cwd to config.projects[] if not already there. Atomic write via
+ *  tempfile + rename (POSIX rename is atomic on the same filesystem). */
+export function registerProject(cwd: string): boolean {
+  const cfg = loadConfig();
+  const projects = cfg.projects ?? [];
+  if (projects.some((p) => p.path === cwd)) return false;
+  projects.push({ path: cwd, registered_at: new Date().toISOString() });
+  cfg.projects = projects;
+
+  const path = configPath();
+  const tmp = `${path}.tmp.${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
+  renameSync(tmp, path);
+  return true;
 }

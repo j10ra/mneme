@@ -4,7 +4,14 @@
 // capture (or fetches the surface for SessionStart) to the Mneme server.
 // Fail-open: errors never block the harness.
 
-import { type MnemeConfig, loadConfig, serverUrl } from "./config.ts";
+import {
+  type MnemeConfig,
+  isBlacklistedPath,
+  isProjectRegistered,
+  loadConfig,
+  registerProject,
+  serverUrl,
+} from "./config.ts";
 import { drainOutbox, writeOutbox } from "./outbox.ts";
 import { baseScope as buildScope } from "./scope.ts";
 
@@ -133,10 +140,31 @@ async function main(): Promise<void> {
   // wherever Claude Code spawned the hook script.
   const sessionCwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
 
-  // Skip captures from Claude-internal directories (claude-mem's observer
-  // subagent runs in ~/.claude/observer-sessions/* and fires its own tool
-  // calls — that's noise, not the user's project work).
-  if (sessionCwd && /\/\.claude(\/|$)/.test(sessionCwd)) {
+  // Hard blacklist: claude-internal dirs, /tmp, system mounts. Captures from
+  // these paths are ghost-agent activity (claude-mem observer subagents,
+  // transient subprocess workdirs from other plugins).
+  if (sessionCwd && isBlacklistedPath(sessionCwd)) return;
+
+  // SessionStart is the trust anchor: if cwd looks like a real project (passed
+  // the blacklist above), auto-register it so subsequent events flow through.
+  // For all other events, require the cwd to be in a registered project root.
+  if (event === "SessionStart") {
+    if (sessionCwd) {
+      try {
+        if (registerProject(sessionCwd)) {
+          process.stderr.write(
+            `mneme-hook[SessionStart]: registered new project ${sessionCwd}\n`,
+          );
+        }
+      } catch (e) {
+        process.stderr.write(
+          `mneme-hook[SessionStart]: project register failed: ${
+            e instanceof Error ? e.message : e
+          }\n`,
+        );
+      }
+    }
+  } else if (sessionCwd && !isProjectRegistered(cfg, sessionCwd)) {
     return;
   }
 
