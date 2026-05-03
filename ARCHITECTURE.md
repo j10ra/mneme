@@ -474,70 +474,126 @@ LIMIT 10;
 
 The `/recall <query>` slash command runs this template, parameterized.
 
-### 6.6 Surface — `POST /api/session/start` (pointer endpoint)
+### 6.6 SessionStart lifecycle (registration + surface)
 
-`POST /api/session/start` is a generic endpoint that returns a compact pointer list for a `(repo, machine_id)` scope. Any caller can hit it: a SessionStart hook prints the response to stdout, an MCP server can prepend it as a system preamble to the first response, a CLI can render it. **It is not Claude-Code-specific.**
+This is the end-to-end path from a fresh `claude` invocation to memories surfacing in the agent's context. It runs every time SessionStart fires (matchers `startup`, `resume`, `clear`, `compact`) — including resumed sessions, which is the common case.
 
-**Cross-machine join:** `repo` is the canonical join key. A request with `{ repo: 'github.com/jalipalo/Mneme', machine_id: '<B>' }` aggregates pinned memories, preferences, constraints, recent clusters, and recent **sessions** from **all machines** that have ever worked on that repo. `machine_id` is used only to filter `private = true` memories (those return only to their origin machine).
+#### 6.6.1 The two passes: register, then surface
 
-**Request:**
-```json
-{ "machine_id": "<uuid>", "repo": "<canonical_url>", "session_id": "<harness_session>" }
-```
+The hook does two things on SessionStart, in order:
 
-**Response (text/markdown, ~1500 token cap):**
+1. **Register** — auto-add the cwd to `~/.mneme/config.json` `projects[]` if it's not blacklisted and not already there. Idempotent — repeated calls don't churn.
+2. **Surface** — discover repos under cwd, fetch the surface from the server, return it as `hookSpecificOutput.additionalContext` for Claude Code to inject into the agent.
+
+Non-`SessionStart` events (UserPromptSubmit, PostToolUse, Stop, PreCompact) skip pass 1 but enforce the allowlist gate: if `cwd` doesn't startsWith any registered project root, the hook returns early without posting a capture. Anything outside known projects is treated as ghost work.
+
+#### 6.6.2 cwd → repos[] discovery
+
+`discoverRepos(cwd)` (in `packages/plugin/scripts/scope.ts`) walks one level deep and returns the union of:
+
+| Source | Rule | Example for `/x/Pinnacle` (workspace) | Example for `/x/Pinnacle/pinnacle-plugin` (sub-repo) |
+|---|---|---|---|
+| **cwd self** | always include `canonicalRepo(cwd)` — even when it falls back to `dir:<basename>` | `dir:Pinnacle` | `github.com/j10ra/pinnacle-plugin` |
+| **Immediate children** with `.git` (file or dir) | canonical URL only — skip `dir:*` | `github.com/j10ra/pinnacle-plugin`, `github.com/j10ra/db-scripts`, `dev.azure.com/.../Pinnacle System`, `.../EstimationAndroid`, `.../PinnacleIntegratedSystem` | (none — no children with `.git`) |
+| **`wt/*` worktrees** | walks `<cwd>/wt/*/`, each one's canonical (de-duped against parent) | (none for top-level Pinnacle) | (none) |
+
+**Why include the cwd's `dir:*` tag** (the v1.0.10 fix): captures from a session opened at the workspace root inherit `repo='dir:<basename>'` (because `canonicalRepo()` falls back when the cwd itself isn't a git repo). Without including it in the surface query, those captures are invisible — even though the hook is sitting right on top of them.
+
+#### 6.6.3 Server-side aggregation
+
+Hook POSTs `{ machine_id, repos: string[], session_id }` to `/api/session/start`. The aggregator (`packages/server/src/surface.ts`) builds 4 lists by querying `memories` with `repo = ANY(repos)`:
+
+| List | Filter | Cap |
+|---|---|---|
+| **Pinned** | `(meta->>'pinned')::boolean = true AND (repo = ANY(repos) OR repo IS NULL)`, ORDER BY importance DESC, created_at DESC | 5 |
+| **Rules** | `kind IN ('preference','constraint') AND importance >= 0.7` (no repo filter — rules are global), ORDER BY importance DESC, created_at DESC | 3 |
+| **Recent** | `repo = ANY(repos) AND kind IN ('decision','feature','bugfix','discovery') AND importance >= 0.6 AND created_at > now() - interval '14 days'`, ORDER BY importance DESC, created_at DESC | 8 |
+| **Sessions** | `repo = ANY(repos) AND kind = 'summary'`, ORDER BY created_at DESC | 3 |
+
+**No `machine_id` filter on the queries** — this is how cross-machine works. A memory written on machine A with `repo='github.com/j10ra/foo'` surfaces in any session on machine B that calls `discoverRepos` and gets `github.com/j10ra/foo` in its array. The repo is the cross-machine join key; the union across machines is implicit. (`private = true` filtering by machine_id is reserved for a later pass; v1.0.10 doesn't need it.)
+
+#### 6.6.4 What the rendered surface looks like
 
 ```markdown
-# Mneme — github.com/jalipalo/Mneme · 12 memories · last active 2h ago (machine-A)
+# Mneme · workspace (6 repos) · across 2 machines
 
-## Pinned & Rules
-[abc123] pinned constraint :: Capture endpoint must respond in <200ms regardless of LLM state
-[def456] pinned preference :: Use kebab-case for file names
-[ghi789] preference :: Prefer explicit return types over inference in TS public APIs
-[jkl012] decision :: Use OpenRouter paid only when extracting
+**Active repos:**
+- dir:Pinnacle
+- github.com/j10ra/pinnacle-plugin
+- github.com/j10ra/db-scripts
+- dev.azure.com/.../Pinnacle System
+- ...
 
-## Recent themes
-[mno345] cluster (47 members) :: Mneme architecture v2 — 3 tables, one MCP tool
-[pqr678] cluster (12 members) :: Worker LLM choice deferred to Phase 4
+## Pinned
+- (decision · 0.90) Use OpenRouter only for extraction, never for embedding
+- (preference · 0.85) Address user as Boss, no AI attribution in commits
 
-## Recent sessions (this repo, all machines)
-[sess:2026-04-26T08:14Z@machine-A · 47 captures · 3h2m] :: embedding pipeline and Voyage integration
-[sess:2026-04-25T19:30Z@machine-B · 12 captures · 1h4m] :: schema simplification, killed cluster_members table
-[sess:2026-04-25T11:02Z@machine-A · 23 captures · 2h11m] :: dream worker design, contradiction model
+## Rules
+- (constraint) The hook performs a hard-blacklist check on cwd...
+- (preference) The user prefers terse responses, no preamble
 
-Call `mneme.sql` with an id (or session id) to unfold.
+## Recent (last 14 days)
+- 5d ago · (decision) Coalesce extract jobs by session_id within ±5min window
+- 3d ago · (bugfix) Pin actuation needed UUID validation + try/catch wrap
+- 2d ago · (feature) Hook skip-tools list cuts ~50% of meta-noise captures
+- ...
+
+## Recent sessions
+- just now · Three changes shipped: hook filter, prompt tightening, token cap
+- 1h ago · v1.0.5 Phase 4 Process worker shipped (Groq + Voyage)
+- ...
 ```
 
-**What goes in each section:**
+Single-repo header is `# Mneme · <repo> · across N machines`. If discovery yields zero git repos AND no `dir:*` fallback, the surface is empty (renderer returns `""`, hook writes nothing).
 
-| Section | Source | Filter |
-|---|---|---|
-| Pinned & Rules | `memories` | `meta.pinned = true` OR (`kind ∈ {preference, constraint, decision}` AND `importance > threshold`), scope = repo, all machines |
-| Recent themes | `memories` | `kind = 'cluster'` ordered by `created_at DESC`, top 3, scope = repo |
-| Recent sessions | aggregate over `captures` | `repo = ?`, group by `session_id` + `machine_id`, ordered by `max(captured_at) DESC`, top 5. Title = latest `kind='summary'` capture for that session_id, fallback to "<n captures>". |
+#### 6.6.5 Output envelope (Claude-Code-specific)
 
-**Pointer row format:** `[<id>] <kind, flags> :: <one_line>`. `one_line` is `meta.one_line` if set, else the first ~100 chars of `content`. Session pointers use `[sess:<timestamp>@<machine>]` so the agent can `mneme.sql` for the full session digest.
+Hook wraps the markdown in a JSON envelope on stdout:
 
-**Token budget:** ~1500 cap. If exceeded, drop lower-importance pointers first; never truncate mid-row.
+```json
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<the markdown>"}}
+```
+
+Claude Code only injects context when this envelope is present — raw markdown stdout is silently dropped (the v1.0.9 lesson). Multiple plugins' envelopes are merged into a `hook_additional_context` attachment with a `content[]` array. The terminal user sees only the FIRST hook's preview (typically claude-mem's, since it's largest), but the **agent receives every plugin's `additionalContext` in the conversation transcript** — verifiable by reading the JSONL or asking the agent what context it has.
+
+#### 6.6.6 Sequence diagram
 
 ```mermaid
 sequenceDiagram
-    participant Caller as Hook / MCP / CLI
+    participant Hook as plugin/scripts/hook.ts
+    participant Cfg as ~/.mneme/config.json
     participant API as POST /api/session/start
     participant DB as Postgres
+    participant CC as Claude Code
 
-    Caller->>API: { machine_id, repo, session_id }  [3s timeout, fail-empty]
-    API->>DB: pinned + rules + recent clusters + session aggregates,<br/>scope=repo (cross-machine), private filtered by machine_id
-    DB-->>API: ranked rows
-    API->>API: render pointer list, cap tokens
-    API-->>Caller: 200 text/markdown
+    Note over Hook: SessionStart fires (startup|resume|clear|compact)
+    Hook->>Hook: read payload.cwd
+    alt cwd matches /\.claude*/, /tmp/, /var/tmp/, /private/var/folders/, /proc/, /sys/
+        Hook-->>CC: return (silent reject — ghost agent)
+    else
+        Hook->>Cfg: registerProject(cwd) — atomic temp+rename
+        Note over Cfg: idempotent: no-op if already in projects[]
+        Hook->>Hook: discoverRepos(cwd) → string[]<br/>self + children/.git + wt/*
+        Hook->>API: { machine_id, repos[], session_id }<br/>5s timeout
+        API->>DB: 4 SELECT queries (pinned, rules, recent, sessions)<br/>repo = ANY(repos), no machine_id filter
+        DB-->>API: ranked rows
+        API->>API: renderSurface(rows) → markdown
+        API-->>Hook: { repos, pinned, rules, decisions, sessions, rendered }
+        Hook->>CC: stdout {"hookSpecificOutput":{"additionalContext": rendered}}<br/>8s outer hook timeout
+        CC->>CC: append to hook_additional_context[] in transcript
+    end
+
+    Note over Hook,CC: Other events (UserPromptSubmit, PostToolUse, Stop, PreCompact):<br/>1. blacklist check (same as above)<br/>2. if cwd not under any registered project → reject<br/>3. else POST /api/capture
 ```
 
-**Callers:**
-- Claude Code SessionStart hook — prints stdout (harness prepends as additional context)
-- Codex / Cursor / OpenCode — first `mneme.sql` response from MCP prepends it as preamble
-- CLI `mneme surface` — prints to terminal (manual check)
-- Any HTTP client
+#### 6.6.7 Generic callers (non-Claude-Code)
+
+`/api/session/start` is harness-agnostic. Any caller posts `repos: string[]` and gets back the structured payload + rendered markdown:
+
+- **Claude Code** — SessionStart hook (this section).
+- **Codex / Cursor / OpenCode** (Phase 8) — first `mneme.sql` response from MCP prepends `rendered` as a preamble (no SessionStart hook concept in those harnesses).
+- **CLI** — `mneme surface` (future, prints `rendered` to terminal for manual check).
+- **Any HTTP client** — same payload, returns the same JSON.
 
 ### 6.7 Dedup is additive (lives in ingest, nap, dream)
 
