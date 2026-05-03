@@ -69,7 +69,7 @@ async function fetchSurface(
         repos,
         session_id: payload.session_id ?? null,
       }),
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(5000),
     });
     if (!resp.ok) return "";
     const data = (await resp.json()) as { rendered?: string };

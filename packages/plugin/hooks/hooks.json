@@ -8,7 +8,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook.ts SessionStart",
-            "timeout": 3
+            "timeout": 8
           }
         ]
       }
