@@ -83,6 +83,32 @@ function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…[truncated ${s.length - max}b]` : s;
 }
 
+/** Extract concatenated text blocks from a Claude Code transcript JSONL
+ *  assistant entry. Returns null if the entry has no text content (e.g.,
+ *  pure tool_use turn — already captured separately via PostToolUse). */
+function assistantTextFromEntry(entry: Record<string, unknown>): string | null {
+  if (entry.type !== "assistant") return null;
+  const message = entry.message as Record<string, unknown> | undefined;
+  if (!message) return null;
+  const content = message.content;
+  if (!Array.isArray(content)) {
+    return typeof message.content === "string" ? (message.content as string) : null;
+  }
+  const texts: string[] = [];
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === "object" &&
+      (block as Record<string, unknown>).type === "text" &&
+      typeof (block as Record<string, unknown>).text === "string"
+    ) {
+      texts.push((block as Record<string, unknown>).text as string);
+    }
+  }
+  const joined = texts.join("\n\n").trim();
+  return joined.length > 0 ? joined : null;
+}
+
 function memoryWritePath(toolName: unknown, input: unknown): string | null {
   if (toolName !== "Write" && toolName !== "Edit") return null;
   if (!input || typeof input !== "object") return null;
@@ -218,6 +244,8 @@ async function main(): Promise<void> {
 
     case "Stop":
     case "PreCompact": {
+      // 1) Audit/metadata capture (session_id, transcript_path, cwd, etc).
+      //    Small payload — Claude Code doesn't include conversation text here.
       const body = {
         ...baseScope,
         source: "claude_summary",
@@ -226,6 +254,57 @@ async function main(): Promise<void> {
       };
       const ok = await postCapture(cfg, body);
       if (!ok) writeOutbox(body, "summary");
+
+      // 2) Conversation text — read the JSONL transcript and capture assistant
+      //    messages individually. Without this the assistant's reasoning,
+      //    proposals, and decisions are lost (only user prompts and tool calls
+      //    are otherwise captured). Server-side content_sha256 dedup handles
+      //    re-runs when Stop/PreCompact fires multiple times in one session.
+      const transcriptPath =
+        typeof payload.transcript_path === "string"
+          ? payload.transcript_path
+          : null;
+      if (transcriptPath) {
+        try {
+          const { readFileSync } = await import("node:fs");
+          const raw = readFileSync(transcriptPath, "utf8");
+          const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+          let captured = 0;
+          for (const line of lines) {
+            let entry: Record<string, unknown>;
+            try {
+              entry = JSON.parse(line) as Record<string, unknown>;
+            } catch {
+              continue;
+            }
+            const text = assistantTextFromEntry(entry);
+            // Filter very short replies ("ok", "got it") — not memorable.
+            if (!text || text.length < 200) continue;
+            const messageUuid =
+              typeof entry.uuid === "string" ? entry.uuid : undefined;
+            const turnBody = {
+              ...baseScope,
+              source: "claude_assistant",
+              content: truncate(text, 64 * 1024),
+              raw_meta: { event, message_uuid: messageUuid },
+            };
+            const turnOk = await postCapture(cfg, turnBody);
+            if (turnOk) captured++;
+            else writeOutbox(turnBody, "assistant_turn");
+          }
+          if (captured > 0) {
+            process.stderr.write(
+              `mneme-hook[${event}]: captured ${captured} assistant turn(s) from transcript\n`,
+            );
+          }
+        } catch (e) {
+          process.stderr.write(
+            `mneme-hook[${event}]: transcript read failed: ${
+              e instanceof Error ? e.message : e
+            }\n`,
+          );
+        }
+      }
       return;
     }
 
