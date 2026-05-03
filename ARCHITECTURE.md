@@ -149,16 +149,18 @@ flowchart TD
     class SF surface
 ```
 
-### Stack
+### Stack (as of v1.0.11)
 
-| Layer | Choice | Cost (personal) |
-|---|---|---|
-| Storage | Supabase (Postgres + pgvector + tsvector) | Free tier |
-| Embeddings | Voyage-code-3 (1024-dim, free tier 200M tokens/mo) | $0 |
-| LLM (extract + distill) | **TBD at Phase 4**: Groq free OR Ollama local OR OpenRouter paid | $0-4/mo |
-| Worker host | Railway Hobby | $5/mo |
-| Read interface | MCP (one tool) + a skill | included |
-| **Total** | | **~$5-9/mo** |
+| Layer | Choice | Cost (personal) | Notes |
+|---|---|---|---|
+| Storage | Supabase (Postgres + pgvector + tsvector) | Free tier | 60 connections, 500MB; pooler endpoint available if direct port saturates |
+| Embeddings | **Voyage `voyage-code-3`** (1024-dim) | $0 (200M tokens lifetime free, ~1.8 yr at our rate) | Code-tuned. `chunk_id = sha256(content_hash + ":" + embedding_model)` makes re-embedding under a different model collision-safe (new rows, old rows untouched). |
+| Extraction LLM | **Groq `openai/gpt-oss-20b`** (strict `json_schema` mode) | $0 (free tier: 20 RPM / 200 RPD without credits, 1000 RPD with $10 deposited once) | Strict JSON schema enforcement — no free-form text. `temperature: 0.2`, `max_completion_tokens: 2048`. Provider-agnostic interface in `packages/server/src/groq.ts` makes the swap one env var. |
+| Worker host | Railway Hobby (planned — local for now) | $5/mo when shipped | Same Bun process as Hono server, no sidecar |
+| Read interface | MCP (one tool) + a skill | included | `mneme.sql` reads via `mneme_reader` Postgres role |
+| **Total** | | **$0/mo today, ~$5/mo on Railway** | |
+
+See §13.1 for migration paths (cheaper, better, or self-hosted alternatives).
 
 ---
 
@@ -1166,25 +1168,86 @@ Once registered (Phase 4.1), the **first `SessionStart` in any project automatic
 
 | Item | Frequency | Unit cost | Monthly est. |
 |---|---|---|---|
-| Railway Hobby | always-on | $5/mo | $5.00 |
-| Voyage embeddings (voyage-code-3, free tier) | ~50-200 chunks/day | $0 (200M/mo free) | $0 |
-| LLM extract + distill | TBD at Phase 4 | varies | $0-4 |
+| Railway Hobby (planned) | always-on | $5/mo | $5.00 |
+| Voyage embeddings (`voyage-code-3`) | ~50-200 chunks/day | $0 (200M token lifetime free, ~1.8 yr runway) | $0 |
+| Groq extraction (`openai/gpt-oss-20b`) | ~50-150 calls/day | $0 (free tier; 1000 RPD with one-time $10 deposit) | $0 |
 | Supabase | small DB, low bandwidth | free tier | $0 |
-| **Total** | | | **~$5-9/mo** |
+| **Total** | | | **$0/mo locally, ~$5/mo on Railway** |
 
-Re-embed migration (one-time when switching embedding model): typically free under voyage-code-3's tier; would be ~$5-15 if upgrading to voyage-3-large or similar paid model.
+Re-embed migration (one-time when switching embedding model): see §13.1.
+
+### 13.1 Migration paths — current models & future swaps
+
+The architecture is built so any LLM or embedding model can be swapped with minimal blast radius. Two interfaces, two env vars, no schema migrations needed beyond a possible `vector(N)` dim change.
+
+#### Extraction LLM
+
+Today: `openai/gpt-oss-20b` on Groq. Strict `json_schema` mode is critical — Llama models on Groq only support `json_object` (best-effort), which fails our extraction reliability bar.
+
+| Direction | Model | Tradeoff |
+|---|---|---|
+| **Higher quality** (paid Groq tier or fallback) | `openai/gpt-oss-120b` (Groq) — strict json_schema, larger model | Better extraction. Free-tier TPM is tight (8K/min) — saw 413 errors at v1.0.4 with coalesced inputs; mitigated by 1500-char/capture, 6000-char/window caps. |
+| **Cheaper fallback** if Groq goes down | `meta-llama/llama-4-scout-17b-16e-instruct` (Groq) — best-effort json_schema | Smaller model, more JSON malformations, higher retry burden |
+| **Different provider** | OpenRouter free Gemma 4 31B (`google/gemma-4-31b-it:free`) — 256K context, structured output | Lower RPD (50/day without credits, 1000/day with $10 deposited) but route-resilient |
+| **Self-hosted** | Ollama local (`qwen2.5-coder:14b` or larger) | Truly free + private; CPU/GPU bound; need the host to be always-on (defeats centralised-server design unless server box runs Ollama too) |
+
+Swap is a one-line `GROQ_MODEL` change in `packages/server/src/groq.ts` if same provider, or a new client module + `LLM_PROVIDER` env var.
+
+#### Embeddings
+
+Today: Voyage `voyage-code-3` (1024-dim, code-tuned). Best code-retrieval quality available at $0 for our volume.
+
+The 200M-token lifetime free tier is enormous — at ~300 tokens/memory and ~1000 memories/day across all 3 machines, that's ~1.8 years of runway. We almost certainly won't hit it before either upgrading or self-hosting.
+
+| Direction | Model | Dim | Cost/notes |
+|---|---|---|---|
+| **Stay where we are** | Voyage `voyage-code-3` | 1024 | Best quality on code, $0/mo until ~2027 |
+| **Self-hosted local on Railway/server** | `Xenova/bge-base-en-v1.5` via Transformers.js | 768 | ~200MB ONNX weights bundled into Docker image. Near-`voyage-code-3` quality on general text, slightly worse on pure code. **No API call, no quota, no cost ever.** Server CPU bound (~50-100ms/embed batched). |
+| **Self-hosted code-tuned** | `nomic-ai/nomic-embed-code-v1` via Transformers.js (when ported) | 768 | Code-specific, closes the gap to within ~5% of Voyage. |
+| **Self-hosted cheap** | `Xenova/all-MiniLM-L6-v2` (claude-mem's choice) | 384 | Smallest local option, ~80MB weights. ~15-20% recall@10 drop on code. Skip — `bge-base` is strictly better at similar size. |
+| **Paid upgrade** | Voyage `voyage-3-large` | 1024 | Best general quality, ~$0.18/M tokens. Only worth it if Mneme grows beyond personal scale. |
+| **Different provider** | OpenAI `text-embedding-3-small` | 1536 | $0.02/M tokens. ~$4 to migrate 200M tokens. Cheap escape hatch if Voyage goes paid. |
+
+#### Re-embed migration mechanics
+
+When we swap embedding models, **no schema migration is needed for the same dim**. For different dims (e.g., 1024 → 768), one ALTER:
+
+```sql
+ALTER TABLE memories ALTER COLUMN embedding TYPE vector(768);
+-- or, safer: add a new column and re-embed in place, drop old after
+```
+
+The expensive part is **re-embedding existing rows**. Two properties make this cheap and safe:
+
+1. **`chunk_id` is model-scoped** — `sha256(content_hash + ":" + embedding_model)`. Re-embedding under a new model produces NEW chunk_id rows; old rows stay (until archived). Zero risk of overwriting working memories.
+2. **Captures are immutable and complete** — re-extracting from `captures` rebuilds `memories` from scratch if needed. We never lose anything by re-running the worker.
+
+Operational steps when actually switching:
+1. Add new model implementation to `packages/server/src/embedder/` (interface: `embed(text)`, `embedBatch(texts[])`, `model: string`, `dim: number`).
+2. ALTER the `vector(N)` column if dims differ.
+3. Set `EMBEDDING_PROVIDER=<new>` and restart server.
+4. Worker re-embeds all extant memories (one-time cost — at our volume, hours not days).
+5. Old `embedding_model='voyage-code-3'` rows can be archived once new ones land.
+
+#### When to migrate (heuristic)
+
+- **Stay on Voyage** until: free tier hits, or you ship Mneme to others.
+- **Switch to self-hosted** when: you have a reliable always-on box (Railway), want zero ongoing API spend, and accept a ~5-10% recall quality drop. Best done after Phase 6 (Dream) ships, since cluster summaries are less sensitive to embedding quality than raw recall.
+- **Switch to a paid embedder** only if: Mneme becomes a real product with users — at that point the cost is dwarfed by other ops costs.
 
 ---
 
 ## 14. Open Questions
 
-1. **LLM provider for extraction.** Groq free, Ollama local, or OpenRouter paid. Decided at Phase 4 with real captures in hand.
-2. **Coalescing window length.** 5 min is a guess; tune with data.
+1. ~~**LLM provider for extraction.**~~ **Resolved (v1.0.4):** Groq `openai/gpt-oss-20b` with strict `json_schema` mode. See §13.1 for migration paths.
+2. **Coalescing window length.** 5 min was the v1 guess; held up well at v1.0.4 with input caps (1500 char/capture, 6000 char/window). Tune with data once Phase 5/6 surface noisier patterns.
 3. **Cluster algorithm.** Cosine-NN graph + connected components for v1 (simpler). HDBSCAN later if quality lags.
-4. **Voyage model.** Locked on `voyage-code-3` for cost reasons (Voyage's free tier covers it; `voyage-3` is paid-only). Same 1024-dim, code-tuned but solid on prose. Re-embed migration planned via `chunk_id` model-scoped hashing if we ever switch.
-5. **MCP transport.** stdio for Claude Code local, HTTP for others, or HTTP-only? Pick after Phase 2.
-6. **Should `mneme.sql` accept multiple statements, or strictly one?** Default to one for safety.
+4. ~~**Voyage model.**~~ **Resolved (Phase 2):** `voyage-code-3` (1024-dim, code-tuned). 200M-token lifetime free tier covers ~1.8 years at our volume. Re-embed mechanics + swap paths in §13.1.
+5. **MCP transport.** stdio for Claude Code local, HTTP for others, or HTTP-only? Locked on stdio-via-bundled-proxy that wraps HTTP `POST /mcp` (Phase 3). Keeps Claude Code happy, server stays HTTP-only.
+6. **Should `mneme.sql` accept multiple statements, or strictly one?** **Resolved:** strictly one (mcp.ts rejects via parser).
 7. **When does the fourth table arrive?** It arrives the moment a query genuinely cannot be expressed against `meta jsonb` performantly. Not before.
+8. **Auth enrollment endpoint.** Today, API keys are minted via direct SQL insert. For machine #2 onboarding we'll add `POST /api/auth/issue` taking a pre-shared `MNEME_ENROLLMENT_SECRET` (see §9.5). Deferred until Boss actually onboards a second machine.
+9. **Per-sub-repo capture tagging in workspaces.** Captures from `/Pinnacle` cwd are tagged `dir:Pinnacle`, not the active sub-repo's canonical URL. Workaround in v1.0.10 (surface unions both dir and sub-repos). A real fix would require detecting the active file at hook time — non-trivial.
 
 ---
 
