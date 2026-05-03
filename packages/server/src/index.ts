@@ -12,6 +12,7 @@ import {
 import { sql, sha256Hex } from "./db.ts";
 import { handleHttp as handleMcp } from "./mcp.ts";
 import { scrub, scrubData } from "./scrub.ts";
+import { startWorker, stopWorker } from "./worker/index.ts";
 
 // Wire core to DB and env. Scrubber runs on every span input/output so
 // `_ops.spans` never see raw secrets either.
@@ -88,12 +89,11 @@ app.post(
     if (inserted[0]) {
       id = inserted[0].id;
       deduped = false;
-      // Phase 4 wires extract+embed jobs; for now we enqueue stubs so the
-      // worker queue path is exercised end-to-end.
+      // Only enqueue extract here. The extract worker writes memory rows
+      // and enqueues embed jobs per memory (keyed to memory_id).
       await sql`
         INSERT INTO ingest_jobs (capture_id, phase, state)
-        VALUES (${id}, ${"extract"}, ${"queued"}),
-               (${id}, ${"embed"}, ${"queued"})
+        VALUES (${id}, ${"extract"}, ${"queued"})
       `;
       Logger.info(`captured id=${id}`);
     } else {
@@ -188,6 +188,7 @@ const port = Number(process.env.PORT ?? 3100);
 
 async function shutdown(signal: string): Promise<void> {
   Logger.info(`${signal} received, flushing traces and closing pool`);
+  await stopWorker();
   try {
     await getTraceStore()?.stop();
   } finally {
@@ -198,6 +199,8 @@ async function shutdown(signal: string): Promise<void> {
 
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
+
+startWorker();
 
 process.stderr.write(`mneme server listening on :${port}\n`);
 

@@ -85,6 +85,37 @@ function memoryWritePath(toolName: unknown, input: unknown): string | null {
   return fp;
 }
 
+// Tool names whose calls are pure session meta (todo lists, skill loads, MCP
+// resource discovery) and produce captures with no project value. We also
+// skip anything that talks to Mneme itself or claude-mem to avoid recursive
+// memories about the memory system.
+const SKIP_TOOLS = new Set<string>([
+  "TodoWrite",
+  "Skill",
+  "ExitPlanMode",
+  "EnterPlanMode",
+  "AskUserQuestion",
+  "ListMcpResourcesTool",
+  "ReadMcpResourceTool",
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskList",
+  "TaskGet",
+  "TaskOutput",
+  "TaskStop",
+  "ToolSearch",
+  "Monitor",
+  "ScheduleWakeup",
+]);
+
+function shouldSkipTool(toolName: unknown): boolean {
+  if (typeof toolName !== "string") return false;
+  if (SKIP_TOOLS.has(toolName)) return true;
+  // Recursive: own MCP tools + claude-mem MCP tools.
+  if (/mneme/i.test(toolName) || /claude[-_]?mem/i.test(toolName)) return true;
+  return false;
+}
+
 async function main(): Promise<void> {
   let cfg: MnemeConfig;
   try {
@@ -158,6 +189,8 @@ async function main(): Promise<void> {
       const toolName = payload.tool_name;
       const toolInput = payload.tool_input;
       const toolResp = payload.tool_response;
+
+      if (shouldSkipTool(toolName)) return;
 
       const memPath = memoryWritePath(toolName, toolInput);
       if (memPath) {

@@ -10,6 +10,8 @@ const SECRET_PATTERNS: Pattern[] = [
   { name: "github_pat_fine", re: /\bgithub_pat_[A-Za-z0-9_]{82,}\b/g },
   { name: "anthropic_key", re: /\bsk-ant-(?:api\d{2}-)?[A-Za-z0-9_-]{40,}\b/g },
   { name: "openai_key", re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{40,}\b/g },
+  { name: "groq_key", re: /\bgsk_[A-Za-z0-9]{40,}\b/g },
+  { name: "voyage_key", re: /\bpa-[A-Za-z0-9_-]{40,}\b/g },
   { name: "slack_token", re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
   { name: "jwt", re: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g },
   { name: "bearer_header", re: /\b[Bb]earer\s+[A-Za-z0-9_\-.=]{20,}/g },

@@ -49,6 +49,16 @@ describe("scrub - secret patterns", () => {
     expect(scrub(t)).toBe("[REDACTED:anthropic_key]");
   });
 
+  test("Groq key", () => {
+    const t = "gsk_" + "a".repeat(52);
+    expect(scrub(`GROQ=${t}`)).toBe("GROQ=[REDACTED:groq_key]");
+  });
+
+  test("Voyage key", () => {
+    const t = "pa-" + "abcDEF123_-".repeat(4) + "xyz";
+    expect(scrub(`VOYAGE=${t}`)).toBe("VOYAGE=[REDACTED:voyage_key]");
+  });
+
   test("Slack token", () => {
     expect(scrub("xoxb-1234567890-abcdefghijklmnop")).toBe(
       "[REDACTED:slack_token]",
