@@ -1,8 +1,9 @@
 // Shared scope helpers for hook.ts and slash.ts.
 
 import { execSync } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import type { MnemeConfig } from "./config.ts";
 
 /**
@@ -40,6 +41,64 @@ export function canonicalRepo(cwd?: string): string | null {
   const name = basename(workdir);
   if (!name || name === "/" || name === ".") return null;
   return `dir:${name}`;
+}
+
+/**
+ * Walk cwd for sub-repositories (Pinnacle-style multi-repo workspaces and
+ * git worktrees). Used at SessionStart so the surface can union across all
+ * sub-repos when the workspace root is itself not a git repo.
+ *
+ * Strategy:
+ *  1. cwd itself if it resolves to a canonical (non-`dir:`) repo.
+ *  2. Immediate children with a `.git` entry (file or dir). Worktrees use a
+ *     `.git` *file* pointing into a parent gitdir, but `git remote get-url`
+ *     still works from inside them.
+ *  3. The `wt/*` convention: one extra level under a `wt/` directory if it
+ *     exists, to catch worktrees grouped by ticket number.
+ *
+ * Skips `dir:*` fallbacks — we want resolvable git URLs, not basename guesses.
+ * Always returns the deduped set; an empty result means no git repos under cwd.
+ */
+export function discoverRepos(cwd: string): string[] {
+  const out: string[] = [];
+
+  const self = canonicalRepo(cwd);
+  if (self && !self.startsWith("dir:")) out.push(self);
+
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = readdirSync(cwd, { withFileTypes: true });
+  } catch {
+    return Array.from(new Set(out));
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith(".")) continue;
+    const child = join(cwd, entry.name);
+    if (!existsSync(join(child, ".git"))) continue;
+    const repo = canonicalRepo(child);
+    if (repo && !repo.startsWith("dir:")) out.push(repo);
+  }
+
+  const wtDir = join(cwd, "wt");
+  if (existsSync(wtDir)) {
+    let wtEntries: import("node:fs").Dirent[];
+    try {
+      wtEntries = readdirSync(wtDir, { withFileTypes: true });
+    } catch {
+      return Array.from(new Set(out));
+    }
+    for (const entry of wtEntries) {
+      if (!entry.isDirectory()) continue;
+      const wt = join(wtDir, entry.name);
+      if (!existsSync(join(wt, ".git"))) continue;
+      const repo = canonicalRepo(wt);
+      if (repo && !repo.startsWith("dir:")) out.push(repo);
+    }
+  }
+
+  return Array.from(new Set(out));
 }
 
 export type BaseScope = {

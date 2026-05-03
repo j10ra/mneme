@@ -12,6 +12,7 @@ import {
 import { sql, sha256Hex } from "./db.ts";
 import { handleHttp as handleMcp } from "./mcp.ts";
 import { scrub, scrubData } from "./scrub.ts";
+import { buildSurface } from "./surface.ts";
 import { startWorker, stopWorker } from "./worker/index.ts";
 
 // Wire core to DB and env. Scrubber runs on every span input/output so
@@ -152,21 +153,32 @@ app.post(
 
 // ---------------------------------------------------------------------------
 // POST /api/session/start — read, scope=read
-// Phase 0 stub: returns empty pointer shape. Real aggregation lands in Phase 2.
+// Aggregates pinned + rules + recent decisions + recent sessions for a set of
+// repos (workspace = N repos, single repo = length 1). Cross-machine:
+// filtered by repo, unioned across machine_id. Returns rendered markdown the
+// hook prints to stdout for SessionStart context injection.
 // ---------------------------------------------------------------------------
+type SessionStartBody = {
+  machine_id?: string;
+  repos?: string[];
+  /** legacy single-repo field; preserved so older plugin versions still work */
+  repo?: string | null;
+  session_id?: string | null;
+};
+
 app.post(
   "/api/session/start",
   mnemeRoute("api.session.start"),
   requireAuth("read"),
   async (c) => {
-    await c.req.json().catch(() => ({}));
-    return c.json({
-      pinned: [],
-      rules: [],
-      clusters: [],
-      sessions: [],
-      rendered: "",
-    });
+    const body = ((await c.req.json().catch(() => ({}))) ?? {}) as SessionStartBody;
+    const repos = Array.isArray(body.repos)
+      ? body.repos.filter((r): r is string => typeof r === "string" && r.length > 0)
+      : typeof body.repo === "string" && body.repo
+        ? [body.repo]
+        : [];
+    const surface = await buildSurface(repos);
+    return c.json(surface);
   },
 );
 

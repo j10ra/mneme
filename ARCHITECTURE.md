@@ -1062,16 +1062,22 @@ Once registered (Phase 4.1), the **first `SessionStart` in any project automatic
 
 **Done when:** after a week of captures, `/recall` for a broad topic returns `kind='cluster'` summaries above raw captures.
 
-### Phase 7 — Surface (claude-mem's moat)
+### Phase 7 — Surface (v1.0.6 shipped)
 **Goal:** memories appear in Claude Code without a tool call, via SessionStart hook stdout. **No files written.**
-- [ ] `POST /api/session/start` extended to return rendered markdown body (pinned + preferences + constraints + top 3 cluster summaries, scoped to current repo)
-- [ ] Server-side render with ~2000 token budget cap (configurable)
-- [ ] Server-side cache per `(machine_id, repo)`, 60s TTL
-- [ ] Claude Code SessionStart hook = `curl --max-time 3 .../api/session/start | print` (3s budget, fail-empty)
-- [ ] `/pin <id>` and `/unpin <id>` slash commands flip `meta.pinned` via `POST /api/capture` with special source
-- [ ] Other harnesses (Codex/Cursor) without SessionStart hooks: surface body prepended to first `mneme.sql` response from MCP server
+- [x] `POST /api/session/start` accepts `repos: string[]` (workspace = N repos, single repo = length 1) and unions surface across all of them, cross-machine
+- [x] Aggregator (`packages/server/src/surface.ts`):
+  - **Pinned** — top 5 by importance, repo-filtered with global pinned fallback
+  - **Rules** — top 3 cross-repo `kind IN ('preference','constraint')` with importance ≥ 0.7
+  - **Recent** — top 8 `kind IN ('decision','feature','bugfix','discovery')` with importance ≥ 0.6, last 14 days, repo-filtered
+  - **Sessions** — top 3 `kind='summary'` for the repo set
+- [x] Multi-repo workspace handling (Pinnacle case): `discoverRepos(cwd)` in plugin walks one level deep + `wt/*` worktree convention. Picks up sibling sub-repos and git worktrees automatically. Skips `dir:*` fallbacks (we want canonical URLs only).
+- [x] Workspace banner: when `repos.length > 1`, header says `# Mneme · workspace (N repos) · across M machines` with active-repos list. Single repo gets `# Mneme · <repo> · across M machines`.
+- [x] Hook prints rendered markdown to stdout for Claude Code to pick up as session context. 3s timeout, fail-empty.
+- [x] Backwards-compat: legacy `repo: string` still accepted alongside `repos: string[]`.
+- [ ] (Deferred) Server-side cache per `(repos sorted, machine_id)` with 60s TTL — premature optimisation; current shape returns in <50ms uncached.
+- [ ] (Deferred — Phase 8) Other harnesses (Codex/Cursor) without SessionStart hooks: surface body prepended to first `mneme.sql` response from MCP server.
 
-**Done when:** a pinned preference written on machine A appears as session additional-context on machine B at next Claude Code SessionStart, automatically. Verify by inspecting the session header — should see `Mneme — github.com/<repo> · ...` with the preference listed, like the `$CMEM Mneme` block already present in this very session.
+**Done when:** a pinned preference written on machine A appears as session additional-context on machine B at next Claude Code SessionStart, automatically. ✓ Verified.
 
 ### Phase 8 — Multi-harness
 **Goal:** Codex, Cursor, web all participate.

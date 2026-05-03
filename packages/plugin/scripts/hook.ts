@@ -13,7 +13,7 @@ import {
   serverUrl,
 } from "./config.ts";
 import { drainOutbox, writeOutbox } from "./outbox.ts";
-import { baseScope as buildScope } from "./scope.ts";
+import { baseScope as buildScope, discoverRepos } from "./scope.ts";
 
 const event = process.argv[2] ?? "unknown";
 
@@ -54,7 +54,7 @@ async function postCapture(
 async function fetchSurface(
   cfg: MnemeConfig,
   payload: Record<string, unknown>,
-  repo: string | null,
+  repos: string[],
 ): Promise<string> {
   try {
     const resp = await fetch(serverUrl(cfg, "/api/session/start"), {
@@ -66,7 +66,7 @@ async function fetchSurface(
       },
       body: JSON.stringify({
         machine_id: cfg.machine.id,
-        repo,
+        repos,
         session_id: payload.session_id ?? null,
       }),
       signal: AbortSignal.timeout(3000),
@@ -186,7 +186,11 @@ async function main(): Promise<void> {
           `mneme-hook[SessionStart]: outbox flushed (${drain.sent} sent, ${drain.failed} still queued)\n`,
         );
       }
-      const surface = await fetchSurface(cfg, payload, repo);
+      // Walk cwd for sub-repos (Pinnacle-style multi-repo workspaces, git
+      // worktrees). Falls back to whatever canonicalRepo resolved at the top.
+      const discovered = sessionCwd ? discoverRepos(sessionCwd) : [];
+      const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
+      const surface = await fetchSurface(cfg, payload, repos);
       if (surface) process.stdout.write(surface);
       return;
     }
