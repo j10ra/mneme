@@ -31,8 +31,10 @@ export function serverUrl(cfg: MnemeConfig, path: string): string {
 
 // Paths we never auto-register. Anything under these is treated as ghost
 // agent activity (claude-mem observers, transient subprocess workdirs, etc).
+// The .claude* pattern intentionally covers .claude, .claude-mem, and any
+// future hidden-dir convention used by Claude-adjacent tooling.
 const BLACKLIST_PATTERNS: RegExp[] = [
-  /\/\.claude(\/|$)/,
+  /\/\.claude[a-z0-9_-]*(\/|$)/,
   /^\/tmp(\/|$)/,
   /^\/var\/tmp(\/|$)/,
   /^\/private\/var\/folders(\/|$)/,

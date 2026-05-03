@@ -1035,9 +1035,11 @@ Once registered (Phase 4.1), the **first `SessionStart` in any project automatic
 
 ### Phase 4.1 — Hardening (v1.0.5 shipped)
 **Goal:** keep the noise out so recall stays high-signal.
-- [x] Hook hard blacklist: skip captures from `/.claude/`, `/tmp/`, `/var/tmp/`, `/private/var/folders/`, `/proc/`, `/sys/` — kills ghost-agent activity (claude-mem observer subagents and any subprocess Claude Code instances spawned by other plugins) at the edge
+- [x] Hook hard blacklist: skip captures from `/.claude*/` (catches `.claude`, `.claude-mem`, and future Claude-adjacent hidden dirs), `/tmp/`, `/var/tmp/`, `/private/var/folders/`, `/proc/`, `/sys/` — kills ghost-agent activity (claude-mem observer subagents and any subprocess Claude Code instances spawned by other plugins) at the edge. Pattern was widened in v1.0.11 after `~/.claude-mem/observer-sessions/*` slipped past the original `/\.claude(\/|$)/` regex.
 - [x] Hook tool-name blacklist: `TodoWrite`, `Skill`, `Task*`, `EnterPlanMode`/`ExitPlanMode`, `AskUserQuestion`, `ListMcpResourcesTool`, `ReadMcpResourceTool`, `ScheduleWakeup`, `Monitor`, `ToolSearch`. Plus regex match on `/mneme/i` and `/claude.?mem/i` to break the recursive memory-about-the-memory-system loop.
-- [x] Hook project allowlist: `~/.mneme/config.json` grows a `projects: { path, registered_at }[]` array. `SessionStart` auto-registers the current `cwd` if it passes the hard blacklist; non-`SessionStart` events check `cwd.startsWith(project.path)` and reject otherwise. Zero-friction onboarding (no manual `register` step) with auto-defense against future plugins.
+- [x] Hook project allowlist: `~/.mneme/config.json` grows a `projects: { path, registered_at }[]` array. `SessionStart` auto-registers the current `cwd` if it passes the hard blacklist; non-`SessionStart` events check `cwd.startsWith(project.path)` and reject otherwise. Zero-friction onboarding (no manual `register` step) with auto-defense against future plugins. Atomic write via tempfile + `rename`. `/setup` rerun preserves the array.
+- [x] **SessionStart matcher widened** (v1.0.7): added `resume` to `startup|clear|compact` so resumed sessions also auto-register and fetch surface. Without this, `claude --resume` (the default re-entry) skipped Mneme entirely.
+- [x] **Hook timeout bumped 3s → 8s** (v1.0.8); `fetchSurface` AbortSignal 3s → 5s. The Pinnacle multi-repo walk + 5 `git remote get-url` calls + server round-trip exceeded 3s on first run, so Claude Code was killing the hook before it could write output.
 - [x] Strengthened extraction prompt: explicit `DO NOT extract` examples (assistant meta, tool-call events, trivial status); importance floor 0.3 (drop anything below).
 - [x] Scrubber adds `groq_key` (`gsk_*`) and `voyage_key` (`pa-*`) patterns.
 
@@ -1062,7 +1064,7 @@ Once registered (Phase 4.1), the **first `SessionStart` in any project automatic
 
 **Done when:** after a week of captures, `/recall` for a broad topic returns `kind='cluster'` summaries above raw captures.
 
-### Phase 7 — Surface (v1.0.6 shipped)
+### Phase 7 — Surface (v1.0.10 shipped)
 **Goal:** memories appear in Claude Code without a tool call, via SessionStart hook stdout. **No files written.**
 - [x] `POST /api/session/start` accepts `repos: string[]` (workspace = N repos, single repo = length 1) and unions surface across all of them, cross-machine
 - [x] Aggregator (`packages/server/src/surface.ts`):
@@ -1070,10 +1072,13 @@ Once registered (Phase 4.1), the **first `SessionStart` in any project automatic
   - **Rules** — top 3 cross-repo `kind IN ('preference','constraint')` with importance ≥ 0.7
   - **Recent** — top 8 `kind IN ('decision','feature','bugfix','discovery')` with importance ≥ 0.6, last 14 days, repo-filtered
   - **Sessions** — top 3 `kind='summary'` for the repo set
-- [x] Multi-repo workspace handling (Pinnacle case): `discoverRepos(cwd)` in plugin walks one level deep + `wt/*` worktree convention. Picks up sibling sub-repos and git worktrees automatically. Skips `dir:*` fallbacks (we want canonical URLs only).
+- [x] Multi-repo workspace handling (Pinnacle case): `discoverRepos(cwd)` in plugin walks one level deep + `wt/*` worktree convention. Picks up sibling sub-repos and git worktrees automatically.
+- [x] **Workspace cwd's `dir:*` tag is included** (v1.0.10): captures from sessions opened at the workspace root inherit `repo='dir:<basename>'` (since the workspace itself is not a git repo). The surface query now unions both the discovered canonical URLs AND the `dir:*` tag, so workspace-root captures are findable. Without this, opening Pinnacle at the workspace root showed an empty Recent / Sessions section even though 20+ memories existed tagged `dir:Pinnacle`.
 - [x] Workspace banner: when `repos.length > 1`, header says `# Mneme · workspace (N repos) · across M machines` with active-repos list. Single repo gets `# Mneme · <repo> · across M machines`.
-- [x] Hook prints rendered markdown to stdout for Claude Code to pick up as session context. 3s timeout, fail-empty.
+- [x] **Output format** (v1.0.9): hook emits `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<markdown>"}}` JSON envelope, not raw markdown. Claude Code only injects context when the envelope is present; raw stdout is silently dropped. The visible terminal preview only shows the FIRST hook's output (typically claude-mem at 7-10KB), but the agent receives ALL hooks' `additionalContext` as a `hook_additional_context` array attachment in the conversation transcript.
 - [x] Backwards-compat: legacy `repo: string` still accepted alongside `repos: string[]`.
+- [ ] (Deferred) Server-side cache per `(repos sorted, machine_id)` with 60s TTL — current shape returns in ~250ms uncached.
+- [ ] (Deferred — Phase 8) Other harnesses (Codex/Cursor) without SessionStart hooks: surface body prepended to first `mneme.sql` response from MCP server.
 - [ ] (Deferred) Server-side cache per `(repos sorted, machine_id)` with 60s TTL — premature optimisation; current shape returns in <50ms uncached.
 - [ ] (Deferred — Phase 8) Other harnesses (Codex/Cursor) without SessionStart hooks: surface body prepended to first `mneme.sql` response from MCP server.
 
