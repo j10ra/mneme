@@ -1,4 +1,4 @@
-import { mnemeFn } from "@mneme/core";
+import { Logger, mnemeFn } from "@mneme/core";
 import { sql } from "../db.ts";
 
 // Per-cycle multiplicative decay for non-pinned memories. With τ=30 days and
@@ -23,21 +23,29 @@ const SHADOW_DECAY = 0.1;
 const TRANSIENT_REGEX =
   "HTTP 5[0-9][0-9]|timed out|timeout|ECONNRESET|tunnel|gateway|connection (refused|reset|closed|aborted)";
 
+// Semantic relations: cosine distance threshold for "near enough to be related"
+// and max neighbors recorded per memory. 0.15 is empirically tight (real
+// relatedness, not just topical adjacency); 5 caps the meta.related_to growth.
+const RELATE_DISTANCE = 0.15;
+const RELATE_MAX_NEIGHBORS = 5;
+
 export type NapResult = {
   decayed: number;
   shadowed: number;
+  related: number;
   resurrected: number;
   killed: number;
 };
 
-/** Run one nap cycle: decay non-pinned importance, mark exact-text shadows,
- *  resurrect transient ingest failures, retire non-transient errors to dead.
- *  All four steps run in one transaction — the whole pass is small (<1s on
- *  current data) and atomic state is easier to reason about. */
+/** Run one nap cycle: decay importance with asymmetric floors, mark exact-
+ *  text shadows, link semantic neighbours via meta.related_to, resurrect
+ *  transient ingest failures, retire non-transient errors to dead. All five
+ *  steps run in one transaction — the whole pass is small (~1-2s on current
+ *  data) and atomic state is easier to reason about. */
 export const runNapOnce = mnemeFn(
   "worker.nap.once",
   async (): Promise<NapResult> => {
-    return await sql.begin(async (tx) => {
+    const result = await sql.begin(async (tx) => {
       // 1. Decay all non-archived memories. Pinned rows stop at PIN_FLOOR;
       //    unpinned stop at FLOOR. Skip rows already at their respective
       //    floor so we don't waste writes on no-op updates.
@@ -78,7 +86,68 @@ export const runNapOnce = mnemeFn(
           AND (m.meta->>'shadow_of') IS NULL
       `;
 
-      // 3. Resurrect transient ingest failures (1h grace).
+      // 3. Semantic relations: for memories that are recent OR never-processed,
+      //    find ≤RELATE_MAX_NEIGHBORS same-repo nearest neighbors at cosine
+      //    distance < RELATE_DISTANCE, then mutually append their ids to
+      //    meta.related_to. The HNSW index on memories.embedding makes the
+      //    LATERAL JOIN cheap. Mutual update means an old memory gets new
+      //    relations even if it wasn't in the seed set itself.
+      const related = await tx`
+        WITH seeds AS (
+          SELECT id, embedding, repo
+          FROM memories
+          WHERE archived_at IS NULL
+            AND embedding IS NOT NULL
+            AND (
+              created_at > now() - interval '7 days'
+              OR (meta->'related_to') IS NULL
+              OR jsonb_array_length(meta->'related_to') = 0
+            )
+        ),
+        neighbors AS (
+          SELECT s.id AS a_id, n.id AS b_id
+          FROM seeds s,
+          LATERAL (
+            SELECT m.id
+            FROM memories m
+            WHERE m.archived_at IS NULL
+              AND m.embedding IS NOT NULL
+              AND m.repo IS NOT DISTINCT FROM s.repo
+              AND m.id <> s.id
+              AND s.embedding <=> m.embedding < ${RELATE_DISTANCE}
+            ORDER BY s.embedding <=> m.embedding
+            LIMIT ${RELATE_MAX_NEIGHBORS}
+          ) n
+        ),
+        mutual AS (
+          SELECT a_id, b_id FROM neighbors
+          UNION
+          SELECT b_id, a_id FROM neighbors
+        ),
+        grouped AS (
+          SELECT a_id, array_agg(DISTINCT b_id::text) AS new_related
+          FROM mutual
+          GROUP BY a_id
+        )
+        UPDATE memories m
+        SET meta = jsonb_set(
+          m.meta,
+          '{related_to}',
+          (
+            SELECT to_jsonb(array_agg(DISTINCT v))
+            FROM (
+              SELECT jsonb_array_elements_text(COALESCE(m.meta->'related_to', '[]'::jsonb)) AS v
+              UNION
+              SELECT unnest(g.new_related) AS v
+            ) all_v
+          )
+        )
+        FROM grouped g
+        WHERE m.id = g.a_id
+          AND m.archived_at IS NULL
+      `;
+
+      // 4. Resurrect transient ingest failures (1h grace).
       const resurrected = await tx`
         UPDATE ingest_jobs
         SET state = 'queued',
@@ -93,7 +162,7 @@ export const runNapOnce = mnemeFn(
           AND error ~* ${TRANSIENT_REGEX}
       `;
 
-      // 4. Retire non-transient errors to dead (24h grace).
+      // 5. Retire non-transient errors to dead (24h grace).
       const killed = await tx`
         UPDATE ingest_jobs
         SET state = 'dead'
@@ -106,9 +175,14 @@ export const runNapOnce = mnemeFn(
       return {
         decayed: decayed.count,
         shadowed: shadowed.count,
+        related: related.count,
         resurrected: resurrected.count,
         killed: killed.count,
       };
     });
+    Logger.info(
+      `nap: decayed=${result.decayed}, shadowed=${result.shadowed}, related=${result.related}, resurrected=${result.resurrected}, killed=${result.killed}`,
+    );
+    return result;
   },
 );
