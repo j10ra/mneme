@@ -96,7 +96,9 @@ app.post(
         INSERT INTO ingest_jobs (capture_id, phase, state)
         VALUES (${id}, ${"extract"}, ${"queued"})
       `;
-      Logger.info(`captured id=${id}`);
+      Logger.info(
+        `captured id=${id} repo=${body.repo ?? "-"} source=${body.source} chars=${cleaned.length}`,
+      );
     } else {
       const existing = await sql<{ id: string }[]>`
         SELECT id FROM captures
@@ -106,7 +108,9 @@ app.post(
       if (!existing[0]) return c.json({ error: "insert_failed" }, 500);
       id = existing[0].id;
       deduped = true;
-      Logger.info(`captured (deduped) id=${id}`);
+      Logger.info(
+        `captured (deduped) id=${id} repo=${body.repo ?? "-"} source=${body.source}`,
+      );
     }
 
     // Side-effect for kind=pin captures: flip meta.pinned on the target

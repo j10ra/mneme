@@ -144,7 +144,7 @@ export const runExtractOnce = mnemeFn(
 
     // ── Phase 2: LLM call (NO tx held) ─────────────────────────────────
     Logger.info(
-      `extract: calling LLM (${jobIds.length} capture(s), ${concatenated.length} chars)…`,
+      `extract: calling LLM (${jobIds.length} capture(s), ${concatenated.length} chars) repo=${seed.repo ?? "-"}…`,
     );
     const t0 = Date.now();
     let observations: Observation[];
@@ -228,10 +228,17 @@ export const runExtractOnce = mnemeFn(
     });
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    const kindCounts = observations.reduce<Record<string, number>>((acc, o) => {
+      acc[o.kind] = (acc[o.kind] ?? 0) + 1;
+      return acc;
+    }, {});
+    const kindSummary = Object.entries(kindCounts)
+      .map(([k, n]) => `${k}=${n}`)
+      .join(", ");
     Logger.info(
-      `extract: ${jobIds.length} capture(s) → ${observations.length} observation(s) → ${inserted} new memor${
-        inserted === 1 ? "y" : "ies"
-      } (${elapsed}s)`,
+      `extract: ${jobIds.length} capture(s) → ${observations.length} observation(s)${
+        kindSummary ? ` [${kindSummary}]` : ""
+      } → ${inserted} new memor${inserted === 1 ? "y" : "ies"} repo=${seed.repo ?? "-"} (${elapsed}s)`,
     );
     return { didWork: true };
   },
