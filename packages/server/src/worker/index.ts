@@ -1,8 +1,9 @@
 import { Logger } from "@mneme/core";
 import { runEmbedOnce, type EmbedResult } from "./embed.ts";
 import { runExtractOnce, type ExtractResult } from "./extract.ts";
-import { startKeepalive } from "./keepalive.ts";
-import { startNap } from "./nap.ts";
+import { runKeepaliveOnce } from "./keepalive.ts";
+import { runNapOnce } from "./nap.ts";
+import { register, startScheduler } from "./scheduler.ts";
 
 const EXTRACT_INTERVAL_MS = 10_000;
 const EMBED_INTERVAL_MS = 5_000;
@@ -62,13 +63,18 @@ async function loop(
   Logger.info(`worker.${name}: loop exited`);
 }
 
-/** Start the extract+embed worker loops. Non-blocking; runs until stopWorker(). */
+/** Start the extract+embed worker loops + scheduler for time-driven jobs.
+ *  Non-blocking; runs until stopWorker(). Queue-driven workers keep their
+ *  own tight polling loops; time-driven workers (nap, keepalive, eventually
+ *  dream) register with the scheduler. */
 export function startWorker(): void {
   Logger.info("worker: starting extract + embed loops");
   void loop("extract", runExtractOnce, EXTRACT_INTERVAL_MS);
   void loop("embed", runEmbedOnce, EMBED_INTERVAL_MS);
-  startKeepalive();
-  startNap();
+
+  register({ name: "nap", scheduleMs: 6 * 60 * 60 * 1000, run: runNapOnce });
+  register({ name: "keepalive", scheduleMs: 24 * 60 * 60 * 1000, run: runKeepaliveOnce });
+  void startScheduler();
 }
 
 /** Signal both loops to stop and clear pending timers. */

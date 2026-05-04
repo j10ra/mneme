@@ -1,13 +1,9 @@
-import { Logger, mnemeFn } from "@mneme/core";
+import { mnemeFn } from "@mneme/core";
 import { sql } from "../db.ts";
-
-// Run every 6h. Long enough that decay/shadow churn is meaningful per cycle,
-// short enough that transient retry latency stays under a few hours.
-const NAP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 // Per-cycle multiplicative decay for non-pinned memories. With τ=30 days and
 // 4 naps/day = 120 naps over the time constant, factor = exp(-1/120) ≈ 0.9917.
-// After 30 days a memory's importance lands at original * 1/e (~37%).
+// After 30 days a memory's importance lands at original × 1/e (~37%).
 const PER_NAP_DECAY = Math.exp(-1 / 120);
 
 // Importance floor for non-pinned memories — never decay them to zero, just
@@ -20,18 +16,8 @@ const SHADOW_DECAY = 0.1;
 // Transient error patterns. These match upstream-flake messages worth retrying
 // after a grace window. Anything not matching is treated as content-related
 // and retired to state='dead'. Uses POSIX regex (~*), so [0-9] not \d.
-const TRANSIENT_REGEX = "HTTP 5[0-9][0-9]|timed out|timeout|ECONNRESET|tunnel|gateway|connection (refused|reset|closed|aborted)";
-
-const SINGLETON_KEY = Symbol.for("mneme.nap.singleton");
-type State = { stopped: boolean; timer: ReturnType<typeof setInterval> | null };
-const g = globalThis as unknown as { [key: symbol]: State | undefined };
-
-if (g[SINGLETON_KEY]) {
-  g[SINGLETON_KEY].stopped = true;
-  if (g[SINGLETON_KEY].timer) clearInterval(g[SINGLETON_KEY].timer);
-}
-const state: State = { stopped: false, timer: null };
-g[SINGLETON_KEY] = state;
+const TRANSIENT_REGEX =
+  "HTTP 5[0-9][0-9]|timed out|timeout|ECONNRESET|tunnel|gateway|connection (refused|reset|closed|aborted)";
 
 export type NapResult = {
   decayed: number;
@@ -112,28 +98,3 @@ export const runNapOnce = mnemeFn(
     });
   },
 );
-
-async function tickNap(): Promise<void> {
-  if (state.stopped) return;
-  const t0 = Date.now();
-  try {
-    const r = await runNapOnce();
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    Logger.info(
-      `nap: decayed=${r.decayed}, shadowed=${r.shadowed}, resurrected=${r.resurrected}, killed=${r.killed} (${elapsed}s)`,
-    );
-  } catch (e) {
-    Logger.error("nap: cycle failed", e);
-  }
-}
-
-/** Schedule nap on the standard interval. Runs once after a 60s warmup so
- *  workers/keepalive get logged first, then every NAP_INTERVAL_MS thereafter. */
-export function startNap(): void {
-  Logger.info(`nap: scheduled every ${NAP_INTERVAL_MS / 3_600_000}h (decay τ=30d, retry grace 1h, dead grace 24h)`);
-  setTimeout(() => {
-    if (state.stopped) return;
-    void tickNap();
-  }, 60_000);
-  state.timer = setInterval(tickNap, NAP_INTERVAL_MS);
-}
