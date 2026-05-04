@@ -19,10 +19,20 @@ LIMIT 50;
 ```
 
 Render as a tight readable list. For each pinned memory, show:
+- The **full UUID on its own line** so the user can copy-paste straight into `/mneme:unpin <uuid>`. Format the id in backticks for easy click-to-copy in monospace renderers.
 - One-line excerpt of `content` (truncate to ~120 chars, replace newlines with spaces)
 - A small footer: `(<kind> · <repo or "no-repo"> · imp <importance>)`
 
+Example shape:
+```
+`37d53619-88ad-4b4e-958f-3363845c4d90`
+Mneme slash commands follow an agent-resolution pattern…
+(note · github.com/j10ra/mneme · imp 1.00)
+```
+
 Don't re-synthesise — the user wants to see exactly what they pinned, in their own words.
+
+End the list with a one-line tip: "Unpin with `/mneme:unpin <uuid>` or `/mneme:unpin <description>`."
 
 If there are zero pins, say so plainly and suggest `/mneme:pin <fact>` to declare one.
 
