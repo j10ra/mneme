@@ -80,11 +80,21 @@ app.post(
     }
     if (!machineId) return c.json({ error: "machine_id required" }, 400);
 
-    // Scrub at the edge: secrets and <private> blocks redacted before
-    // hashing or storage. Hash is computed on cleaned content so dedup keys
-    // align across captures whose only difference was a redacted secret.
+    // Scrub at the edge: every string field that lands in storage runs
+    // through the same secret + <private> patterns. Originally only `content`
+    // was scrubbed, which let credentials embedded in `repo` (e.g. a git
+    // remote URL with `user:token@host`) flow through unredacted. Now the
+    // scrubber sees every string column.
     const cleaned = scrub(body.content);
     const hash = await sha256Hex(cleaned);
+    const cleanedRepo = body.repo ? scrub(body.repo) : null;
+    const cleanedSource = scrub(body.source);
+    const cleanedHostname = scrub(body.hostname);
+    const cleanedHarness = scrub(body.harness);
+    const cleanedAgent = body.agent ? scrub(body.agent) : null;
+    const cleanedSessionId = body.session_id ? scrub(body.session_id) : null;
+    const cleanedTopics = (body.topics ?? []).map(scrub);
+    const cleanedRawMeta = scrubData(body.raw_meta ?? {}) as Record<string, unknown>;
 
     const inserted = await sql<{ id: string }[]>`
       INSERT INTO captures (
@@ -92,9 +102,9 @@ app.post(
         repo, harness, agent, session_id, topics, private, raw_meta
       )
       VALUES (
-        ${cleaned}, ${hash}, ${body.source}, ${machineId}, ${body.hostname},
-        ${body.repo ?? null}, ${body.harness}, ${body.agent ?? null}, ${body.session_id ?? null},
-        ${body.topics ?? []}, ${body.private ?? false}, ${sql.json((body.raw_meta ?? {}) as never)}
+        ${cleaned}, ${hash}, ${cleanedSource}, ${machineId}, ${cleanedHostname},
+        ${cleanedRepo}, ${cleanedHarness}, ${cleanedAgent}, ${cleanedSessionId},
+        ${cleanedTopics}, ${body.private ?? false}, ${sql.json(cleanedRawMeta as never)}
       )
       ON CONFLICT (content_sha256, machine_id) DO NOTHING
       RETURNING id
@@ -111,9 +121,12 @@ app.post(
         INSERT INTO ingest_jobs (capture_id, phase, state)
         VALUES (${id}, ${"extract"}, ${"queued"})
       `;
-      Logger.info(
-        `captured id=${id} repo=${body.repo ?? "-"} source=${body.source} chars=${cleaned.length}`,
-      );
+      Logger.info("captured", {
+        id,
+        repo: cleanedRepo ?? "-",
+        source: cleanedSource,
+        chars: cleaned.length,
+      });
     } else {
       const existing = await sql<{ id: string }[]>`
         SELECT id FROM captures
@@ -123,9 +136,11 @@ app.post(
       if (!existing[0]) return c.json({ error: "insert_failed" }, 500);
       id = existing[0].id;
       deduped = true;
-      Logger.info(
-        `captured (deduped) id=${id} repo=${body.repo ?? "-"} source=${body.source}`,
-      );
+      Logger.info("captured (deduped)", {
+        id,
+        repo: cleanedRepo ?? "-",
+        source: cleanedSource,
+      });
     }
 
     // Side-effect for kind=pin captures: flip meta.pinned on the target
@@ -220,6 +235,15 @@ app.post(
     const importance = Math.max(0.1, Math.min(1, body.importance ?? 1.0));
     const pinned = body.pinned ?? false;
 
+    // Same edge-scrub policy as /api/capture: every string column gets
+    // scrubbed, not just `content`.
+    const cleanedRepo = body.repo ? scrub(body.repo) : null;
+    const cleanedHostname = scrub(body.hostname);
+    const cleanedHarness = scrub(body.harness);
+    const cleanedAgent = body.agent ? scrub(body.agent) : null;
+    const cleanedSessionId = body.session_id ? scrub(body.session_id) : null;
+    const cleanedTopics = (body.topics ?? []).map(scrub);
+
     const contentHash = await sha256Hex(cleaned);
     const chunkId = await sha256Hex(`${contentHash}:${EMBEDDER_MODEL}`);
     const meta = { pinned, source_slash: true };
@@ -234,9 +258,9 @@ app.post(
           repo, harness, agent, session_id, topics, private, raw_meta
         )
         VALUES (
-          ${cleaned}, ${contentHash}, ${"manual:/api/memory"}, ${machineId}, ${body.hostname},
-          ${body.repo ?? null}, ${body.harness}, ${body.agent ?? null}, ${body.session_id ?? null},
-          ${body.topics ?? []}, ${body.private ?? false}, ${sql.json({ direct_write: true } as never)}
+          ${cleaned}, ${contentHash}, ${"manual:/api/memory"}, ${machineId}, ${cleanedHostname},
+          ${cleanedRepo}, ${cleanedHarness}, ${cleanedAgent}, ${cleanedSessionId},
+          ${cleanedTopics}, ${body.private ?? false}, ${sql.json({ direct_write: true } as never)}
         )
         ON CONFLICT (content_sha256, machine_id) DO UPDATE
         SET content = EXCLUDED.content
@@ -256,8 +280,8 @@ app.post(
           ${captureId}, ${chunkId}, ${cleaned}, ${contentHash},
           ${EMBEDDER_MODEL}, to_tsvector('english', ${cleaned}),
           ${kind}, ${importance},
-          ${machineId}, ${body.repo ?? null}, ${body.harness}, ${body.agent ?? null},
-          ${body.topics ?? []}, ${body.private ?? false},
+          ${machineId}, ${cleanedRepo}, ${cleanedHarness}, ${cleanedAgent},
+          ${cleanedTopics}, ${body.private ?? false},
           ${sql.json(meta as never)}
         )
         ON CONFLICT (chunk_id) DO UPDATE
@@ -278,9 +302,13 @@ app.post(
       return { id: memId, created };
     });
 
-    Logger.info(
-      `memory: id=${result.id} ${result.created ? "created" : "updated"} kind=${kind} pinned=${pinned} repo=${body.repo ?? "-"} chars=${cleaned.length}`,
-    );
+    Logger.info(result.created ? "memory created" : "memory updated", {
+      id: result.id,
+      kind,
+      pinned,
+      repo: cleanedRepo ?? "-",
+      chars: cleaned.length,
+    });
     return c.json({ id: result.id, created: result.created, pinned });
   },
 );

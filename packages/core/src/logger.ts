@@ -21,7 +21,14 @@ export function configureLogger(opts: {
   if (opts.minLevel !== undefined) minLevel = opts.minLevel;
 }
 
-function emit(level: Level, message: string, error?: unknown): void {
+type Meta = Record<string, unknown>;
+
+function emit(
+  level: Level,
+  message: string,
+  error?: unknown,
+  meta?: Meta,
+): void {
   if (LEVEL_RANK[level] < LEVEL_RANK[minLevel]) return;
 
   const ctx = storage.getStore();
@@ -48,12 +55,16 @@ function emit(level: Level, message: string, error?: unknown): void {
   // which made every INFO line render red on Railway.)
   const stream = level === "warn" || level === "error" ? process.stderr : process.stdout;
   if (jsonMode) {
+    // Meta keys are spread top-level so Railway parses them as searchable
+    // attributes (e.g. `attributes.repo`, `attributes.source`) rather than
+    // jamming them into the message string.
     const record: Record<string, unknown> = {
       ts: new Date(ts).toISOString(),
       level: level.toUpperCase(),
       message,
       traceId,
       spanId,
+      ...(meta ?? {}),
     };
     if (error instanceof Error) {
       record.error = {
@@ -70,7 +81,13 @@ function emit(level: Level, message: string, error?: unknown): void {
     const lvlPad = level.toUpperCase().padEnd(5);
     const tracePart = traceId ? `[${traceId.slice(0, 8)}] ` : "";
     const errPart = errStr ? ` :: ${errStr}` : "";
-    stream.write(`${t} ${lvlPad} ${tracePart}${message}${errPart}\n`);
+    const metaPart =
+      meta && Object.keys(meta).length
+        ? ` ${Object.entries(meta)
+            .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+            .join(" ")}`
+        : "";
+    stream.write(`${t} ${lvlPad} ${tracePart}${message}${metaPart}${errPart}\n`);
     // For ERROR with a real Error, print the stack on continuation lines so
     // local debugging gets the call site without flipping to JSON mode.
     if (level === "error" && error instanceof Error && error.stack) {
@@ -85,8 +102,8 @@ function emit(level: Level, message: string, error?: unknown): void {
 }
 
 export const Logger = {
-  debug: (msg: string): void => emit("debug", msg),
-  info: (msg: string): void => emit("info", msg),
-  warn: (msg: string, err?: unknown): void => emit("warn", msg, err),
-  error: (msg: string, err?: unknown): void => emit("error", msg, err),
+  debug: (msg: string, meta?: Meta): void => emit("debug", msg, undefined, meta),
+  info: (msg: string, meta?: Meta): void => emit("info", msg, undefined, meta),
+  warn: (msg: string, err?: unknown, meta?: Meta): void => emit("warn", msg, err, meta),
+  error: (msg: string, err?: unknown, meta?: Meta): void => emit("error", msg, err, meta),
 };
