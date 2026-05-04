@@ -19,11 +19,14 @@ WHERE archived_at IS NULL
   AND (meta->>'shadow_of') IS NULL
   AND (meta->>'superseded_by') IS NULL
 ORDER BY
-  0.6 * (1 - (embedding <=> embed('the user query'))) +
-  0.4 * ts_rank(tsv, websearch_to_tsquery('english', 'the user query'))
+  0.55 * (1 - (embedding <=> embed('the user query'))) +
+  0.35 * ts_rank(tsv, websearch_to_tsquery('english', 'the user query')) +
+  0.10 * exp(-extract(epoch from (now() - created_at)) / 86400.0 / 7)
 DESC
 LIMIT 8;
 ```
+
+The third term is a recency boost — recent memories get up to +0.10, decaying with a 7-day half-life-ish curve. Old strongly-relevant memories still win on topic, but recent context stops getting buried under matches from weeks ago.
 
 Then **read the rows and answer the user's question naturally**, like a colleague who just looked something up. The user wants understanding, not a database dump.
 
