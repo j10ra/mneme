@@ -43,7 +43,10 @@ function emit(level: Level, message: string, error?: unknown): void {
     store.pushLog({ traceId, spanId, level, message: fullMessage, ts });
   }
 
-  // Always write to stderr (stdout reserved for any future MCP stdio transport).
+  // INFO/DEBUG → stdout, WARN/ERROR → stderr. Lets Railway/Docker/k8s log
+  // viewers colorize by severity correctly. (Earlier this was all-stderr,
+  // which made every INFO line render red on Railway.)
+  const stream = level === "warn" || level === "error" ? process.stderr : process.stdout;
   if (jsonMode) {
     const record: Record<string, unknown> = {
       ts: new Date(ts).toISOString(),
@@ -61,13 +64,13 @@ function emit(level: Level, message: string, error?: unknown): void {
     } else if (error !== undefined) {
       record.error = String(error);
     }
-    process.stderr.write(`${JSON.stringify(record)}\n`);
+    stream.write(`${JSON.stringify(record)}\n`);
   } else {
     const t = new Date(ts).toISOString().slice(11, 23);
     const lvlPad = level.toUpperCase().padEnd(5);
     const tracePart = traceId ? `[${traceId.slice(0, 8)}] ` : "";
     const errPart = errStr ? ` :: ${errStr}` : "";
-    process.stderr.write(`${t} ${lvlPad} ${tracePart}${message}${errPart}\n`);
+    stream.write(`${t} ${lvlPad} ${tracePart}${message}${errPart}\n`);
     // For ERROR with a real Error, print the stack on continuation lines so
     // local debugging gets the call site without flipping to JSON mode.
     if (level === "error" && error instanceof Error && error.stack) {
@@ -76,7 +79,7 @@ function emit(level: Level, message: string, error?: unknown): void {
         .slice(1) // drop the duplicate "Error: message" header
         .map((l) => `    ${l.trim()}`)
         .join("\n");
-      if (stackLines) process.stderr.write(`${stackLines}\n`);
+      if (stackLines) stream.write(`${stackLines}\n`);
     }
   }
 }
