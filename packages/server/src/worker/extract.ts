@@ -139,6 +139,10 @@ export const runExtractOnce = mnemeFn(
     );
 
     // ── Phase 2: LLM call (NO tx held) ─────────────────────────────────
+    Logger.info(
+      `extract: calling LLM (${jobIds.length} capture(s), ${concatenated.length} chars)…`,
+    );
+    const t0 = Date.now();
     let observations: Observation[];
     try {
       observations = await extractObservations(concatenated);
@@ -148,7 +152,8 @@ export const runExtractOnce = mnemeFn(
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      Logger.error(`extract failed for ${jobIds.length} job(s)`, e);
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+      Logger.error(`extract failed for ${jobIds.length} job(s) after ${elapsed}s`, e);
       await sql`
         UPDATE ingest_jobs
         SET state = 'error',
@@ -218,10 +223,11 @@ export const runExtractOnce = mnemeFn(
       return n;
     });
 
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     Logger.info(
       `extract: ${jobIds.length} capture(s) → ${observations.length} observation(s) → ${inserted} new memor${
         inserted === 1 ? "y" : "ies"
-      }`,
+      } (${elapsed}s)`,
     );
     return { didWork: true };
   },
