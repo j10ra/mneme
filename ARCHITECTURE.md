@@ -149,18 +149,21 @@ flowchart TD
     class SF surface
 ```
 
-### Stack (as of v1.0.11)
+### Stack (as of v1.0.13)
+
+Mneme is **provider-agnostic for LLM and embeddings**. Concrete implementations live under `packages/server/src/llm/<name>.ts` and `embedder/<name>.ts`; `index.ts` in each directory routes via `LLM_PROVIDER` / `EMBEDDER_PROVIDER` env vars. Today only one concrete provider is wired (`local`), pointing at a self-hosted homelab box.
 
 | Layer | Choice | Cost (personal) | Notes |
 |---|---|---|---|
 | Storage | Supabase (Postgres + pgvector + tsvector) | Free tier | 60 connections, 500MB; pooler endpoint available if direct port saturates |
-| Embeddings | **Voyage `voyage-code-3`** (1024-dim) | $0 (200M tokens lifetime free, ~1.8 yr at our rate) | Code-tuned. `chunk_id = sha256(content_hash + ":" + embedding_model)` makes re-embedding under a different model collision-safe (new rows, old rows untouched). |
-| Extraction LLM | **Groq `openai/gpt-oss-20b`** (strict `json_schema` mode) | $0 (free tier: 20 RPM / 200 RPD without credits, 1000 RPD with $10 deposited once) | Strict JSON schema enforcement — no free-form text. `temperature: 0.2`, `max_completion_tokens: 2048`. Provider-agnostic interface in `packages/server/src/groq.ts` makes the swap one env var. |
-| Worker host | Railway Hobby (planned — local for now) | $5/mo when shipped | Same Bun process as Hono server, no sidecar |
+| Embeddings | **`local` provider** → HuggingFace TEI on homelab serving `BAAI/bge-large-en-v1.5` (1024-dim native) | $0 ongoing (one-time hardware) | Drop-in for the original Voyage-tuned schema (same `vector(1024)` column). `chunk_id = sha256(content_hash + ":" + embedding_model)` makes model swaps collision-safe. |
+| Extraction LLM | **`local` provider** → Ollama on homelab serving `qwen2.5:7b-instruct-q4_K_M` (OpenAI-compatible streaming) | $0 ongoing | Streaming response (`stream: true` + SSE consumer) avoids Cloudflare 524 timeouts on slow generations. JSON output via `response_format: { type: "json_object" }`. 10-minute client-side timeout; typical extraction is 30-180s. |
+| Edge | Caddy reverse proxy + Cloudflare Tunnel (named or quick) | $0 | Bearer-auth gate at Caddy. Container ports bind `127.0.0.1` only — VM exposes nothing publicly. |
+| Worker host | Bun process running locally / on Railway | $0-5/mo | Same Bun process as Hono server, no sidecar. Worker singleton pinned to `globalThis` so `bun --hot` reloads don't multiply loops. |
 | Read interface | MCP (one tool) + a skill | included | `mneme.sql` reads via `mneme_reader` Postgres role |
-| **Total** | | **$0/mo today, ~$5/mo on Railway** | |
+| **Total** | | **$0/mo today** | Boss runs the homelab on existing hardware; only ongoing expense is electricity. |
 
-See §13.1 for migration paths (cheaper, better, or self-hosted alternatives).
+See §13.1 for the menu of swap-in providers (Groq, OpenRouter, Anthropic, Voyage, OpenAI) and migration mechanics.
 
 ---
 
@@ -1176,28 +1179,39 @@ Once registered (Phase 4.1), the **first `SessionStart` in any project automatic
 
 Re-embed migration (one-time when switching embedding model): see §13.1.
 
-### 13.1 Migration paths — current models & future swaps
+### 13.1 Provider abstraction & migration paths
 
-The architecture is built so any LLM or embedding model can be swapped with minimal blast radius. Two interfaces, two env vars, no schema migrations needed beyond a possible `vector(N)` dim change.
+Mneme treats LLM and embeddings as pluggable backends. Each lives behind a tiny interface:
+
+```
+packages/server/src/
+├── llm/
+│   ├── types.ts       Kind, Observation, KINDS (provider-agnostic shape)
+│   ├── prompt.ts      shared SYSTEM_PROMPT
+│   ├── local.ts       OpenAI-compat streaming client (today: homelab Ollama)
+│   └── index.ts       picks provider via LLM_PROVIDER env var
+└── embedder/
+    ├── local.ts       TEI client (today: homelab bge-large-en-v1.5)
+    └── index.ts       picks provider via EMBEDDER_PROVIDER env var
+```
+
+**Adding a new provider** is one new file + one entry in the `index.ts` providers map. No other code changes. Switching providers is one env var change at runtime.
 
 #### Extraction LLM
 
-Today: `openai/gpt-oss-20b` on Groq. Strict `json_schema` mode is critical — Llama models on Groq only support `json_object` (best-effort), which fails our extraction reliability bar.
+Today: `local` provider → homelab Ollama serving `qwen2.5:7b-instruct-q4_K_M`. OpenAI-compatible chat completions endpoint via Caddy reverse proxy + Cloudflare Tunnel + Bearer auth. Streaming responses required to bypass Cloudflare's 100s idle timeout on slow generations.
 
-| Direction | Model | Tradeoff |
+| Direction | Provider/model | Tradeoff |
 |---|---|---|
-| **Higher quality** (paid Groq tier or fallback) | `openai/gpt-oss-120b` (Groq) — strict json_schema, larger model | Better extraction. Free-tier TPM is tight (8K/min) — saw 413 errors at v1.0.4 with coalesced inputs; mitigated by 1500-char/capture, 6000-char/window caps. |
-| **Cheaper fallback** if Groq goes down | `meta-llama/llama-4-scout-17b-16e-instruct` (Groq) — best-effort json_schema | Smaller model, more JSON malformations, higher retry burden |
-| **Different provider** | OpenRouter free Gemma 4 31B (`google/gemma-4-31b-it:free`) — 256K context, structured output | Lower RPD (50/day without credits, 1000/day with $10 deposited) but route-resilient |
-| **Self-hosted** | Ollama local (`qwen2.5-coder:14b` or larger) | Truly free + private; CPU/GPU bound; need the host to be always-on (defeats centralised-server design unless server box runs Ollama too) |
-
-Swap is a one-line `GROQ_MODEL` change in `packages/server/src/groq.ts` if same provider, or a new client module + `LLM_PROVIDER` env var.
+| **Bigger local** | Stay on `local`, set `LLM_MODEL=qwen2.5:14b-instruct-q4_K_M` (or 32b) | Better extraction, slower (3-10 min/call), needs more RAM (16+ GB for 14B Q4). VPS upgrade required. |
+| **Hosted fallback** | Add `groq.ts` provider — Groq `openai/gpt-oss-20b` strict json_schema | Free 200 RPD / 1000 RPD with $10 deposit. Account-wide quota means only useful as a backup, not primary. |
+| **Hosted high-RPD** | Add `openrouter.ts` provider — OpenRouter `google/gemma-4-31b-it:free` strict json_schema | 50/1000 RPD depending on credit, route-resilient. Pay-per-token paid models also available behind same client. |
+| **Anthropic / OpenAI / Mistral / etc.** | New provider file under `llm/` | Same OpenAI-compat shape; just point at their `/v1/chat/completions`. Premium quality, $$$ at our volume. |
+| **Round-robin** | A `multi.ts` provider that wraps several backends | Useful for resiliency: try local first, fall back to a cloud free tier if local is down. ~50 lines of code. |
 
 #### Embeddings
 
-Today: Voyage `voyage-code-3` (1024-dim, code-tuned). Best code-retrieval quality available at $0 for our volume.
-
-The 200M-token lifetime free tier is enormous — at ~300 tokens/memory and ~1000 memories/day across all 3 machines, that's ~1.8 years of runway. We almost certainly won't hit it before either upgrading or self-hosting.
+Today: `local` provider → homelab TEI serving `BAAI/bge-large-en-v1.5` (1024-dim native). Drops in for the original Voyage-tuned `vector(1024)` schema — no migration needed when we made the switch in v1.0.13.
 
 | Direction | Model | Dim | Cost/notes |
 |---|---|---|---|

@@ -1,6 +1,6 @@
 import { Logger, mnemeFn } from "@mneme/core";
 import { sql } from "../db.ts";
-import { embedBatch } from "../voyage.ts";
+import { embedBatch } from "../embedder/index.ts";
 
 const BATCH_SIZE = 32;
 
@@ -13,7 +13,7 @@ type LockedRow = {
 export type EmbedResult = { didWork: boolean; pauseMs?: number };
 
 /** Run one embed cycle: lock up to BATCH_SIZE queued embed jobs, batch-call
- *  Voyage, write embeddings, mark done. */
+ *  the configured embedder, write embeddings, mark done. */
 export const runEmbedOnce = mnemeFn(
   "worker.embed.once",
   async (): Promise<EmbedResult> => {
@@ -48,16 +48,6 @@ export const runEmbedOnce = mnemeFn(
         vectors = await embedBatch(texts);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        // Voyage 429: re-queue without burning attempt, pause briefly.
-        if (msg.includes("429")) {
-          await tx`
-            UPDATE ingest_jobs
-            SET state = 'queued', started_at = NULL, attempts = GREATEST(0, attempts - 1)
-            WHERE id = ANY(${jobIds})
-          `;
-          Logger.warn(`embed rate-limited (${jobIds.length} job(s) re-queued, sleeping 30s)`);
-          return { didWork: false, pauseMs: 30_000 };
-        }
         Logger.error(`embed batch failed for ${jobIds.length} job(s)`, e);
         await tx`
           UPDATE ingest_jobs

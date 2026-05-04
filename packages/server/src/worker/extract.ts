@@ -1,15 +1,12 @@
 import { Logger, mnemeFn } from "@mneme/core";
 import { sha256Hex, sql } from "../db.ts";
-import {
-  GroqRateLimitError,
-  extractObservations,
-  type Observation,
-} from "../groq.ts";
-import { VOYAGE_MODEL } from "../voyage.ts";
+import { EMBEDDER_MODEL } from "../embedder/index.ts";
+import { extractObservations, type Observation } from "../llm/index.ts";
 
 const COALESCE_WINDOW = "5 minutes";
-// Conservative caps to stay under Groq free-tier TPM (8000/min on gpt-oss-20b).
-// Each char ≈ 0.25 tokens; system prompt + output reserves ~2000 tokens.
+// Caps on prompt size — keeps the LLM input within typical context windows
+// regardless of provider (qwen2.5 32K context, gpt-oss-20b 8K TPM-safe, etc.)
+// and bounds extraction latency on slower local models.
 const MAX_CHARS_PER_CAPTURE = 1500;
 const MAX_TOTAL_CHARS = 6000;
 
@@ -105,18 +102,6 @@ export const runExtractOnce = mnemeFn(
       try {
         observations = await extractObservations(concatenated);
       } catch (e) {
-        if (e instanceof GroqRateLimitError) {
-          // Don't burn an attempt — restore to queued and let the loop sleep.
-          await tx`
-            UPDATE ingest_jobs
-            SET state = 'queued', started_at = NULL, attempts = GREATEST(0, attempts - 1)
-            WHERE id = ANY(${jobIds})
-          `;
-          Logger.warn(
-            `extract rate-limited (${jobIds.length} job(s) re-queued, sleeping ${e.retryAfterMs}ms)`,
-          );
-          return { didWork: false, pauseMs: e.retryAfterMs };
-        }
         const msg = e instanceof Error ? e.message : String(e);
         Logger.error(`extract failed for ${jobIds.length} job(s)`, e);
         await tx`
@@ -132,7 +117,7 @@ export const runExtractOnce = mnemeFn(
         const content = obs.content.trim();
         if (!content) continue;
         const contentHash = await sha256Hex(content);
-        const chunkId = await sha256Hex(`${contentHash}:${VOYAGE_MODEL}`);
+        const chunkId = await sha256Hex(`${contentHash}:${EMBEDDER_MODEL}`);
         const importance = Math.max(0.1, Math.min(1, obs.importance));
         const meta = {
           source_capture_ids: captureIds,
@@ -149,7 +134,7 @@ export const runExtractOnce = mnemeFn(
           )
           VALUES (
             ${seed.capture_id}, ${chunkId}, ${content}, ${contentHash},
-            ${VOYAGE_MODEL}, to_tsvector('english', ${content}),
+            ${EMBEDDER_MODEL}, to_tsvector('english', ${content}),
             ${obs.kind}, ${importance},
             ${seed.machine_id}, ${seed.repo}, ${seed.harness}, ${seed.agent},
             ${obs.topics ?? []}, ${seed.private},
