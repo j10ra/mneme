@@ -11,10 +11,11 @@ import { KINDS, type Observation } from "./types.ts";
 const URL = process.env.LLM_URL ?? "";
 const BEARER = process.env.LLM_BEARER ?? process.env.AUTH_BEARER ?? "";
 const MODEL = process.env.LLM_MODEL ?? "qwen2.5:3b-instruct-q4_K_M";
-// 90s — slightly under Cloudflare's 100s "no data from origin" window. A real
-// warm extract on qwen2.5:3b finishes in 3-15s; cold-load failures get
-// cancelled fast instead of holding the homelab CPU for 2+ minutes.
-const TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 90_000);
+// 120s — covers warm 3B at 11.6 tok/s through the full 1450-token prompt +
+// 500-token generation (~77s expected, ~110s on edge cases). CF only cares
+// about gaps between SSE chunks (under its ~100s no-data window), not total
+// duration; once generation starts streaming, longer total times are fine.
+const TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 120_000);
 
 type StreamChunk = {
   choices?: Array<{ delta?: { content?: string } }>;
