@@ -9,10 +9,14 @@ const COALESCE_WINDOW = "5 minutes";
 // a single LLM call, multiplying the blast radius of any provider failure.
 const MAX_SIBLINGS = 10;
 // Caps on prompt size — keeps the LLM input within typical context windows
-// regardless of provider (qwen2.5 32K context, gpt-oss-20b 8K TPM-safe, etc.)
-// and bounds extraction latency on slower local models.
+// regardless of provider and, more importantly, keeps prompt processing
+// time short. On a CPU-only homelab box at ~30-50 tok/s prompt throughput,
+// a 6000-char prompt was 45-75s of silent processing before any SSE chunk
+// flowed; that pushed cycles past the 90s client timeout AND risked CF
+// 524s (no-data window). 3000 chars ≈ ~750 user tokens, processed in
+// ~15-25s on 3B, well inside the streaming budget.
 const MAX_CHARS_PER_CAPTURE = 1500;
-const MAX_TOTAL_CHARS = 6000;
+const MAX_TOTAL_CHARS = 3000;
 // A 'running' job older than this is treated as crashed mid-flight and
 // re-eligible. Bounded by the LLM TIMEOUT_MS plus headroom.
 const STALE_RUNNING = "15 minutes";
