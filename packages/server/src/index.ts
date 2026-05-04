@@ -214,6 +214,6 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 
 startWorker();
 
-process.stderr.write(`mneme server listening on :${port}\n`);
+Logger.info(`mneme server listening on :${port}`);
 
 export default { port, fetch: app.fetch };
