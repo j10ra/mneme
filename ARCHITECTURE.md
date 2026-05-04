@@ -507,21 +507,31 @@ sequenceDiagram
     MCP-->>Agent: result set
 ```
 
-**Default hybrid recall** (the skill teaches this template):
+**Default hybrid recall** (the `/mneme:recall` slash command runs this template, parameterised):
 
 ```sql
-SELECT id, content, kind, repo, captured_at := created_at, importance,
-       0.6 * (1 - (embedding <=> embed($1))) +
-       0.4 * ts_rank(tsv, websearch_to_tsquery('english', $1)) AS score
+SELECT id, content, kind, repo, importance, created_at
 FROM memories
 WHERE archived_at IS NULL
   AND (private = false OR machine_id = $2)
+  AND (meta->>'shadow_of') IS NULL
   AND (meta->>'superseded_by') IS NULL
-ORDER BY score DESC
-LIMIT 10;
+ORDER BY
+  0.55 * (1 - (embedding <=> embed($1))) +
+  0.35 * ts_rank(tsv, websearch_to_tsquery('english', $1)) +
+  0.10 * exp(-extract(epoch from (now() - created_at)) / 86400.0 / 7)
+DESC
+LIMIT 8;
 ```
 
-The `/recall <query>` slash command runs this template, parameterized.
+Three-component score: cosine semantic similarity (55%), keyword `ts_rank` (35%), and an exponential recency boost with a 7-day characteristic period (10%). Older strong matches still win on topic, but recent context gets a fair lane against deep history.
+
+**What recall doesn't use yet:**
+- `importance` is computed and decayed by nap but not factored into the recall score directly. Surface (§6.6) uses it heavily; recall doesn't. Adding `+ 0.05 * importance` would tilt scores toward higher-importance memories at retrieval time. Not done — current recall feels topical enough without it; revisit if recall surfaces low-importance noise.
+- `meta.related_to` (Phase B nap output) isn't used in scoring yet. Two natural evolutions when the relation graph fills out:
+  1. **Neighbour boost** — bump a memory's rank when its `related_to` ids also appear in the result set (mutual reinforcement: a 4-memory cluster where 3 are matching pulls the 4th up).
+  2. **Render alongside** — when a memory hits the top-N, fetch its `related_to` ids and render them as context-adjacent suggestions so the agent sees the cluster, not just the centroid.
+  Worth adding once we have user signal that recall is missing nearby context. Today, top-8 hybrid + recency is sufficient.
 
 ### 6.6 SessionStart lifecycle (registration + surface)
 
@@ -1151,14 +1161,15 @@ Once registered (Phase 4.1), the **first `SessionStart` in any project automatic
 
 **Done when:** a single recall returns mostly signal, not self-referential agent meta. ✓ Verified by archiving 16 noise rows + bulk-deleting 51 captures + 21 memories tagged `dir:observer-sessions`.
 
-### Phase 5 — Nap
+### Phase 5 — Nap (v1.0.15 shipped)
 **Goal:** quiet importance management.
-- [ ] pg_cron 6h job invoking `mneme.nap()` SQL function
-- [ ] Exp decay on importance with τ = 30 days
-- [ ] Pin floor for `meta.pinned = true`
-- [ ] Near-dup detection writing `meta.related_to`
+- [x] **Server-worker scheduler** (chosen over pg_cron): `_ops.worker_runs` table + `worker/scheduler.ts` module. Time-driven jobs (nap, keepalive, eventually dream) register `(name, scheduleMs, runFn)`; a single coordinator wakes every 60s, fires due jobs, persists `last_run_at`/`next_run_at`/`status`/`duration` per job. Restart-safe (Railway redeploys don't reset the schedule), inspectable via `mneme.sql` against `_ops.worker_runs`, and the same pattern picks up dream when it lands.
+- [x] **Decay with asymmetric floors** (replaces the originally-planned "pin floor"). Per-cycle multiplicative `importance *= exp(-1/120)` (≈0.9917) so τ=30 days at 4 naps/day. Pinned memories floor at `PIN_FLOOR=0.5`; unpinned at `FLOOR=0.05`. Asymmetric floor preserves pin's meaning (always in the high zone) while letting fresh pins outrank stale ones via natural decay.
+- [x] **Exact-text shadows.** Per `content_hash` group, keep the highest-importance row; rest get `meta.shadow_of=<keeper>` and importance ×0.1. Recall query already filters `(meta->>'shadow_of') IS NULL`.
+- [x] **Semantic relations** (Phase B, originally deferred). LATERAL JOIN over the HNSW index finds ≤5 same-repo nearest neighbors at cosine distance < 0.15 for each recent or never-processed memory. Mutual update — a→b implies b→a — so old memories get linked when new neighbors appear without re-seeding. First-run cost on 612 memories: 4.6s, 107 memories linked, avg 1.44 neighbors. Recall doesn't yet score on `related_to`; that's a future evolution (see §6.5 "What recall doesn't use yet").
+- [x] **Beyond the original spec — ingest job retry policy.** The same 6h nap cycle now handles ingest_job lifecycle: transient failures (HTTP 5xx, timeout, tunnel, ECONNRESET) older than 1h grace get reset to `queued, attempts=0`; non-transient failures older than 24h grace move to terminal `state='dead'`. Captures are immutable — only jobs retry. State machine: `queued → running → done` (happy), `→ error → queued` (retry under attempts cap), `→ error → dead` (terminal) or `→ error → queued (by nap)` (transient resurrection). See §6.3.
 
-**Done when:** untouched memories visibly fade over a week, pinned ones do not, and `meta.related_to` populates for similar items.
+**Done when:** untouched memories visibly fade over a week, pinned ones stay above 0.5, `meta.related_to` populates for similar items, and stuck transient failures self-resurrect within 1h instead of needing manual SQL. ✓ Verified locally — first nap pass decayed 612 memories cleanly (math: max 1.0 → 0.9917) and linked 107 via semantic NN.
 
 ### Phase 6 — Dream
 **Goal:** consolidation that surfaces in recall.
