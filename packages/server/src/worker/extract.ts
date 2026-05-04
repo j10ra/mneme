@@ -14,8 +14,19 @@ const MAX_SIBLINGS = 10;
 const MAX_CHARS_PER_CAPTURE = 1500;
 const MAX_TOTAL_CHARS = 6000;
 // A 'running' job older than this is treated as crashed mid-flight and
-// re-eligible. Bounded by the LLM TIMEOUT_MS (10 min) plus headroom.
+// re-eligible. Bounded by the LLM TIMEOUT_MS plus headroom.
 const STALE_RUNNING = "15 minutes";
+
+// Circuit breaker — when the LLM is down or saturated, stop generating load
+// so the upstream can recover. After FAILURE_THRESHOLD consecutive cycle
+// failures, pause the worker for BREAKER_PAUSE_MS. The first success after
+// reopen resets the counter. This complements the per-job backoff: per-job
+// backoff staggers retries of the same captures, the breaker stops *new*
+// captures (attempts=0) from piling fresh load onto a failing endpoint.
+const FAILURE_THRESHOLD = 3;
+const BREAKER_PAUSE_MS = 5 * 60_000;
+let consecutiveFailures = 0;
+let breakerOpenUntil = 0;
 
 function clip(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
@@ -45,6 +56,12 @@ type LockedRow = {
 export const runExtractOnce = mnemeFn(
   "worker.extract.once",
   async (): Promise<ExtractResult> => {
+    // Circuit breaker — short-circuit if the LLM has been failing.
+    const now = Date.now();
+    if (now < breakerOpenUntil) {
+      return { didWork: false, pauseMs: breakerOpenUntil - now };
+    }
+
     // ── Phase 1: lock (short tx) ───────────────────────────────────────
     const locked = await sql.begin(async (tx) => {
       const seeds = await tx<{ job_id: string; capture_id: string; session_id: string | null; captured_at: Date }[]>`
@@ -125,6 +142,10 @@ export const runExtractOnce = mnemeFn(
     let observations: Observation[];
     try {
       observations = await extractObservations(concatenated);
+      if (consecutiveFailures > 0) {
+        Logger.info(`extract: circuit breaker recovered (${consecutiveFailures} prior failures)`);
+        consecutiveFailures = 0;
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       Logger.error(`extract failed for ${jobIds.length} job(s)`, e);
@@ -133,9 +154,17 @@ export const runExtractOnce = mnemeFn(
         SET state = 'error',
             error = ${msg},
             finished_at = now(),
-            scheduled_at = now() + (attempts * interval '30 seconds')
+            scheduled_at = now() + (attempts * interval '2 minutes')
         WHERE id = ANY(${jobIds})
       `;
+      consecutiveFailures++;
+      if (consecutiveFailures >= FAILURE_THRESHOLD) {
+        breakerOpenUntil = Date.now() + BREAKER_PAUSE_MS;
+        Logger.warn(
+          `extract: circuit breaker open for ${BREAKER_PAUSE_MS / 60_000}min after ${consecutiveFailures} consecutive failures`,
+        );
+        consecutiveFailures = 0;
+      }
       return { didWork: true };
     }
 

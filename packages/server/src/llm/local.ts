@@ -11,7 +11,10 @@ import { KINDS, type Observation } from "./types.ts";
 const URL = process.env.LLM_URL ?? "";
 const BEARER = process.env.LLM_BEARER ?? process.env.AUTH_BEARER ?? "";
 const MODEL = process.env.LLM_MODEL ?? "qwen2.5:7b-instruct-q4_K_M";
-const TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 600_000); // 10 min default
+// 90s — slightly under Cloudflare's 100s "no data from origin" window. A real
+// warm extract on qwen2.5:7b finishes in 5-30s; cold-load failures get
+// cancelled fast instead of holding the homelab CPU for 2+ minutes.
+const TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 90_000);
 
 type StreamChunk = {
   choices?: Array<{ delta?: { content?: string } }>;
