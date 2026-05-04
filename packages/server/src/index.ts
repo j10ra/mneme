@@ -10,6 +10,8 @@ import {
   requireAuth,
 } from "@mneme/core";
 import { sql, sha256Hex } from "./db.ts";
+import { EMBEDDER_MODEL } from "./embedder/index.ts";
+import { KINDS, type Kind } from "./llm/index.ts";
 import { handleHttp as handleMcp } from "./mcp.ts";
 import { scrub, scrubData } from "./scrub.ts";
 import { buildSurface } from "./surface.ts";
@@ -152,6 +154,117 @@ app.post(
     }
 
     return c.json({ id, deduped });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/memory — write, scope=capture
+// Direct-write a memory bypassing the extract worker. Used by /mneme:pin
+// (pinned=true) and any future "agent-resolved-fact" slash that wants to
+// land a clean self-contained sentence as a memory immediately rather than
+// posting raw text and waiting for the extractor. Creates a synthetic
+// capture row for provenance, inserts the memory referencing it, and
+// enqueues an embed job. On chunk_id conflict (same content + same embedder)
+// merges meta into the existing row so re-pinning the same fact is a no-op
+// upsert rather than a duplicate.
+// ---------------------------------------------------------------------------
+type MemoryBody = {
+  content: string;
+  kind?: Kind;
+  importance?: number;
+  pinned?: boolean;
+  machine_id: string;
+  hostname: string;
+  repo?: string | null;
+  harness: string;
+  agent?: string | null;
+  session_id?: string | null;
+  topics?: string[];
+  private?: boolean;
+};
+
+app.post(
+  "/api/memory",
+  mnemeRoute("api.memory"),
+  requireAuth("capture"),
+  async (c) => {
+    const body = (await c.req.json()) as MemoryBody;
+    if (!body.content || typeof body.content !== "string") {
+      return c.json({ error: "content required" }, 400);
+    }
+    if (!body.machine_id) return c.json({ error: "machine_id required" }, 400);
+    if (!body.hostname) return c.json({ error: "hostname required" }, 400);
+    if (!body.harness) return c.json({ error: "harness required" }, 400);
+
+    const cleaned = scrub(body.content).trim();
+    if (!cleaned) return c.json({ error: "content empty after scrub" }, 400);
+
+    const kind = body.kind && (KINDS as readonly string[]).includes(body.kind) ? body.kind : "note";
+    const importance = Math.max(0.1, Math.min(1, body.importance ?? 1.0));
+    const pinned = body.pinned ?? false;
+
+    const contentHash = await sha256Hex(cleaned);
+    const chunkId = await sha256Hex(`${contentHash}:${EMBEDDER_MODEL}`);
+    const meta = { pinned, source_slash: true };
+
+    const result = await sql.begin(async (tx) => {
+      // Synthetic capture for provenance. Distinguishable from hook-driven
+      // captures via source. Re-running with the same content dedups via
+      // (content_sha256, machine_id) — same as /api/capture.
+      const [capRow] = await tx<{ id: string }[]>`
+        INSERT INTO captures (
+          content, content_sha256, source, machine_id, hostname,
+          repo, harness, agent, session_id, topics, private, raw_meta
+        )
+        VALUES (
+          ${cleaned}, ${contentHash}, ${"manual:/api/memory"}, ${body.machine_id}, ${body.hostname},
+          ${body.repo ?? null}, ${body.harness}, ${body.agent ?? null}, ${body.session_id ?? null},
+          ${body.topics ?? []}, ${body.private ?? false}, ${sql.json({ direct_write: true } as never)}
+        )
+        ON CONFLICT (content_sha256, machine_id) DO UPDATE
+        SET content = EXCLUDED.content
+        RETURNING id
+      `;
+      const captureId = capRow!.id;
+
+      const memRows = await tx<{ id: string; created: boolean }[]>`
+        INSERT INTO memories (
+          capture_id, chunk_id, content, content_hash,
+          embedding_model, tsv,
+          kind, importance,
+          machine_id, repo, harness, agent, topics, private,
+          meta
+        )
+        VALUES (
+          ${captureId}, ${chunkId}, ${cleaned}, ${contentHash},
+          ${EMBEDDER_MODEL}, to_tsvector('english', ${cleaned}),
+          ${kind}, ${importance},
+          ${body.machine_id}, ${body.repo ?? null}, ${body.harness}, ${body.agent ?? null},
+          ${body.topics ?? []}, ${body.private ?? false},
+          ${sql.json(meta as never)}
+        )
+        ON CONFLICT (chunk_id) DO UPDATE
+        SET meta = memories.meta || ${sql.json(meta as never)},
+            importance = GREATEST(memories.importance, EXCLUDED.importance)
+        RETURNING id, (xmax = 0) AS created
+      `;
+      const memId = memRows[0]!.id;
+      const created = memRows[0]!.created;
+
+      if (created) {
+        await tx`
+          INSERT INTO ingest_jobs (memory_id, phase, state)
+          VALUES (${memId}, 'embed', 'queued')
+        `;
+      }
+
+      return { id: memId, created };
+    });
+
+    Logger.info(
+      `memory: id=${result.id} ${result.created ? "created" : "updated"} kind=${kind} pinned=${pinned} repo=${body.repo ?? "-"} chars=${cleaned.length}`,
+    );
+    return c.json({ id: result.id, created: result.created, pinned });
   },
 );
 

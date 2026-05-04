@@ -46,6 +46,32 @@ async function postCapture(
   return (await resp.json()) as CaptureResult;
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type MemoryResult = { id: string; created: boolean; pinned: boolean };
+
+async function postMemory(
+  cfg: MnemeConfig,
+  body: Record<string, unknown>,
+): Promise<MemoryResult> {
+  const resp = await fetch(serverUrl(cfg, "/api/memory"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.auth.key}`,
+      "X-Mneme-Source": "slash",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    throw new Error(
+      `POST /api/memory failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
+    );
+  }
+  return (await resp.json()) as MemoryResult;
+}
+
 async function memory(): Promise<void> {
   const text = await readStdin();
   if (!text) throw new Error("no memory text on stdin");
@@ -60,26 +86,51 @@ async function memory(): Promise<void> {
   );
 }
 
-async function pin(id: string, value: boolean): Promise<void> {
-  const verb = value ? "pin" : "unpin";
-  if (!id) throw new Error(`${verb} requires a memory id`);
-  const isUuid =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!isUuid.test(id)) {
+/** Pin: two paths.
+ *  - <uuid>  → actuate pin on existing memory (capture + raw_meta.kind=pin)
+ *  - <text>  → write a new pinned memory directly (POST /api/memory, pinned=true) */
+async function pin(input: string): Promise<void> {
+  if (!input) throw new Error("pin requires a memory id or fact text");
+  const cfg = loadConfig();
+
+  if (UUID_RE.test(input)) {
+    const r = await postCapture(cfg, {
+      ...baseScope(cfg),
+      source: "manual",
+      content: `pin ${input}`,
+      raw_meta: { kind: "pin", target: input, value: true },
+    });
+    console.log(`✓ pinned memory ${input} (request id ${r.id})`);
+    return;
+  }
+
+  const r = await postMemory(cfg, {
+    ...baseScope(cfg),
+    content: input,
+    kind: "note",
+    importance: 1.0,
+    pinned: true,
+  });
+  console.log(
+    `✓ ${r.created ? "wrote and pinned" : "re-pinned"} memory ${r.id}: "${input.slice(0, 80)}${input.length > 80 ? "…" : ""}"`,
+  );
+}
+
+async function unpin(input: string): Promise<void> {
+  if (!input) throw new Error("unpin requires a memory id");
+  if (!UUID_RE.test(input)) {
     throw new Error(
-      `${verb} requires a valid memory uuid (got: "${id}"). Use mneme.sql to find the id first.`,
+      `unpin requires a memory uuid (got: "${input}"). Use mneme.sql to search pinned memories first, then unpin by id.`,
     );
   }
   const cfg = loadConfig();
   const r = await postCapture(cfg, {
     ...baseScope(cfg),
     source: "manual",
-    content: `${value ? "pin" : "unpin"} ${id}`,
-    raw_meta: { kind: "pin", target: id, value },
+    content: `unpin ${input}`,
+    raw_meta: { kind: "pin", target: input, value: false },
   });
-  console.log(
-    `✓ ${value ? "pinned" : "unpinned"} memory ${id} (request id ${r.id})`,
-  );
+  console.log(`✓ unpinned memory ${input} (request id ${r.id})`);
 }
 
 async function setup(
@@ -142,10 +193,10 @@ async function main(): Promise<void> {
       await memory();
       return;
     case "pin":
-      await pin(process.argv[3] ?? "", true);
+      await pin(process.argv[3] ?? "");
       return;
     case "unpin":
-      await pin(process.argv[3] ?? "", false);
+      await unpin(process.argv[3] ?? "");
       return;
     default:
       console.error(`unknown subcommand: ${cmd}`);
