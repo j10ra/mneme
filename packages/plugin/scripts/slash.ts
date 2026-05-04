@@ -133,38 +133,59 @@ async function unpin(input: string): Promise<void> {
   console.log(`✓ unpinned memory ${input} (request id ${r.id})`);
 }
 
+type RegisterResponse = {
+  machine_id: string;
+  machine_name: string;
+  token: string;
+};
+
+/** Setup: POST /api/auth/register with admin password as bearer, get a fresh
+ *  per-machine token, write it to ~/.mneme/config.json. Existing config is
+ *  preserved for `projects[]` only — machine id/name/token are replaced with
+ *  what the server returns (this is a re-registration, not a merge). */
 async function setup(
   url: string,
-  key: string,
+  adminPassword: string,
   name?: string,
 ): Promise<void> {
   if (!url) throw new Error("server-url required");
-  if (!key) throw new Error("api-key required");
+  if (!adminPassword) throw new Error("admin-password required");
+
+  const baseUrl = url.replace(/\/$/, "");
+  const machineName =
+    name ?? hostname().toLowerCase().split(".")[0] ?? "unknown";
+
+  const resp = await fetch(`${baseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${adminPassword}`,
+    },
+    body: JSON.stringify({ machine_name: machineName }),
+  });
+  if (!resp.ok) {
+    const detail = (await resp.text()).slice(0, 200);
+    throw new Error(`POST /api/auth/register failed: ${resp.status} ${detail}`);
+  }
+  const reg = (await resp.json()) as RegisterResponse;
 
   const cfgDir = join(homedir(), ".mneme");
   const cfgPath = join(cfgDir, "config.json");
 
-  // Read existing config if present so we preserve machine.id across runs.
+  // Preserve only `projects[]` from any prior config — the rest is replaced.
   let existing: Partial<MnemeConfig> = {};
   if (existsSync(cfgPath)) {
     try {
       existing = JSON.parse(readFileSync(cfgPath, "utf8")) as Partial<MnemeConfig>;
     } catch {
-      // If existing is corrupt, overwrite with a fresh config.
+      // corrupt prior config — overwrite
     }
   }
 
-  const machineId = existing.machine?.id ?? crypto.randomUUID();
-  const machineName =
-    name ??
-    existing.machine?.name ??
-    hostname().toLowerCase().split(".")[0] ??
-    "unknown";
-
   const config: MnemeConfig = {
-    server: { url: url.replace(/\/$/, "") },
-    auth: { key },
-    machine: { id: machineId, name: machineName },
+    server: { url: baseUrl },
+    auth: { key: reg.token },
+    machine: { id: reg.machine_id, name: reg.machine_name },
     ...(existing.projects ? { projects: existing.projects } : {}),
   };
 
@@ -172,11 +193,72 @@ async function setup(
   writeFileSync(cfgPath, `${JSON.stringify(config, null, 2)}\n`);
   chmodSync(cfgPath, 0o600);
 
-  console.log("✓ wrote ~/.mneme/config.json (mode 600)");
+  console.log("✓ registered with mneme server");
   console.log(`  server:  ${config.server.url}`);
-  console.log(`  machine: ${machineName} (${machineId})`);
-  console.log(`  key:     ${key.slice(0, 22)}…`);
+  console.log(`  machine: ${reg.machine_name} (${reg.machine_id})`);
+  console.log(`  token:   ${reg.token.slice(0, 22)}…`);
+  console.log("✓ wrote ~/.mneme/config.json (mode 600)");
   console.log("\n  next step: /reload-plugins");
+}
+
+type MachineRow = {
+  id: string;
+  name: string;
+  machine_id: string | null;
+  scopes: string[];
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+};
+
+/** List registered machines. Admin password read from stdin to keep it off argv. */
+async function machines(): Promise<void> {
+  const adminPassword = await readStdin();
+  if (!adminPassword) throw new Error("admin password required on stdin");
+  const cfg = loadConfig();
+  const resp = await fetch(serverUrl(cfg, "/api/auth/machines"), {
+    headers: { Authorization: `Bearer ${adminPassword}` },
+  });
+  if (!resp.ok) {
+    throw new Error(
+      `GET /api/auth/machines failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
+    );
+  }
+  const { machines: rows } = (await resp.json()) as { machines: MachineRow[] };
+  if (!rows.length) {
+    console.log("(no machines registered)");
+    return;
+  }
+  for (const r of rows) {
+    const status = r.revoked_at ? `revoked ${r.revoked_at.slice(0, 10)}` : "active";
+    const lastUsed = r.last_used_at ? r.last_used_at.replace("T", " ").slice(0, 16) : "never";
+    console.log(
+      `${r.machine_id ?? "-"}  ${r.name.padEnd(20)}  ${status.padEnd(20)}  last used ${lastUsed}`,
+    );
+  }
+}
+
+/** Revoke a machine. machine_id on argv; admin password on stdin. */
+async function revoke(machineId: string): Promise<void> {
+  if (!machineId) throw new Error("machine_id required");
+  const adminPassword = await readStdin();
+  if (!adminPassword) throw new Error("admin password required on stdin");
+  const cfg = loadConfig();
+  const resp = await fetch(serverUrl(cfg, "/api/auth/revoke"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${adminPassword}`,
+    },
+    body: JSON.stringify({ machine_id: machineId }),
+  });
+  if (!resp.ok) {
+    throw new Error(
+      `POST /api/auth/revoke failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
+    );
+  }
+  const r = (await resp.json()) as { machine_id: string; revoked: number };
+  console.log(`✓ revoked ${r.revoked} key(s) for machine ${r.machine_id}`);
 }
 
 async function main(): Promise<void> {
@@ -198,9 +280,15 @@ async function main(): Promise<void> {
     case "unpin":
       await unpin(process.argv[3] ?? "");
       return;
+    case "machines":
+      await machines();
+      return;
+    case "revoke":
+      await revoke(process.argv[3] ?? "");
+      return;
     default:
       console.error(`unknown subcommand: ${cmd}`);
-      console.error("usage: slash.ts <setup|memory|pin|unpin> [args]");
+      console.error("usage: slash.ts <setup|memory|pin|unpin|machines|revoke> [args]");
       process.exit(1);
   }
 }

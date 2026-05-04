@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import type postgres from "postgres";
 import { storage } from "./context.ts";
@@ -20,6 +21,15 @@ async function sha256Hex(input: string): Promise<string> {
 
 export async function hashKey(plaintext: string): Promise<string> {
   return sha256Hex(plaintext);
+}
+
+/** Constant-time string compare. Length mismatch is treated as a miss
+ *  without invoking timingSafeEqual (which throws on mismatched buffers). */
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
 }
 
 type ApiKeyRow = {
@@ -48,6 +58,26 @@ export function requireAuth(scope: string): MiddlewareHandler {
     if (!key) {
       return c.json({ error: "unauthorized" }, 401);
     }
+
+    // Admin-password emergency bearer. Bypasses _ops.api_keys lookup so you
+    // can recover even if the table is empty / corrupt / all keys revoked.
+    // Logs every use loudly so unintended usage is visible in production.
+    const adminPassword = process.env.ADMIN_PASSWORD ?? "";
+    if (adminPassword && safeEqual(key, adminPassword)) {
+      Logger.warn(`auth: admin token used directly (scope=${scope})`);
+      const ctx = storage.getStore();
+      if (ctx) {
+        ctx.auth = {
+          keyId: "admin",
+          name: "admin",
+          machineId: null,
+          scopes: ["*"],
+        };
+      }
+      await next();
+      return;
+    }
+
     const keyHash = await sha256Hex(key);
 
     const rows = await _sql<ApiKeyRow[]>`

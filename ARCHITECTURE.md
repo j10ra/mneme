@@ -958,47 +958,46 @@ The `mneme_pat_<machine>_` prefix is informational so a glance at logs tells you
 }
 ```
 
-**Key management is manual via SQL** (Supabase SQL editor or psql). No CLI. The `pgcrypto` extension provides `digest()` so plaintext generation, hashing, and insertion happen in one statement; the `RETURNING` row gives you the plaintext exactly once.
+**Admin password roots trust.** A single `ADMIN_PASSWORD` env var on the server gates token issuance and revocation. It is also accepted as an emergency bearer for any scope (logs a `WARN` line each use) so you can always bootstrap or recover, even with `_ops.api_keys` empty or corrupt. Per-machine tokens are derived; the admin password is the root.
 
-Issue a key:
+**Token issuance is server-driven** through `/api/auth/register`. Boss never INSERTs by hand — the slash command does the round-trip:
 
-```sql
-WITH g AS (
-  SELECT 'mneme_pat_macbook-pro_' || encode(gen_random_bytes(32), 'hex') AS plaintext
-)
-INSERT INTO _ops.api_keys (key_hash, name, machine_id, scopes)
-SELECT
-  encode(digest(plaintext, 'sha256'), 'hex'),
-  'macbook-pro',
-  '<machine-uuid>',
-  ARRAY['capture','read','mcp']
-FROM g
-RETURNING (SELECT plaintext FROM g) AS plaintext, id;
+```
+POST /api/auth/register
+Authorization: Bearer <admin_password>
+{ "machine_name": "macbook-pro" }
+
+→ { "machine_id": "...", "machine_name": "macbook-pro",
+    "token": "mneme_pat_macbook-pro_<random64>" }
 ```
 
-Copy the returned `plaintext` into the issuing machine's `~/.mneme/config.json`. The DB only ever stores the sha256.
+Server generates `machine_id` (uuid), generates a `mneme_pat_<name>_<random64>` token, INSERTs `(sha256(token), name, machine_id, scopes={capture,read,mcp})` into `_ops.api_keys`, returns the plaintext exactly once. The plugin writes it into `~/.mneme/config.json`.
 
-List keys:
+Re-running `/setup` on a machine mints a fresh token and a new row; the previous row is left intact (revokable separately). This is the easy path — no force-revoke-first dance.
 
-```sql
-SELECT
-  substring(id::text, 1, 8) AS id,
-  name,
-  machine_id,
-  scopes,
-  last_used_at,
-  CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END AS status
-FROM _ops.api_keys
-ORDER BY created_at DESC;
-```
+**Three admin-only routes** (all gated by `requireAuth("admin")`, which only the admin-password bearer satisfies via the fallback short-circuit):
 
-Revoke a key:
+| Route | Purpose |
+|---|---|
+| `POST /api/auth/register` | Mint a token for a new machine |
+| `POST /api/auth/revoke`   | Set `revoked_at` on every key for a `machine_id` |
+| `GET  /api/auth/machines` | List all keys (active + revoked) |
 
-```sql
-UPDATE _ops.api_keys SET revoked_at = now() WHERE name = '<name>';
-```
+Per-machine tokens with scopes `{capture,read,mcp}` get **403 forbidden** on these routes — the `admin` scope is reserved for the admin-password fallback path. There is no `admin`-scoped per-machine token.
 
-**Why not rotate keys automatically?** Personal tool, three machines. Manual rotation when needed (lost laptop, suspected compromise) is fine. Auto-rotation adds complexity for no practical benefit at this scale.
+**Plugin slashes that drive the surface:**
+
+| Slash | Calls |
+|---|---|
+| `/setup <url> <admin-password> [name]` | `POST /api/auth/register` → writes token to `~/.mneme/config.json` |
+| `/mneme:machines`                       | `GET /api/auth/machines` (admin password via stdin) |
+| `/mneme:revoke <name-or-id>`            | `POST /api/auth/revoke` (admin password via stdin) |
+
+Sensitive admin password is **piped via stdin** by the slash, never on argv (keeps it out of process listings + shell history).
+
+**Server-stamped `machine_id`.** `/api/capture` and `/api/memory` pull `machine_id` from `ctx.auth.machineId` (set by `requireAuth` from the matching `_ops.api_keys` row). The body's `machine_id` field is ignored unless the caller is the admin token (in which case it falls back to body for curl-debugging convenience). Per-machine tokens cannot spoof another machine's identity even if they alter the request body.
+
+**Why not rotate automatically?** Personal tool, a few machines. Manual rotation when needed (lost laptop, suspected compromise) via `/mneme:revoke` is fine. Auto-rotation adds complexity for no practical benefit at this scale.
 
 ### 9.6 Practical instrumentation rules
 

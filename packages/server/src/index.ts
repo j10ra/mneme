@@ -5,10 +5,12 @@ import {
   configureAuth,
   configureLogger,
   configureTraceStore,
+  currentAuth,
   getTraceStore,
   mnemeRoute,
   requireAuth,
 } from "@mneme/core";
+import { mountAuthRoutes } from "./auth-routes.ts";
 import { sql, sha256Hex } from "./db.ts";
 import { EMBEDDER_MODEL } from "./embedder/index.ts";
 import { KINDS, type Kind } from "./llm/index.ts";
@@ -35,6 +37,9 @@ app.get("/health", mnemeRoute("health"), (c) =>
   c.json({ status: "ok", phase: 0 }),
 );
 
+// Admin-gated auth routes: register/revoke/list per-machine tokens.
+mountAuthRoutes(app);
+
 // ---------------------------------------------------------------------------
 // POST /api/capture — write, scope=capture
 // ---------------------------------------------------------------------------
@@ -60,12 +65,20 @@ app.post(
     const body = (await c.req.json().catch(() => null)) as CaptureBody | null;
     if (!body) return c.json({ error: "invalid_json" }, 400);
 
-    const required = ["content", "source", "machine_id", "hostname", "harness"] as const;
+    // machine_id comes from the auth token (server-stamped, can't be spoofed).
+    // Admin-token callers (ctx.auth.machineId === null) fall back to body for
+    // curl-debugging convenience.
+    const auth = currentAuth();
+    const machineId =
+      auth?.machineId ?? (typeof body.machine_id === "string" ? body.machine_id : "");
+
+    const required = ["content", "source", "hostname", "harness"] as const;
     for (const field of required) {
       if (!body[field] || typeof body[field] !== "string") {
         return c.json({ error: `${field} required` }, 400);
       }
     }
+    if (!machineId) return c.json({ error: "machine_id required" }, 400);
 
     // Scrub at the edge: secrets and <private> blocks redacted before
     // hashing or storage. Hash is computed on cleaned content so dedup keys
@@ -79,7 +92,7 @@ app.post(
         repo, harness, agent, session_id, topics, private, raw_meta
       )
       VALUES (
-        ${cleaned}, ${hash}, ${body.source}, ${body.machine_id}, ${body.hostname},
+        ${cleaned}, ${hash}, ${body.source}, ${machineId}, ${body.hostname},
         ${body.repo ?? null}, ${body.harness}, ${body.agent ?? null}, ${body.session_id ?? null},
         ${body.topics ?? []}, ${body.private ?? false}, ${sql.json((body.raw_meta ?? {}) as never)}
       )
@@ -104,7 +117,7 @@ app.post(
     } else {
       const existing = await sql<{ id: string }[]>`
         SELECT id FROM captures
-        WHERE content_sha256 = ${hash} AND machine_id = ${body.machine_id}
+        WHERE content_sha256 = ${hash} AND machine_id = ${machineId}
         LIMIT 1
       `;
       if (!existing[0]) return c.json({ error: "insert_failed" }, 500);
@@ -192,9 +205,13 @@ app.post(
     if (!body.content || typeof body.content !== "string") {
       return c.json({ error: "content required" }, 400);
     }
-    if (!body.machine_id) return c.json({ error: "machine_id required" }, 400);
     if (!body.hostname) return c.json({ error: "hostname required" }, 400);
     if (!body.harness) return c.json({ error: "harness required" }, 400);
+
+    const auth = currentAuth();
+    const machineId =
+      auth?.machineId ?? (typeof body.machine_id === "string" ? body.machine_id : "");
+    if (!machineId) return c.json({ error: "machine_id required" }, 400);
 
     const cleaned = scrub(body.content).trim();
     if (!cleaned) return c.json({ error: "content empty after scrub" }, 400);
@@ -217,7 +234,7 @@ app.post(
           repo, harness, agent, session_id, topics, private, raw_meta
         )
         VALUES (
-          ${cleaned}, ${contentHash}, ${"manual:/api/memory"}, ${body.machine_id}, ${body.hostname},
+          ${cleaned}, ${contentHash}, ${"manual:/api/memory"}, ${machineId}, ${body.hostname},
           ${body.repo ?? null}, ${body.harness}, ${body.agent ?? null}, ${body.session_id ?? null},
           ${body.topics ?? []}, ${body.private ?? false}, ${sql.json({ direct_write: true } as never)}
         )
@@ -239,7 +256,7 @@ app.post(
           ${captureId}, ${chunkId}, ${cleaned}, ${contentHash},
           ${EMBEDDER_MODEL}, to_tsvector('english', ${cleaned}),
           ${kind}, ${importance},
-          ${body.machine_id}, ${body.repo ?? null}, ${body.harness}, ${body.agent ?? null},
+          ${machineId}, ${body.repo ?? null}, ${body.harness}, ${body.agent ?? null},
           ${body.topics ?? []}, ${body.private ?? false},
           ${sql.json(meta as never)}
         )
