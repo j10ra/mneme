@@ -51,15 +51,21 @@ export const runEmbedOnce = mnemeFn(
 
     // ── Phase 2: embedder call (NO tx held) ────────────────────────────
     const totalChars = texts.reduce((n, t) => n + t.length, 0);
-    Logger.info(`embed: calling embedder (${locked.length} text(s), ${totalChars} chars)…`);
+    Logger.info("embed: calling embedder", {
+      texts: locked.length,
+      chars: totalChars,
+    });
     const t0 = Date.now();
     let vectors: number[][];
     try {
       vectors = await embedBatch(texts);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-      Logger.error(`embed batch failed for ${jobIds.length} job(s) after ${elapsed}s`, e);
+      const elapsed_s = Number(((Date.now() - t0) / 1000).toFixed(1));
+      Logger.error("embed: batch failed", e, {
+        jobs: jobIds.length,
+        elapsed_s,
+      });
       await sql`
         UPDATE ingest_jobs
         SET state = 'error',
@@ -89,10 +95,11 @@ export const runEmbedOnce = mnemeFn(
       `;
     });
 
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    Logger.info(
-      `embed: ${locked.length} memor${locked.length === 1 ? "y" : "ies"} embedded (${elapsed}s)`,
-    );
+    const elapsed_s = Number(((Date.now() - t0) / 1000).toFixed(1));
+    Logger.info("embed: done", {
+      memories: locked.length,
+      elapsed_s,
+    });
     return { didWork: true };
   },
 );

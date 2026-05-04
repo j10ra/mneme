@@ -180,9 +180,7 @@ export const runNapOnce = mnemeFn(
         killed: killed.count,
       };
     });
-    Logger.info(
-      `nap: decayed=${result.decayed}, shadowed=${result.shadowed}, related=${result.related}, resurrected=${result.resurrected}, killed=${result.killed}`,
-    );
+    Logger.info("nap: done", result);
     return result;
   },
 );

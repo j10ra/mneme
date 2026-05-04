@@ -143,21 +143,25 @@ export const runExtractOnce = mnemeFn(
     );
 
     // ── Phase 2: LLM call (NO tx held) ─────────────────────────────────
-    Logger.info(
-      `extract: calling LLM (${jobIds.length} capture(s), ${concatenated.length} chars) repo=${seed.repo ?? "-"}…`,
-    );
+    Logger.info("extract: calling LLM", {
+      captures: jobIds.length,
+      chars: concatenated.length,
+      repo: seed.repo ?? "-",
+    });
     const t0 = Date.now();
     let observations: Observation[];
     try {
       observations = await extractObservations(concatenated);
       if (consecutiveFailures > 0) {
-        Logger.info(`extract: circuit breaker recovered (${consecutiveFailures} prior failures)`);
+        Logger.info("extract: circuit breaker recovered", {
+          prior_failures: consecutiveFailures,
+        });
         consecutiveFailures = 0;
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-      Logger.error(`extract failed for ${jobIds.length} job(s) after ${elapsed}s`, e);
+      const elapsed_s = Number(((Date.now() - t0) / 1000).toFixed(1));
+      Logger.error("extract: failed", e, { jobs: jobIds.length, elapsed_s });
       await sql`
         UPDATE ingest_jobs
         SET state = 'error',
@@ -169,9 +173,10 @@ export const runExtractOnce = mnemeFn(
       consecutiveFailures++;
       if (consecutiveFailures >= FAILURE_THRESHOLD) {
         breakerOpenUntil = Date.now() + BREAKER_PAUSE_MS;
-        Logger.warn(
-          `extract: circuit breaker open for ${BREAKER_PAUSE_MS / 60_000}min after ${consecutiveFailures} consecutive failures`,
-        );
+        Logger.warn("extract: circuit breaker open", undefined, {
+          pause_min: BREAKER_PAUSE_MS / 60_000,
+          consecutive_failures: consecutiveFailures,
+        });
         consecutiveFailures = 0;
       }
       return { didWork: true };
@@ -227,19 +232,19 @@ export const runExtractOnce = mnemeFn(
       return n;
     });
 
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    const elapsed_s = Number(((Date.now() - t0) / 1000).toFixed(1));
     const kindCounts = observations.reduce<Record<string, number>>((acc, o) => {
       acc[o.kind] = (acc[o.kind] ?? 0) + 1;
       return acc;
     }, {});
-    const kindSummary = Object.entries(kindCounts)
-      .map(([k, n]) => `${k}=${n}`)
-      .join(", ");
-    Logger.info(
-      `extract: ${jobIds.length} capture(s) → ${observations.length} observation(s)${
-        kindSummary ? ` [${kindSummary}]` : ""
-      } → ${inserted} new memor${inserted === 1 ? "y" : "ies"} repo=${seed.repo ?? "-"} (${elapsed}s)`,
-    );
+    Logger.info("extract: done", {
+      captures: jobIds.length,
+      observations: observations.length,
+      new_memories: inserted,
+      kinds: kindCounts,
+      repo: seed.repo ?? "-",
+      elapsed_s,
+    });
     return { didWork: true };
   },
 );

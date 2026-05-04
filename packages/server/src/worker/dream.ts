@@ -152,7 +152,7 @@ export const runDreamOnce = mnemeFn(
         result = await distillCluster(concatenated);
       } catch (e) {
         clustersFailed++;
-        Logger.warn(`dream: distill failed for cluster of ${members.length}`, e);
+        Logger.warn("dream: distill failed", e, { members: members.length });
         continue;
       }
 
@@ -201,9 +201,12 @@ export const runDreamOnce = mnemeFn(
           `;
 
           clustersWritten++;
-          Logger.info(
-            `dream: cluster id=${clusterId} title="${result.title}" members=${members.length} repo=${seed.repo ?? "-"}`,
-          );
+          Logger.info("dream: cluster written", {
+            id: clusterId,
+            title: result.title,
+            members: members.length,
+            repo: seed.repo ?? "-",
+          });
         });
       } catch (e) {
         clustersFailed++;
@@ -219,9 +222,7 @@ export const runDreamOnce = mnemeFn(
       clusters_skipped_size: clustersSkippedSize,
       clusters_failed: clustersFailed,
     };
-    Logger.info(
-      `dream: candidates=${result.candidates}, edges=${result.edges}, components=${result.components}, written=${result.clusters_written}, skipped_size=${result.clusters_skipped_size}, failed=${result.clusters_failed}`,
-    );
+    Logger.info("dream: done", result);
     return result;
   },
 );

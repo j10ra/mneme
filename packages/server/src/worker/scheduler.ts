@@ -82,7 +82,7 @@ async function tick(): Promise<void> {
     } catch (e) {
       status = "failed";
       errorMsg = e instanceof Error ? e.message : String(e);
-      Logger.error(`scheduler[${job.name}]: failed`, e);
+      Logger.error("scheduler: job failed", e, { job: job.name });
     }
     const elapsed = Date.now() - t0;
 
@@ -97,7 +97,10 @@ async function tick(): Promise<void> {
     `;
 
     if (status === "ok") {
-      Logger.info(`scheduler[${job.name}]: ok in ${(elapsed / 1000).toFixed(1)}s`);
+      Logger.info("scheduler: job ok", {
+        job: job.name,
+        elapsed_s: Number((elapsed / 1000).toFixed(1)),
+      });
     }
   }
 }
@@ -105,9 +108,10 @@ async function tick(): Promise<void> {
 /** Start the scheduler. Persists registered jobs, then ticks every TICK_MS. */
 export async function startScheduler(): Promise<void> {
   const names = [...registry.keys()];
-  Logger.info(
-    `scheduler: starting with ${names.length} job(s) [${names.join(", ")}], tick=${TICK_MS / 1000}s`,
-  );
+  Logger.info("scheduler: starting", {
+    jobs: names,
+    tick_s: TICK_MS / 1000,
+  });
   try {
     await syncRegistry();
   } catch (e) {
