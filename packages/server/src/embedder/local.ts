@@ -13,6 +13,20 @@ export const EMBEDDER_DIM = 1024;
 
 const TIMEOUT_MS = Number(process.env.EMBEDDER_TIMEOUT_MS ?? 30_000);
 
+/** Reduce an upstream error body to a single, log-friendly line. Cloudflare
+ *  error pages and other proxy responses come back as multi-line HTML — we
+ *  don't want that flooding logs. JSON bodies stay readable. */
+function cleanErrorBody(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) return "";
+  // HTML — strip tags and collapse whitespace.
+  if (trimmed.startsWith("<")) {
+    const stripped = trimmed.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    return stripped.slice(0, 200);
+  }
+  return trimmed.replace(/\s+/g, " ").slice(0, 200);
+}
+
 export const embedBatch = mnemeFn(
   "embedder.local.batch",
   async (texts: string[]): Promise<number[][]> => {
@@ -31,8 +45,8 @@ export const embedBatch = mnemeFn(
     });
 
     if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`embedder.local failed: ${resp.status} ${err.slice(0, 300)}`);
+      const err = cleanErrorBody(await resp.text());
+      throw new Error(`embedder.local failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
     }
 
     const vecs = (await resp.json()) as unknown;

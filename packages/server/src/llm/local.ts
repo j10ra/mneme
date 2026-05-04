@@ -17,6 +17,19 @@ type StreamChunk = {
   choices?: Array<{ delta?: { content?: string } }>;
 };
 
+/** Reduce an upstream error body to a single, log-friendly line. Cloudflare
+ *  error pages and other proxy responses come back as multi-line HTML — we
+ *  don't want that flooding logs. JSON bodies stay readable. */
+function cleanErrorBody(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("<")) {
+    const stripped = trimmed.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    return stripped.slice(0, 200);
+  }
+  return trimmed.replace(/\s+/g, " ").slice(0, 200);
+}
+
 /** Read an SSE stream of OpenAI chat completion chunks and return the
  *  concatenated assistant text. Streaming is required for slow local models
  *  behind Cloudflare/proxies — without it, idle timeouts (HTTP 524) kill
@@ -79,8 +92,8 @@ export const extractObservations = mnemeFn(
     });
 
     if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`llm.local extract failed: ${resp.status} ${err.slice(0, 300)}`);
+      const err = cleanErrorBody(await resp.text());
+      throw new Error(`llm.local extract failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
     }
 
     const raw = await consumeStream(resp);

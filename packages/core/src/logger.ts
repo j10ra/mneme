@@ -68,6 +68,16 @@ function emit(level: Level, message: string, error?: unknown): void {
     const tracePart = traceId ? `[${traceId.slice(0, 8)}] ` : "";
     const errPart = errStr ? ` :: ${errStr}` : "";
     process.stderr.write(`${t} ${lvlPad} ${tracePart}${message}${errPart}\n`);
+    // For ERROR with a real Error, print the stack on continuation lines so
+    // local debugging gets the call site without flipping to JSON mode.
+    if (level === "error" && error instanceof Error && error.stack) {
+      const stackLines = error.stack
+        .split("\n")
+        .slice(1) // drop the duplicate "Error: message" header
+        .map((l) => `    ${l.trim()}`)
+        .join("\n");
+      if (stackLines) process.stderr.write(`${stackLines}\n`);
+    }
   }
 }
 

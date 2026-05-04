@@ -1,6 +1,7 @@
 import { Logger } from "@mneme/core";
 import { runEmbedOnce, type EmbedResult } from "./embed.ts";
 import { runExtractOnce, type ExtractResult } from "./extract.ts";
+import { startKeepalive } from "./keepalive.ts";
 
 const EXTRACT_INTERVAL_MS = 10_000;
 const EMBED_INTERVAL_MS = 5_000;
@@ -65,6 +66,7 @@ export function startWorker(): void {
   Logger.info("worker: starting extract + embed loops");
   void loop("extract", runExtractOnce, EXTRACT_INTERVAL_MS);
   void loop("embed", runEmbedOnce, EMBED_INTERVAL_MS);
+  startKeepalive();
 }
 
 /** Signal both loops to stop and clear pending timers. */
