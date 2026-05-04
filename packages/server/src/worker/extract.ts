@@ -4,11 +4,18 @@ import { EMBEDDER_MODEL } from "../embedder/index.ts";
 import { extractObservations, type Observation } from "../llm/index.ts";
 
 const COALESCE_WINDOW = "5 minutes";
+// Cap how many session-sibling captures one extract cycle locks together.
+// Without this, a busy session can balloon to 60+ jobs marked 'running' under
+// a single LLM call, multiplying the blast radius of any provider failure.
+const MAX_SIBLINGS = 10;
 // Caps on prompt size — keeps the LLM input within typical context windows
 // regardless of provider (qwen2.5 32K context, gpt-oss-20b 8K TPM-safe, etc.)
 // and bounds extraction latency on slower local models.
 const MAX_CHARS_PER_CAPTURE = 1500;
 const MAX_TOTAL_CHARS = 6000;
+// A 'running' job older than this is treated as crashed mid-flight and
+// re-eligible. Bounded by the LLM TIMEOUT_MS (10 min) plus headroom.
+const STALE_RUNNING = "15 minutes";
 
 function clip(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
@@ -16,103 +23,125 @@ function clip(s: string, max: number): string {
 
 export type ExtractResult = { didWork: boolean; pauseMs?: number };
 
-type SeedRow = {
+type LockedRow = {
   job_id: string;
   capture_id: string;
   session_id: string | null;
   captured_at: Date;
+  content: string;
   machine_id: string;
   repo: string | null;
   harness: string;
   agent: string | null;
-  topics: string[];
   private: boolean;
 };
 
-type LockedRow = {
-  job_id: string;
-  capture_id: string;
-  content: string;
-  captured_at: Date;
-};
-
-/** Run one extract cycle: lock a queued job + its session siblings, call Groq,
- *  insert memories, enqueue embed jobs. On rate limit, re-queues without
- *  burning an attempt and returns pauseMs so the loop can back off. */
+/** Run one extract cycle. Three short transactions, NEVER hold a tx across
+ *  the LLM call — that would pin a pool client for minutes and exhaust the
+ *  Supabase pool (max 15 in session mode):
+ *    1. lock: pick seed + ≤MAX_SIBLINGS coalesce candidates, mark running
+ *    2. LLM call: outside any tx
+ *    3. write: insert memories, enqueue embed jobs, mark done */
 export const runExtractOnce = mnemeFn(
   "worker.extract.once",
   async (): Promise<ExtractResult> => {
-    return await sql.begin(async (tx) => {
-      const seeds = await tx<SeedRow[]>`
-        SELECT j.id              AS job_id,
-               j.capture_id      AS capture_id,
-               c.session_id      AS session_id,
-               c.captured_at     AS captured_at,
-               c.machine_id      AS machine_id,
-               c.repo            AS repo,
-               c.harness         AS harness,
-               c.agent           AS agent,
-               c.topics          AS topics,
-               c.private         AS private
+    // ── Phase 1: lock (short tx) ───────────────────────────────────────
+    const locked = await sql.begin(async (tx) => {
+      const seeds = await tx<{ job_id: string; capture_id: string; session_id: string | null; captured_at: Date }[]>`
+        SELECT j.id AS job_id, j.capture_id, c.session_id, c.captured_at
         FROM ingest_jobs j
         JOIN captures c ON c.id = j.capture_id
         WHERE j.phase = 'extract'
-          AND j.state IN ('queued', 'error')
           AND j.attempts < 5
           AND j.scheduled_at <= now()
+          AND (
+            j.state IN ('queued', 'error')
+            OR (j.state = 'running' AND j.started_at < now() - interval '${sql.unsafe(STALE_RUNNING)}')
+          )
         ORDER BY j.scheduled_at ASC
         LIMIT 1
         FOR UPDATE OF j SKIP LOCKED
       `;
       const seed = seeds[0];
-      if (!seed) return { didWork: false };
+      if (!seed) return [] as LockedRow[];
 
-      const locked = await tx<LockedRow[]>`
+      // Pick siblings (capped) — same session, within coalesce window.
+      const siblingIds = await tx<{ job_id: string }[]>`
+        SELECT j.id AS job_id
+        FROM ingest_jobs j
+        JOIN captures c ON c.id = j.capture_id
+        WHERE j.phase = 'extract'
+          AND j.attempts < 5
+          AND j.scheduled_at <= now()
+          AND (
+            j.state IN ('queued', 'error')
+            OR (j.state = 'running' AND j.started_at < now() - interval '${sql.unsafe(STALE_RUNNING)}')
+          )
+          AND j.id <> ${seed.job_id}
+          AND ${seed.session_id}::text IS NOT NULL
+          AND c.session_id = ${seed.session_id}
+          AND c.captured_at
+              BETWEEN ${seed.captured_at}::timestamptz - interval '${sql.unsafe(COALESCE_WINDOW)}'
+                  AND ${seed.captured_at}::timestamptz + interval '${sql.unsafe(COALESCE_WINDOW)}'
+        ORDER BY c.captured_at ASC
+        LIMIT ${MAX_SIBLINGS - 1}
+        FOR UPDATE OF j SKIP LOCKED
+      `;
+
+      const allJobIds = [seed.job_id, ...siblingIds.map((r) => r.job_id)];
+
+      const rows = await tx<LockedRow[]>`
         UPDATE ingest_jobs j
         SET state = 'running', started_at = now(), attempts = attempts + 1, error = NULL
         FROM captures c
         WHERE j.capture_id = c.id
-          AND j.phase = 'extract'
-          AND j.state IN ('queued', 'error')
-          AND j.attempts < 5
-          AND (
-            j.id = ${seed.job_id}
-            OR (
-              ${seed.session_id}::text IS NOT NULL
-              AND c.session_id = ${seed.session_id}
-              AND c.captured_at
-                  BETWEEN ${seed.captured_at}::timestamptz - interval '${sql.unsafe(COALESCE_WINDOW)}'
-                      AND ${seed.captured_at}::timestamptz + interval '${sql.unsafe(COALESCE_WINDOW)}'
-            )
-          )
-        RETURNING j.id AS job_id, j.capture_id AS capture_id, c.content AS content, c.captured_at AS captured_at
+          AND j.id = ANY(${allJobIds})
+        RETURNING j.id AS job_id,
+                  j.capture_id AS capture_id,
+                  c.session_id AS session_id,
+                  c.captured_at AS captured_at,
+                  c.content AS content,
+                  c.machine_id AS machine_id,
+                  c.repo AS repo,
+                  c.harness AS harness,
+                  c.agent AS agent,
+                  c.private AS private
       `;
+      return rows;
+    });
 
-      const ordered = locked.sort(
-        (a, b) => a.captured_at.getTime() - b.captured_at.getTime(),
-      );
-      const captureIds = ordered.map((r) => r.capture_id);
-      const jobIds = ordered.map((r) => r.job_id);
-      const concatenated = clip(
-        ordered.map((r) => clip(r.content, MAX_CHARS_PER_CAPTURE)).join("\n\n---\n\n"),
-        MAX_TOTAL_CHARS,
-      );
+    if (locked.length === 0) return { didWork: false };
 
-      let observations: Observation[] = [];
-      try {
-        observations = await extractObservations(concatenated);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        Logger.error(`extract failed for ${jobIds.length} job(s)`, e);
-        await tx`
-          UPDATE ingest_jobs
-          SET state = 'error', error = ${msg}, finished_at = now()
-          WHERE id = ANY(${jobIds})
-        `;
-        return { didWork: true };
-      }
+    const ordered = locked.sort((a, b) => a.captured_at.getTime() - b.captured_at.getTime());
+    const seed = ordered[0]!;
+    const captureIds = ordered.map((r) => r.capture_id);
+    const jobIds = ordered.map((r) => r.job_id);
+    const concatenated = clip(
+      ordered.map((r) => clip(r.content, MAX_CHARS_PER_CAPTURE)).join("\n\n---\n\n"),
+      MAX_TOTAL_CHARS,
+    );
 
-      let inserted = 0;
+    // ── Phase 2: LLM call (NO tx held) ─────────────────────────────────
+    let observations: Observation[];
+    try {
+      observations = await extractObservations(concatenated);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      Logger.error(`extract failed for ${jobIds.length} job(s)`, e);
+      await sql`
+        UPDATE ingest_jobs
+        SET state = 'error',
+            error = ${msg},
+            finished_at = now(),
+            scheduled_at = now() + (attempts * interval '30 seconds')
+        WHERE id = ANY(${jobIds})
+      `;
+      return { didWork: true };
+    }
+
+    // ── Phase 3: write (short tx) ──────────────────────────────────────
+    const inserted = await sql.begin(async (tx) => {
+      let n = 0;
       for (const obs of observations) {
         const content = obs.content.trim();
         if (!content) continue;
@@ -145,26 +174,26 @@ export const runExtractOnce = mnemeFn(
         `;
         const memoryId = rows[0]?.id;
         if (memoryId) {
-          inserted++;
+          n++;
           await tx`
             INSERT INTO ingest_jobs (memory_id, phase, state)
             VALUES (${memoryId}, 'embed', 'queued')
           `;
         }
       }
-
       await tx`
         UPDATE ingest_jobs
         SET state = 'done', finished_at = now()
         WHERE id = ANY(${jobIds})
       `;
-
-      Logger.info(
-        `extract: ${jobIds.length} capture(s) → ${observations.length} observation(s) → ${inserted} new memor${
-          inserted === 1 ? "y" : "ies"
-        }`,
-      );
-      return { didWork: true };
+      return n;
     });
+
+    Logger.info(
+      `extract: ${jobIds.length} capture(s) → ${observations.length} observation(s) → ${inserted} new memor${
+        inserted === 1 ? "y" : "ies"
+      }`,
+    );
+    return { didWork: true };
   },
 );

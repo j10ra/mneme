@@ -22,16 +22,20 @@ ORDER BY
   0.6 * (1 - (embedding <=> embed('the user query'))) +
   0.4 * ts_rank(tsv, websearch_to_tsquery('english', 'the user query'))
 DESC
-LIMIT 5;
+LIMIT 8;
 ```
 
-Display the results as a tight list. For each row show:
-- A short header: `<short-id> · <kind> · <repo or "no-repo"> · <created_at relative>`
-- A one-line excerpt of `content` (truncate to ~120 chars, replace newlines with spaces)
+Then **read the rows and answer the user's question naturally**, like a colleague who just looked something up. The user wants understanding, not a database dump.
 
-Don't editorialise — the user wants the raw recall, not a synthesis.
+Style:
+- Conversational prose. Don't surface metadata (id, kind, repo, timestamp) unless the answer specifically depends on it. The raw rows stay in the tool response — you can refer back to them for follow-ups without echoing them upfront.
+- Synthesise across rows where they overlap. If three memories all point to the same decision, state it once with the rationale, not three times.
+- If a specific memory is the answer, quote the salient phrase, not the full row.
+- If the rows don't really answer the question, say so — don't pad with marginally-related rows.
 
-**Fallback when memories is empty:** if the query above returns 0 rows, the `memories` table likely hasn't been populated yet for this corpus (Phase 4 worker, the extractor + embedder, hasn't processed the captures). **Re-run the recall against `captures.content` directly using ILIKE** before declaring no results:
+Length: match the question. A specific question gets 1-3 sentences. A broader "what was I working on" gets a short paragraph.
+
+**Fallback when memories is empty:** if the query above returns 0 rows, the `memories` table likely hasn't been populated yet for this corpus (the extractor + embedder workers haven't processed the captures). Re-run against `captures.content` with ILIKE before declaring no results:
 
 ```sql
 SELECT id, source, repo, machine_id, captured_at, substring(content, 1, 200) AS preview
@@ -42,6 +46,6 @@ ORDER BY captured_at DESC
 LIMIT 10;
 ```
 
-Captures hold every prompt and tool call you've ever sent in a Mneme-enabled session, so this fallback finds context even before semantic indexing runs.
+Same synthesis rules apply — read the previews, answer naturally, don't dump rows.
 
-If both queries return zero rows, then say so plainly and suggest broadening.
+If both queries return zero rows, say so plainly and suggest broadening the query.
