@@ -2,6 +2,7 @@ import { Logger } from "@mneme/core";
 import { runEmbedOnce, type EmbedResult } from "./embed.ts";
 import { runExtractOnce, type ExtractResult } from "./extract.ts";
 import { startKeepalive } from "./keepalive.ts";
+import { startNap } from "./nap.ts";
 
 const EXTRACT_INTERVAL_MS = 10_000;
 const EMBED_INTERVAL_MS = 5_000;
@@ -67,6 +68,7 @@ export function startWorker(): void {
   void loop("extract", runExtractOnce, EXTRACT_INTERVAL_MS);
   void loop("embed", runEmbedOnce, EMBED_INTERVAL_MS);
   startKeepalive();
+  startNap();
 }
 
 /** Signal both loops to stop and clear pending timers. */

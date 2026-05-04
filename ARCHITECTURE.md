@@ -71,7 +71,7 @@ Mneme takes the best parts of four existing systems.
 | **Scope** | The (machine, repo, harness, agent, topic[]) tuple on every capture and memory. |
 | **Importance** | Salience score. Decays with time, can be pinned. |
 | **Embed macro** | `embed('text')` inside SQL. The MCP `sql` tool replaces it with a Voyage vector literal before execution. |
-| **Nap** | Every 6 hours: decay importance, mark near-dups in `meta.related_to`. |
+| **Nap** | Every 6 hours (server worker): decay importance, mark near-dups in `meta.related_to`, resurrect transient ingest failures, retire non-transient errors to `state='dead'`. |
 | **Dream** | Nightly: cluster recent memories per scope, LLM-distill into a `kind='cluster'` memory, supersede stale facts in `meta.superseded_by`. |
 | **Surface** | Per-session injection of pinned + `preference`/`constraint` memories + recent cluster summaries via the harness's SessionStart hook stdout (claude-mem pattern). Never writes to `CLAUDE.md` or any user file. Token-capped, scoped to current repo. |
 | **Bootstrap** | Lightweight session-start signal. `POST /api/session/start` returns ids only, 500ms cap. |
@@ -401,23 +401,48 @@ sequenceDiagram
 
 **Coalescing rule:** captures with the same `session_id` arriving within a 5-minute window are batched into one extraction. This is the key cost lever vs claude-mem's per-event extraction.
 
-### 6.3 Nap (every 6h, pg_cron, pure SQL)
+### 6.3 Nap (every 6h, server worker, pure SQL)
 
 What it does, in plain language:
 - **Decay:** every memory's `importance` shrinks by age (exp decay, τ = 30 days).
 - **Pin floor:** memories with `meta.pinned = true` stay above a floor.
 - **Exact-text shadows:** memories sharing `content_hash` keep the highest-importance one; the rest get `meta.shadow_of = <kept_id>` and importance hard-decayed.
 - **Semantic relations:** memories within cosine 0.15 of each other (same scope) record each other in `meta.related_to`.
+- **Resurrect transient ingest failures:** error-state jobs older than 1 hour whose error message matches a transient pattern (HTTP 5xx, timeout, tunnel, ECONNRESET) get reset to `queued`. Anything else stays dead.
 
 ```mermaid
 flowchart LR
-    A[pg_cron 6h] --> B[Decay:<br/>importance *= exp -dt/30d<br/>WHERE NOT pinned]
+    A[Server worker 6h interval] --> B[Decay:<br/>importance *= exp -1/120<br/>WHERE NOT pinned]
     A --> C[Shadows:<br/>group by content_hash, keep max importance,<br/>others -> meta.shadow_of]
     A --> D[For each memory in last 7 days:<br/>cosine NN within same repo, distance < 0.15]
     D --> E[meta.related_to append]
+    A --> F[Resurrect transient ingest_jobs<br/>state=error, attempts>=5,<br/>finished_at < now -1h,<br/>error matches transient pattern]
+    A --> G[Mark dead non-transient ingest_jobs<br/>state=error, attempts>=5,<br/>finished_at < now -24h]
 ```
 
-Implementation: one SQL function `mneme.nap()` invoked by pg_cron. No LLM in the loop. See §6.7 for how shadows/related_to/superseded_by interact at recall time.
+#### 6.3.1 Ingest job retry policy
+
+Failures split into two kinds, only one of which is worth retrying:
+
+| Kind | Pattern | What nap does |
+|---|---|---|
+| **Transient** | error contains `HTTP 5*`, `timed out`, `timeout`, `ECONNRESET`, `tunnel` | Reset to `queued`, attempts=0, after a 1-hour grace so the upstream can recover |
+| **Dead** | anything else (malformed JSON, schema violation, content too long, code bugs) | Move to `state='dead'` (terminal). Operators can manually promote `dead → queued` after a model upgrade or prompt fix |
+
+The 1-hour grace is a "let the storm pass" buffer — typical CF blips, tunnel rotations, and Ollama overloads are minutes, not hours. By the time nap touches a stuck job, the upstream is almost always healthy again. The original 159-job storm during the QUIC/HTTP2 incident on 2026-05-04 was resurrected manually with the same SQL pattern; nap automates the recovery so future incidents heal without operator action.
+
+State machine for an ingest_job:
+```
+queued → running → done                                       (happy path)
+queued → running → error → queued ...                         (transient retry, capped at attempts=5)
+queued → running → error (attempts=5) →
+    transient pattern + 1h grace → queued (by nap)
+    other pattern                  → dead (terminal)
+```
+
+Captures themselves are immutable and never retried — the unit of retry is the *job*, not the data. Re-running an extract against the same capture is idempotent because of `chunk_id`-based dedup at the memory layer.
+
+Implementation: a `worker/nap.ts` module sharing the same singleton-via-globalThis pattern as extract/embed/keepalive. `runNapOnce()` does all the SQL in a single transaction; `startNap()` schedules it on a 6h interval from `worker/index.ts`. No LLM in the loop. Server-side rather than pg_cron because (a) it shares the same observability/log stream as extract/embed, (b) dream will need server-side anyway for LLM calls, (c) avoids depending on a Postgres extension and keeps Mneme provider-portable. See §6.7 for how shadows/related_to/superseded_by interact at recall time.
 
 ### 6.4 Dream (nightly, pg_cron + worker)
 
