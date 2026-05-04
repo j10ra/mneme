@@ -375,11 +375,29 @@ sequenceDiagram
 
 **Urgent bypass:** captures with `kind ∈ {security_alert, decision}` or with explicit `urgent: true` skip the 5-min coalescing window in Process and are extracted immediately.
 
-**Slash command implementations** (all client-side wrappers around `POST /api/capture`):
+**Slash command implementations** — see §6.1.1 for the agent-resolution pattern that bridges vague args to clean text:
 
-- `/memory <text>` — write user-authored memory.
-- `/summarise [<scope>]` — request an on-demand summary of recent in-scope memories. Slash command POSTs an empty capture with `source='manual:/summarise'` and a scope hint; the worker handles the summary generation as a normal Process job and stores result with `kind='summary'`.
-- `/pin <id>` / `/unpin <id>` — POST `{source: 'manual', kind: 'pin', meta: {target: id, value: true|false}}`. Worker flips `meta.pinned` on the target memory.
+- `/mneme:memory <text>` — write user-authored context. POSTs to `/api/capture` (`source='manual:/memory'`); the extract worker picks atomic observations from it like any other capture.
+- `/mneme:pin <text>` — write a pinned memory directly. POSTs to `/api/memory` (a different endpoint that bypasses extract) with `pinned=true`, `kind=note`, `importance=1.0`. Creates a synthetic capture for provenance plus the memory in one transaction; embed worker vectorises it within ~2s. The chunk_id collision path upserts (merges meta, takes max importance) so re-pinning the same fact is idempotent.
+- `/mneme:pin <uuid>` — actuate pin on an existing memory. POSTs to `/api/capture` with `raw_meta.kind='pin', target=<uuid>, value=true`. The endpoint flips `meta.pinned` synchronously.
+- `/mneme:unpin <uuid>` — flips `meta.pinned=false`. Memory and importance value are preserved; the only mechanical effects are (a) it drops out of the surface aggregator's pinned block, (b) on the next nap cycle it loses `PIN_FLOOR=0.5` protection and decays toward `FLOOR=0.05`. **Not deletion** — recall still finds it. For real removal use `archived_at` (no slash for it; manual SQL).
+- `/mneme:unpin <description>` — agent-resolved. Slash command's prompt instructs the agent to query `mneme.sql` for pinned memories matching the description, confirm with the user, then invoke the slash with the resolved uuid.
+- `/mneme:pinned [scope]` — list currently pinned memories. Pure read via `mneme.sql`; renders each row with its full UUID for easy copy into `/mneme:unpin`.
+- `/mneme:summarise [<scope>]` — on-demand summary of recent in-scope memories. Currently a read-only synthesis pass via the agent + `mneme.sql`; persistent cluster summaries via the dream worker land in Phase 6.
+
+#### 6.1.1 Agent-resolution pattern for slash commands
+
+Slash command binaries are intentionally **dumb** — they save whatever sentence/text they receive and return an id. The agent (Claude in the user's session) is **smart** — it reads the conversation context, synthesises the right shape of input, and confirms with the user before invoking.
+
+Example: user types `/mneme:pin this homelab finding`. The slash command's prompt (e.g. `pin.md`) instructs the agent to:
+1. Read recent conversation context.
+2. If the arg is already a clean third-person factual sentence, use it verbatim.
+3. If it's a vague reference ("this", "that thing", "the homelab finding"), synthesise a single self-contained sentence.
+4. If it's a UUID, treat it as the existing-memory actuation path.
+5. Show the user the exact sentence and ask "Pin this? (y/n)" before invoking.
+6. Invoke `bun slash.ts pin "<resolved sentence-or-uuid>"`.
+
+This split keeps the slash binary minimal (no LLM logic, no context window, no MCP access required) while letting the agent do what it's already good at — reading context and writing precise prose. The same pattern applies to `unpin <description>` (agent searches `mneme.sql`, confirms, invokes with uuid) and `memory <reference>` (agent synthesises a paragraph from context, invokes with that text).
 
 ### 6.2 Process (async per coalesced batch)
 
@@ -720,7 +738,8 @@ Mneme runs as a **single Hono service** on Railway. The MCP endpoint is one rout
 
 | Route | Method | Type | Auth | Required scope | Source tag | Purpose |
 |---|---|---|---|---|---|---|
-| `/api/capture` | POST | **write** | Bearer | `capture` | `<source>` from body | All writes (hooks, slash, CLI, HTTP, dream worker) |
+| `/api/capture` | POST | **write** | Bearer | `capture` | `<source>` from body | Hooks, slash actuations, CLI, HTTP, dream worker. Goes through scrub → dedup → extract queue. |
+| `/api/memory` | POST | **write** | Bearer | `capture` | `manual:/api/memory` | Direct-write a memory bypassing extract. Used by `/mneme:pin <text>`. Creates synthetic capture for provenance + memory in one tx. Embed runs ~2s later. |
 | `/api/session/start` | POST | read | Bearer | `read` | `mcp` / `hook` / `cli` | Pointer-list endpoint (§6.6) |
 | `/mcp` | POST | read | Bearer | `mcp` | `mcp` | MCP HTTP transport for `mneme.sql` (read-only) |
 | `/health` | GET | read | none | — | `infra` | Liveness |
