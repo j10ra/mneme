@@ -1,4 +1,5 @@
 import { Logger } from "@mneme/core";
+import { runDreamOnce } from "./dream.ts";
 import { runEmbedOnce, type EmbedResult } from "./embed.ts";
 import { runExtractOnce, type ExtractResult } from "./extract.ts";
 import { runKeepaliveOnce } from "./keepalive.ts";
@@ -73,6 +74,7 @@ export function startWorker(): void {
   void loop("embed", runEmbedOnce, EMBED_INTERVAL_MS);
 
   register({ name: "nap", scheduleMs: 6 * 60 * 60 * 1000, run: runNapOnce });
+  register({ name: "dream", scheduleMs: 24 * 60 * 60 * 1000, run: runDreamOnce });
   register({ name: "keepalive", scheduleMs: 24 * 60 * 60 * 1000, run: runKeepaliveOnce });
   void startScheduler();
 }

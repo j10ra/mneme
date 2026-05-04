@@ -4,10 +4,11 @@
 // adding a new provider is one new file under llm/ + one entry below.
 
 import * as local from "./local.ts";
+import type { LLMProvider } from "./types.ts";
 
 const PROVIDERS = {
   local,
-} as const satisfies Record<string, { extractObservations: typeof local.extractObservations }>;
+} as const satisfies Record<string, LLMProvider>;
 
 type ProviderName = keyof typeof PROVIDERS;
 
@@ -22,5 +23,6 @@ if (!(PROVIDER_NAME in PROVIDERS)) {
 const provider = PROVIDERS[PROVIDER_NAME];
 
 export const extractObservations = provider.extractObservations;
+export const distillCluster = provider.distillCluster;
 
-export { KINDS, type Kind, type Observation } from "./types.ts";
+export { KINDS, type ClusterDistillation, type Kind, type Observation } from "./types.ts";

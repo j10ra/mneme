@@ -43,3 +43,24 @@ If a capture has nothing memorable, return {"observations": []}. An empty list i
 Each observation's content is one self-contained sentence in third-person, present-tense factual style. No "the user", no "the assistant".
 
 Output a single JSON object: {"observations": [{"content": "...", "kind": "...", "importance": 0.0, "topics": [...]}, ...]}.`;
+
+// Cluster distillation prompt — used by the dream worker. Input is a
+// concatenated list of memory contents that the clustering pass found are
+// semantically tight (cosine distance < 0.10). Output is one title + summary
+// describing the underlying topic that ties them together.
+export const CLUSTER_PROMPT = `You are summarising a tight cluster of related memories. Each memory below is one atomic observation that future-you wrote down. Together they describe a single underlying topic, decision, finding, or theme.
+
+Produce a JSON object: {"title": "...", "summary": "..."}.
+
+- title: 4-10 words, a short phrase that names what this cluster is about. Third-person factual style. No "we", no "the user".
+- summary: 2-6 sentences (longer is fine when there's real nuance worth preserving — e.g. multiple failed approaches before the working fix, or a layered decision with several reasons). Synthesise the core finding/decision/pattern these memories share. Don't list every memory — distil the essence. Lead with the *what*, follow with the *why*, include the *how* or *what was tried* when it adds context that future-you would actually want. Same factual third-person style throughout.
+
+Examples of good titles:
+- "Cloudflare Tunnel QUIC blocked on Azure VMs"
+- "Mneme prefers homelab inference over paid LLM APIs"
+- "Asymmetric importance floors give pin its meaning"
+
+The summary should read like a single coherent observation that subsumes the cluster — the kind of memory you'd want to surface for a broad query about this topic, where the individual members are relevant for specific follow-ups.
+
+Output only the JSON object. No prose, no markdown, no commentary.`;
+

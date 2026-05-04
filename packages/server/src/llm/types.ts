@@ -11,6 +11,7 @@ export const KINDS = [
   "security_alert",
   "reference",
   "summary",
+  "cluster",
 ] as const;
 
 export type Kind = (typeof KINDS)[number];
@@ -22,7 +23,13 @@ export type Observation = {
   topics: string[];
 };
 
-/** All providers must export `extractObservations` matching this signature. */
+export type ClusterDistillation = {
+  title: string;
+  summary: string;
+};
+
+/** All providers must export these functions. */
 export type LLMProvider = {
   extractObservations: (captureText: string) => Promise<Observation[]>;
+  distillCluster: (memberContents: string) => Promise<ClusterDistillation>;
 };

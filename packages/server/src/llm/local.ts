@@ -5,8 +5,8 @@
 // pointing LLM_URL at it.
 
 import { mnemeFn } from "@mneme/core";
-import { SYSTEM_PROMPT } from "./prompt.ts";
-import { KINDS, type Observation } from "./types.ts";
+import { CLUSTER_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
+import { KINDS, type ClusterDistillation, type Observation } from "./types.ts";
 
 const URL = process.env.LLM_URL ?? "";
 const BEARER = process.env.LLM_BEARER ?? process.env.AUTH_BEARER ?? "";
@@ -120,5 +120,63 @@ export const extractObservations = mnemeFn(
         (o as Observation).content.trim().length > 0 &&
         (KINDS as readonly string[]).includes((o as Observation).kind),
     );
+  },
+);
+
+/** Distil a tight cluster of related memory contents into one title +
+ *  summary. Used by the dream worker (§6.4). Same streaming SSE shape as
+ *  extractObservations; different system prompt and output schema. */
+export const distillCluster = mnemeFn(
+  "llm.local.distill",
+  async (memberContents: string): Promise<ClusterDistillation> => {
+    if (!URL) throw new Error("LLM_URL not set");
+    if (!BEARER) throw new Error("LLM_BEARER (or AUTH_BEARER) not set");
+    if (!memberContents.trim()) throw new Error("distillCluster: empty input");
+
+    const resp = await fetch(`${URL.replace(/\/$/, "")}/llm/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${BEARER}`,
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        temperature: 0.2,
+        // 1024 — dream is a 24h batch job, latency doesn't matter and a
+        // paragraph-length summary is much more useful at recall time than
+        // a terse 1-3 sentence version. ~88s of generation per cluster max.
+        max_tokens: 1024,
+        stream: true,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: CLUSTER_PROMPT },
+          { role: "user", content: memberContents },
+        ],
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+
+    if (!resp.ok) {
+      const err = cleanErrorBody(await resp.text());
+      throw new Error(`llm.local distill failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
+    }
+
+    const raw = await consumeStream(resp);
+    if (!raw.trim()) throw new Error("llm.local distill: empty response");
+
+    let parsed: { title?: unknown; summary?: unknown };
+    try {
+      parsed = JSON.parse(raw) as { title?: unknown; summary?: unknown };
+    } catch {
+      throw new Error(`llm.local distill: bad JSON: ${raw.slice(0, 200)}`);
+    }
+
+    const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+    const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+    if (!title || !summary) {
+      throw new Error("llm.local distill: missing title or summary");
+    }
+    return { title, summary };
   },
 );

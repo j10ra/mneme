@@ -1179,16 +1179,17 @@ Once registered (Phase 4.1), the **first `SessionStart` in any project automatic
 ### Phase 6 — Dream
 **Goal:** consolidation that surfaces in recall.
 
-**Phase 6.0 (v1 target):**
-- [ ] `worker/dream.ts` registers with the scheduler (§6.3 / §12 Phase 5) at 24h interval — same pattern as nap.
-- [ ] Per-repo cosine-NN edges via HNSW LATERAL JOIN at `CLUSTER_DISTANCE = 0.10`; connected components in SQL or in-process.
-- [ ] Skip-list: rows with `kind='cluster'`, `meta.pinned`, `meta.shadow_of`, `meta.superseded_by`, or `meta.in_cluster` are excluded from clustering.
-- [ ] Cluster size: `MIN=3`, `MAX=20`. Clusters outside the range are skipped this cycle.
-- [ ] LLM call (homelab provider, same SSE streaming + json_object response shape as extract): one call per cluster, returns `{title, summary}`.
-- [ ] INSERT new `memories` row: `kind='cluster'`, `content=summary`, `meta.cluster_title`, `meta.member_ids=[…]`, `importance=0.8`. Embed enqueued via the existing two-phase ingest pattern.
-- [ ] UPDATE each member: `meta.in_cluster = <cluster_id>` so they're skipped next pass.
+**Phase 6.0 (v1 shipped):**
+- [x] `worker/dream.ts` registers with the scheduler at 24h interval — same pattern as nap.
+- [x] Per-repo cosine-NN edges via HNSW LATERAL JOIN at `CLUSTER_DISTANCE = 0.10`; union-find connected components in TS (cleaner than recursive CTE for the size we need).
+- [x] Skip-list: rows with `kind='cluster'`, `meta.pinned`, `meta.shadow_of`, `meta.superseded_by`, or `meta.in_cluster` are excluded from clustering.
+- [x] Cluster size: `MIN=3`, `MAX=20`. Components outside the range are skipped this cycle (logged separately so we know if too-large clusters are accumulating).
+- [x] LLM call: one per cluster via `distillCluster()` in the local provider. Same SSE streaming + json_object shape as extract; `max_tokens=1024` (latency-tolerant since dream is a 24h batch) and a paragraph-permitting prompt for richer summaries than the original 1-3 sentence spec.
+- [x] INSERT new `memories` row: `kind='cluster'`, `content=summary`, `meta.cluster_title`, `meta.member_ids=[…]`, `importance=0.8`. Embed enqueued via the existing two-phase ingest pattern.
+- [x] UPDATE each member: `meta.in_cluster = <cluster_id>` so they're skipped next pass.
+- [x] Per-cluster failure isolation: a 524 / timeout / bad-JSON on one cluster increments `clusters_failed` and `continue`s to the next; doesn't poison the whole cycle.
 
-**Done when:** after a week of captures, `/mneme:recall` for a broad topic ("how did we fix the QUIC tunnel?") returns the `kind='cluster'` summary above raw captures, while a specific question ("what was the exact env var?") still surfaces the original member memory.
+**Done when:** after a week of captures, `/mneme:recall` for a broad topic ("how did we fix the QUIC tunnel?") returns the `kind='cluster'` summary above raw captures, while a specific question ("what was the exact env var?") still surfaces the original member memory. ✓ First cluster verified on 2026-05-04: `"/pin Command Usage"` distilled from 3 members, summary reads cleanly, embedding wired through the embed worker.
 
 **Phase 6.1 (deferred):** supersede detection. If a cluster's summary contradicts a prior `kind IN ('decision','preference')` row in the same repo, write `meta.superseded_by = <new_cluster_id>` on the older row and hard-decay its importance. Skipped from v1 because "X is the new Y" is a hard prompt — needs an LLM pass that's careful about merely-different-context vs genuinely-superseded. Ship clustering first; layer this when there's data showing it's needed.
 
