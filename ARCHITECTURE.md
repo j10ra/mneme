@@ -463,29 +463,34 @@ Captures themselves are immutable and never retried — the unit of retry is the
 
 Implementation: a `worker/nap.ts` module sharing the same singleton-via-globalThis pattern as extract/embed/keepalive. `runNapOnce()` does all the SQL in a single transaction; `startNap()` schedules it on a 6h interval from `worker/index.ts`. No LLM in the loop. Server-side rather than pg_cron because (a) it shares the same observability/log stream as extract/embed, (b) dream will need server-side anyway for LLM calls, (c) avoids depending on a Postgres extension and keeps Mneme provider-portable. See §6.7 for how shadows/related_to/superseded_by interact at recall time.
 
-### 6.4 Dream (nightly, pg_cron + worker)
+### 6.4 Dream (every 24h, server worker, LLM in the loop)
 
 What it does:
-- **Cluster:** group recent memories per repo by embedding similarity.
-- **Distill:** for each cluster of 3+, LLM produces title + summary.
-- **Persist:** insert as a new `memories` row with `kind='cluster'`, `meta.member_ids=[...]`. The cluster summary is itself a memory and shows up in `mneme.search` like any other.
-- **Supersede:** if a cluster's summary contradicts a prior `kind='decision'` or `kind='preference'` in the same scope, mark the older memory `meta.superseded_by = <new_id>` and decay it.
+- **Cluster:** per-repo, find connected components in the cosine-NN graph at distance < `CLUSTER_DISTANCE = 0.10` (tighter than nap's 0.15 — cluster members must be genuinely about the same thing, not just topically adjacent).
+- **Skip-list:** never cluster `kind='cluster'` rows, pinned memories, shadowed/superseded rows, or memories already in a cluster (`meta.in_cluster IS NOT NULL`). Pins are user-curated and shouldn't be subsumed; existing cluster members shouldn't recluster.
+- **Distill:** for each cluster of `MIN_CLUSTER_SIZE=3` or more (cap at `MAX_CLUSTER_SIZE=20` so prompts stay bounded), one LLM call returns `{title, summary}` — title = one short phrase, summary = 1-3 sentences synthesising the cluster.
+- **Persist:** insert a new `memories` row with `kind='cluster'`, `content=summary`, `meta.cluster_title`, `meta.member_ids=[…]`, `importance=0.8`. The cluster summary embeds via the normal `embed` worker queue so recall finds it like any other memory.
+- **Mark members:** each member memory gets `meta.in_cluster = <cluster_id>` so they're skipped on the next dream pass.
+- **(Phase 6.1, deferred)** Supersede detection: if a cluster's summary contradicts a prior `decision`/`preference` in the same scope, mark the older row `meta.superseded_by`. Skipped from v1 because "this contradicts that" is fuzzy and needs careful prompt design — ship clustering first and layer this later.
 
 ```mermaid
 flowchart TD
-    A[pg_cron 02:00 UTC] --> B[INSERT ingest_jobs phase='dream']
-    B --> C[Worker picks up job]
-    C --> D[Pull memories from last 7 days, group by repo]
-    D --> E[For each group: cosine-NN graph + connected components<br/>or HDBSCAN client-side]
-    E --> F{Cluster size >= 3?}
-    F -- yes --> G[LLM distill: title + 200-token summary]
-    F -- no --> H[Skip]
-    G --> I[INSERT memories kind='cluster',<br/>embedding, tsv, meta.member_ids]
-    G --> J[Detect supersede:<br/>same kind+repo+similar topic, newer fact]
-    J --> K[UPDATE older memory meta.superseded_by = new_id,<br/>importance *= 0.3]
+    A[Scheduler 24h interval] --> B[runDreamOnce]
+    B --> C[For each repo:]
+    C --> D[Pull eligible memories<br/>NOT in cluster, NOT pinned,<br/>NOT shadowed/superseded]
+    D --> E[Build cosine-NN edges<br/>distance < 0.10, same repo<br/>via HNSW LATERAL JOIN]
+    E --> F[Connected components]
+    F --> G{component size 3-20?}
+    G -- yes --> H[LLM: title + summary]
+    G -- no --> I[Skip]
+    H --> J[INSERT memories kind=cluster<br/>importance=0.8, member_ids, title]
+    J --> K[UPDATE members<br/>SET meta.in_cluster = cluster_id]
+    K --> L[Enqueue embed job for cluster]
 ```
 
-**Why this is enough:** the cluster summary is a normal `memories` row. The next `/recall` query finds it via the same hybrid search as raw memories — and because it's distilled, it scores higher on relevance for broad queries while raw captures still rank for specific ones. memsearch's "compact-as-a-new-file" pattern, applied to rows.
+**Why this is enough:** the cluster summary is a normal `memories` row. The next `/mneme:recall` query finds it via the same hybrid search as raw memories — and because it's distilled, it scores higher on relevance for broad queries ("how did we fix the QUIC tunnel?") while raw captures still rank for specific ones ("what was the exact env var?"). claude-mem's "compact-as-a-new-file" pattern, applied to rows. Member memories stay queryable forever; the cluster summary is additive context, not deletion.
+
+**Cost per cycle:** ~5-15 clusters per night × ~3k input tokens × ~200 output tokens. Well under any homelab budget. Unlike extract, dream isn't latency-sensitive (it's a 2 AM job), so timeouts can be generous (`LLM_TIMEOUT_MS` is fine at the standard 120s; large clusters might need bigger but capped at MAX_CLUSTER_SIZE keeps prompts predictable).
 
 ### 6.5 Recall (read, via `mneme.sql`)
 
@@ -1173,13 +1178,19 @@ Once registered (Phase 4.1), the **first `SessionStart` in any project automatic
 
 ### Phase 6 — Dream
 **Goal:** consolidation that surfaces in recall.
-- [ ] pg_cron nightly enqueues a `phase='dream'` job
-- [ ] Worker clusters memories per repo (cosine-NN graph + connected components for v1)
-- [ ] LLM distills clusters into title + summary
-- [ ] Inserts `kind='cluster'` rows with `meta.member_ids`
-- [ ] Supersede detection writes `meta.superseded_by` on older memories
 
-**Done when:** after a week of captures, `/recall` for a broad topic returns `kind='cluster'` summaries above raw captures.
+**Phase 6.0 (v1 target):**
+- [ ] `worker/dream.ts` registers with the scheduler (§6.3 / §12 Phase 5) at 24h interval — same pattern as nap.
+- [ ] Per-repo cosine-NN edges via HNSW LATERAL JOIN at `CLUSTER_DISTANCE = 0.10`; connected components in SQL or in-process.
+- [ ] Skip-list: rows with `kind='cluster'`, `meta.pinned`, `meta.shadow_of`, `meta.superseded_by`, or `meta.in_cluster` are excluded from clustering.
+- [ ] Cluster size: `MIN=3`, `MAX=20`. Clusters outside the range are skipped this cycle.
+- [ ] LLM call (homelab provider, same SSE streaming + json_object response shape as extract): one call per cluster, returns `{title, summary}`.
+- [ ] INSERT new `memories` row: `kind='cluster'`, `content=summary`, `meta.cluster_title`, `meta.member_ids=[…]`, `importance=0.8`. Embed enqueued via the existing two-phase ingest pattern.
+- [ ] UPDATE each member: `meta.in_cluster = <cluster_id>` so they're skipped next pass.
+
+**Done when:** after a week of captures, `/mneme:recall` for a broad topic ("how did we fix the QUIC tunnel?") returns the `kind='cluster'` summary above raw captures, while a specific question ("what was the exact env var?") still surfaces the original member memory.
+
+**Phase 6.1 (deferred):** supersede detection. If a cluster's summary contradicts a prior `kind IN ('decision','preference')` row in the same repo, write `meta.superseded_by = <new_cluster_id>` on the older row and hard-decay its importance. Skipped from v1 because "X is the new Y" is a hard prompt — needs an LLM pass that's careful about merely-different-context vs genuinely-superseded. Ship clustering first; layer this when there's data showing it's needed.
 
 ### Phase 7 — Surface (v1.0.10 shipped)
 **Goal:** memories appear in Claude Code without a tool call, via SessionStart hook stdout. **No files written.**
