@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
+import { parseArgs } from "node:util";
 import { type MnemeConfig, loadConfig, serverUrl } from "./config.ts";
 import { baseScope } from "./scope.ts";
 
@@ -261,16 +262,41 @@ async function revoke(machineId: string): Promise<void> {
   console.log(`✓ revoked ${r.revoked} key(s) for machine ${r.machine_id}`);
 }
 
+/** Setup args: accept both positional (url, password, [name]) and --flag forms.
+ *  Mixed is fine — flags win where both are present. */
+function parseSetupArgs(args: string[]): {
+  url: string;
+  adminPassword: string;
+  name?: string;
+} {
+  const { values, positionals } = parseArgs({
+    args,
+    options: {
+      "server-url": { type: "string" },
+      "admin-password": { type: "string" },
+      name: { type: "string" },
+    },
+    allowPositionals: true,
+    strict: false,
+  });
+  return {
+    url: (values["server-url"] as string | undefined) ?? positionals[0] ?? "",
+    adminPassword:
+      (values["admin-password"] as string | undefined) ?? positionals[1] ?? "",
+    name: (values.name as string | undefined) ?? positionals[2],
+  };
+}
+
 async function main(): Promise<void> {
   const cmd = process.argv[2];
   switch (cmd) {
-    case "setup":
-      await setup(
-        process.argv[3] ?? "",
-        process.argv[4] ?? "",
-        process.argv[5],
+    case "setup": {
+      const { url, adminPassword, name } = parseSetupArgs(
+        process.argv.slice(3),
       );
+      await setup(url, adminPassword, name);
       return;
+    }
     case "memory":
       await memory();
       return;
