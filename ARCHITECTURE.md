@@ -404,11 +404,12 @@ sequenceDiagram
 ### 6.3 Nap (every 6h, server worker, pure SQL)
 
 What it does, in plain language:
-- **Decay:** every memory's `importance` shrinks by age (exp decay, τ = 30 days).
-- **Pin floor:** memories with `meta.pinned = true` stay above a floor.
-- **Exact-text shadows:** memories sharing `content_hash` keep the highest-importance one; the rest get `meta.shadow_of = <kept_id>` and importance hard-decayed.
-- **Semantic relations:** memories within cosine 0.15 of each other (same scope) record each other in `meta.related_to`.
-- **Resurrect transient ingest failures:** error-state jobs older than 1 hour whose error message matches a transient pattern (HTTP 5xx, timeout, tunnel, ECONNRESET) get reset to `queued`. Anything else stays dead.
+- **Decay:** every non-archived memory's `importance` shrinks by age (exp decay, τ = 30 days; per-cycle factor `exp(-1/120) ≈ 0.9917` at 4 naps/day).
+- **Asymmetric floors:** pinned memories (`meta.pinned = true`) decay like any other memory but stop at `PIN_FLOOR = 0.5`. Unpinned memories decay all the way to `FLOOR = 0.05`. The asymmetric floor is what gives "pin" its meaning — pinned content stays in recall's high zone forever, while a fresh pin (1.0) naturally outranks a stale one (0.5) so newer pins surface first without disappearing the older ones.
+- **Exact-text shadows:** memories sharing `content_hash` keep the highest-importance one; the rest get `meta.shadow_of = <kept_id>` and importance hard-decayed (×0.1 in this cycle).
+- **Semantic relations** *(Phase B, not yet implemented)*: memories within cosine 0.15 of each other (same scope) record each other in `meta.related_to`. Deferred until Phase A telemetry shows whether the cost on Supabase compute is worth the recall improvement.
+- **Resurrect transient ingest failures:** error-state jobs older than 1 hour whose error message matches a transient pattern (HTTP 5xx, timeout, tunnel, ECONNRESET) get reset to `queued`. Anything else stays errored.
+- **Retire to dead:** error-state jobs older than 24 hours whose error message does NOT match a transient pattern get marked `state='dead'` (terminal). Operators can manually promote `dead → queued` after a model upgrade or prompt fix.
 
 ```mermaid
 flowchart LR

@@ -6,9 +6,13 @@ import { sql } from "../db.ts";
 // After 30 days a memory's importance lands at original × 1/e (~37%).
 const PER_NAP_DECAY = Math.exp(-1 / 120);
 
-// Importance floor for non-pinned memories — never decay them to zero, just
-// rank them low. Anything pinned is exempt from decay entirely.
-const IMPORTANCE_FLOOR = 0.05;
+// Importance floors. Pinned memories decay like any other memory but stop at
+// PIN_FLOOR — high enough to keep them surfacing, low enough that fresh pins
+// naturally outrank stale ones. Unpinned memories decay all the way to
+// FLOOR. The asymmetric floor is what gives "pin" its meaning: pinned
+// content stays in recall's high zone forever; unpinned content fades.
+const FLOOR = 0.05;
+const PIN_FLOOR = 0.5;
 
 // Hard reduction applied to memories shadowed in this cycle (exact-text dups).
 const SHADOW_DECAY = 0.1;
@@ -34,13 +38,23 @@ export const runNapOnce = mnemeFn(
   "worker.nap.once",
   async (): Promise<NapResult> => {
     return await sql.begin(async (tx) => {
-      // 1. Decay non-pinned memories (skip rows already at floor for cheapness).
+      // 1. Decay all non-archived memories. Pinned rows stop at PIN_FLOOR;
+      //    unpinned stop at FLOOR. Skip rows already at their respective
+      //    floor so we don't waste writes on no-op updates.
       const decayed = await tx`
         UPDATE memories
-        SET importance = GREATEST(${IMPORTANCE_FLOOR}::real, importance * ${PER_NAP_DECAY}::real)
+        SET importance = GREATEST(
+          CASE WHEN COALESCE((meta->>'pinned')::boolean, false)
+               THEN ${PIN_FLOOR}::real
+               ELSE ${FLOOR}::real
+          END,
+          importance * ${PER_NAP_DECAY}::real
+        )
         WHERE archived_at IS NULL
-          AND NOT COALESCE((meta->>'pinned')::boolean, false)
-          AND importance > ${IMPORTANCE_FLOOR}::real
+          AND importance > CASE
+            WHEN COALESCE((meta->>'pinned')::boolean, false) THEN ${PIN_FLOOR}::real
+            ELSE ${FLOOR}::real
+          END
       `;
 
       // 2. Exact-text shadows: in each content_hash group, keep the highest-
