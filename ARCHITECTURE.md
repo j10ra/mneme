@@ -157,7 +157,7 @@ Mneme is **provider-agnostic for LLM and embeddings**. Concrete implementations 
 |---|---|---|---|
 | Storage | Supabase (Postgres + pgvector + tsvector) | Free tier | 60 connections, 500MB; pooler endpoint available if direct port saturates |
 | Embeddings | **`local` provider** → HuggingFace TEI on homelab serving `BAAI/bge-large-en-v1.5` (1024-dim native) | $0 ongoing (one-time hardware) | Drop-in for the original Voyage-tuned schema (same `vector(1024)` column). `chunk_id = sha256(content_hash + ":" + embedding_model)` makes model swaps collision-safe. |
-| Extraction LLM | **`local` provider** → Ollama on homelab serving `qwen2.5:7b-instruct-q4_K_M` (OpenAI-compatible streaming) | $0 ongoing | Streaming response (`stream: true` + SSE consumer) avoids Cloudflare 524 timeouts on slow generations. JSON output via `response_format: { type: "json_object" }`. 10-minute client-side timeout; typical extraction is 30-180s. |
+| Extraction LLM | **`local` provider** → Ollama on homelab serving `qwen2.5:3b-instruct-q4_K_M` (OpenAI-compatible streaming) | $0 ongoing | Streaming response (`stream: true` + SSE consumer) avoids Cloudflare 524 timeouts on slow generations. JSON output via `response_format: { type: "json_object" }`. 90s client-side timeout (under CF's 100s window); typical warm extraction is 3-15s. Circuit breaker pauses worker for 5min after 3 consecutive failures. |
 | Edge | Caddy reverse proxy + Cloudflare Tunnel (named or quick) | $0 | Bearer-auth gate at Caddy. Container ports bind `127.0.0.1` only — VM exposes nothing publicly. |
 | Worker host | Bun process running locally / on Railway | $0-5/mo | Same Bun process as Hono server, no sidecar. Worker singleton pinned to `globalThis` so `bun --hot` reloads don't multiply loops. |
 | Read interface | MCP (one tool) + a skill | included | `mneme.sql` reads via `mneme_reader` Postgres role |
@@ -1199,7 +1199,7 @@ packages/server/src/
 
 #### Extraction LLM
 
-Today: `local` provider → homelab Ollama serving `qwen2.5:7b-instruct-q4_K_M`. OpenAI-compatible chat completions endpoint via Caddy reverse proxy + Cloudflare Tunnel + Bearer auth. Streaming responses required to bypass Cloudflare's 100s idle timeout on slow generations.
+Today: `local` provider → homelab Ollama serving `qwen2.5:3b-instruct-q4_K_M`. OpenAI-compatible chat completions endpoint via Caddy reverse proxy + Cloudflare Tunnel + Bearer auth. Streaming responses required to bypass Cloudflare's 100s idle timeout on slow generations.
 
 | Direction | Provider/model | Tradeoff |
 |---|---|---|

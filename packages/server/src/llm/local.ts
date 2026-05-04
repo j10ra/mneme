@@ -1,6 +1,6 @@
 // Local LLM provider — OpenAI-compatible chat completions endpoint behind a
 // Caddy/Cloudflare-tunnel proxy. Today this points at the homelab Ollama
-// service running qwen2.5:7b (or whatever LLM_MODEL specifies). Any other
+// service running qwen2.5:3b (or whatever LLM_MODEL specifies). Any other
 // OpenAI-compat endpoint (vLLM, LiteLLM, llama.cpp server) drops in by just
 // pointing LLM_URL at it.
 
@@ -10,9 +10,9 @@ import { KINDS, type Observation } from "./types.ts";
 
 const URL = process.env.LLM_URL ?? "";
 const BEARER = process.env.LLM_BEARER ?? process.env.AUTH_BEARER ?? "";
-const MODEL = process.env.LLM_MODEL ?? "qwen2.5:7b-instruct-q4_K_M";
+const MODEL = process.env.LLM_MODEL ?? "qwen2.5:3b-instruct-q4_K_M";
 // 90s — slightly under Cloudflare's 100s "no data from origin" window. A real
-// warm extract on qwen2.5:7b finishes in 5-30s; cold-load failures get
+// warm extract on qwen2.5:3b finishes in 3-15s; cold-load failures get
 // cancelled fast instead of holding the homelab CPU for 2+ minutes.
 const TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 90_000);
 
