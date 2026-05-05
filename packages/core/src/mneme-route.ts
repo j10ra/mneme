@@ -91,6 +91,13 @@ export function mnemeRoute(name: string): MiddlewareHandler {
 
       const store = getTraceStore();
       if (store) {
+        // Push the root span FIRST so it lands in this trace's pending
+        // bucket alongside any child spans. pushTrace then moves the whole
+        // bucket — root + children — into the flush buffer in one shot.
+        // Reversing the order would leave the root span stranded: pushTrace
+        // deletes the pending bucket, and the subsequent pushSpan would
+        // recreate it for a trace that's already been finalized.
+        store.pushSpan({ ...rootSpan, traceId });
         store.pushTrace({
           traceId,
           rootSpanName: name,
@@ -99,7 +106,6 @@ export function mnemeRoute(name: string): MiddlewareHandler {
           endedAtMs,
           durationMs,
         });
-        store.pushSpan({ ...rootSpan, traceId });
       }
     }
   };

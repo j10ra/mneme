@@ -33,6 +33,13 @@ const MAX_BODY_BYTES = 256 * 1024;
 const MAX_PENDING_SPANS_PER_TRACE = 1000;
 const MAX_PENDING_TRACES = 200;
 
+// LRU of recently-finalized trace_ids. A late span or log for a trace that
+// already pushed (e.g., a fire-and-forget async task that escapes the route's
+// finally) goes straight to the flush buffer instead of creating a fresh
+// pending bucket that would never finalize. The trace row is already in
+// _ops.traces, so the FK is satisfied.
+const RECENT_TRACE_LRU_SIZE = 1024;
+
 export class TraceStore {
   private sql: postgres.Sql;
   private flushIntervalMs: number;
@@ -51,6 +58,9 @@ export class TraceStore {
   // _ops.spans (and _ops.logs since 0008) don't violate the FK on insert.
   private pendingSpans = new Map<string, SpanRecord[]>();
   private pendingLogs = new Map<string, LogRecord[]>();
+  // LRU of trace_ids that have already been pushTrace'd. Map insertion order
+  // is the LRU; oldest entry evicted when size > RECENT_TRACE_LRU_SIZE.
+  private recentlyFinalized = new Map<string, true>();
 
   constructor(opts: {
     sql: postgres.Sql;
@@ -112,6 +122,7 @@ export class TraceStore {
       this.pendingLogs.delete(t.traceId);
     }
     this.traceBuffer.push(t);
+    this.markFinalized(t.traceId);
     this.maybeFlushOverflow();
   }
 
@@ -121,6 +132,15 @@ export class TraceStore {
       input: this.scrub(s.input),
       output: this.scrub(s.output),
     };
+    // Late span for an already-finalized trace: skip the pending bucket.
+    // Trace row is already in flight, FK will be satisfied. Without this,
+    // any escaping async task (or a route that pushes its rootSpan after
+    // pushTrace) creates a permanent orphan bucket.
+    if (this.recentlyFinalized.has(s.traceId)) {
+      this.spanBuffer.push(scrubbed);
+      this.maybeFlushOverflow();
+      return;
+    }
     let bucket = this.pendingSpans.get(s.traceId);
     if (!bucket) {
       // Cap concurrent in-flight traces. Drop the oldest bucket if exceeded.
@@ -148,8 +168,14 @@ export class TraceStore {
 
   pushLog(l: LogRecord): void {
     // Untraced logs flush immediately (no FK to satisfy). Trace-attributed
-    // logs go into the per-trace pending bucket.
+    // logs go into the per-trace pending bucket — unless the trace already
+    // finalized, in which case they bypass pending and go straight to flush.
     if (!l.traceId) {
+      this.logBuffer.push(l);
+      this.maybeFlushOverflow();
+      return;
+    }
+    if (this.recentlyFinalized.has(l.traceId)) {
       this.logBuffer.push(l);
       this.maybeFlushOverflow();
       return;
@@ -174,6 +200,20 @@ export class TraceStore {
     }
     bucket.push(l);
     this.maybeFlushOverflow();
+  }
+
+  /** Record traceId as finalized; evict oldest if LRU full. Map insertion
+   *  order is iteration order, so .keys().next() gives the oldest. */
+  private markFinalized(traceId: string): void {
+    // Move-to-end on re-insert (defensive — pushTrace shouldn't fire twice).
+    if (this.recentlyFinalized.has(traceId)) {
+      this.recentlyFinalized.delete(traceId);
+    }
+    this.recentlyFinalized.set(traceId, true);
+    if (this.recentlyFinalized.size > RECENT_TRACE_LRU_SIZE) {
+      const oldest = this.recentlyFinalized.keys().next().value as string | undefined;
+      if (oldest !== undefined) this.recentlyFinalized.delete(oldest);
+    }
   }
 
   private maybeFlushOverflow(): void {
