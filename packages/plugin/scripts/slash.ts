@@ -244,23 +244,22 @@ async function machines(): Promise<void> {
   }
 }
 
-/** Rename a machine in place. machine_id + new name on argv; admin password on stdin.
- *  Same machine_id, same token, same captures/memories — only the display
- *  name in `_ops.api_keys.name` changes. Use this instead of revoke+register
- *  when you just want the label updated without bifurcating history. */
-async function rename(machineId: string, machineName: string): Promise<void> {
-  if (!machineId) throw new Error("machine_id required");
-  if (!machineName) throw new Error("machine_name required");
-  const adminPassword = await readStdin();
-  if (!adminPassword) throw new Error("admin password required on stdin");
+/** Rename THIS machine in place. New name on argv. No admin password —
+ *  the per-machine bearer in ~/.mneme/config.json is the identity, and the
+ *  server stamps the rename target from ctx.auth.machineId. Same machine_id,
+ *  same token, same captures/memories; only the label changes server-side
+ *  and locally. Renaming another machine isn't supported by design (would
+ *  leave that machine's local config stale). */
+async function rename(machineName: string): Promise<void> {
+  if (!machineName) throw new Error("new machine name required");
   const cfg = loadConfig();
   const resp = await fetch(serverUrl(cfg, "/api/auth/rename"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${adminPassword}`,
+      Authorization: `Bearer ${cfg.auth.key}`,
     },
-    body: JSON.stringify({ machine_id: machineId, machine_name: machineName }),
+    body: JSON.stringify({ machine_name: machineName }),
   });
   if (!resp.ok) {
     throw new Error(
@@ -272,21 +271,14 @@ async function rename(machineId: string, machineName: string): Promise<void> {
     machine_name: string;
     renamed: number;
   };
-  console.log(`✓ renamed ${r.renamed} key(s) for machine ${r.machine_id} → ${r.machine_name}`);
+  console.log(`✓ renamed this machine → "${r.machine_name}" (${r.machine_id})`);
 
-  // If the renamed machine IS this one, keep the local label in sync. Nothing
-  // in the runtime reads `machine.name` from the local config (hooks send
-  // machine_id + os.hostname), but a stale label is confusing for humans
-  // inspecting ~/.mneme/config.json. When renaming a different machine, leave
-  // local untouched — that machine will need its own /mneme:rename run, or a
-  // manual edit.
-  if (cfg.machine.id === r.machine_id) {
-    cfg.machine.name = r.machine_name;
-    saveConfig(cfg);
-    console.log(
-      `✓ synced ~/.mneme/config.json (machine.name = "${r.machine_name}")`,
-    );
-  }
+  // Local sync. Nothing in the runtime reads machine.name from config (hooks
+  // send machine_id + os.hostname), but a stale label is confusing for humans
+  // inspecting ~/.mneme/config.json.
+  cfg.machine.name = r.machine_name;
+  saveConfig(cfg);
+  console.log(`✓ synced ~/.mneme/config.json (machine.name = "${r.machine_name}")`);
 }
 
 /** Revoke a machine. machine_id on argv; admin password on stdin. */
@@ -363,7 +355,7 @@ async function main(): Promise<void> {
       await revoke(process.argv[3] ?? "");
       return;
     case "rename":
-      await rename(process.argv[3] ?? "", process.argv[4] ?? "");
+      await rename(process.argv[3] ?? "");
       return;
     default:
       console.error(`unknown subcommand: ${cmd}`);

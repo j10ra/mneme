@@ -1,16 +1,23 @@
-// Admin-password gated routes for issuing/revoking per-machine bearer tokens.
-// Four endpoints:
-//   POST /api/auth/register {machine_name}                → mints a token, returns once
-//   POST /api/auth/revoke   {machine_id}                  → marks the row revoked
-//   POST /api/auth/rename   {machine_id, machine_name}    → updates the row's name in place
-//   GET  /api/auth/machines                               → lists active machines
+// Routes for issuing/revoking/renaming per-machine bearer tokens.
 //
-// All four are gated by requireAuth("admin"). Only the ADMIN_PASSWORD bearer
-// satisfies that scope (via the admin-fallback short-circuit in core/auth.ts);
-// regular per-machine tokens with scopes={capture,read,mcp} get a 403.
+// Admin-password gated:
+//   POST /api/auth/register {machine_name}     → mints a token, returns once
+//   POST /api/auth/revoke   {machine_id}       → marks the row revoked
+//   GET  /api/auth/machines                    → lists active machines
+//
+// Self-rename (per-machine token gated):
+//   POST /api/auth/rename   {machine_name}     → updates the calling machine's name
+//
+// Admin routes use requireAuth("admin") (only the ADMIN_PASSWORD bearer
+// satisfies that). Self-rename is intentionally NOT admin: a machine can only
+// rename itself, and the calling token's machine_id is the rename target.
+// This matches the "your machine, your label" mental model and removes the
+// footgun where renaming a different machine left that machine's local
+// config stale. Admin debugging that needs to rename another machine goes
+// via direct DB.
 
 import { Hono } from "hono";
-import { mnemeRoute, requireAuth } from "@mneme/core";
+import { currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql, sha256Hex } from "./db.ts";
 
 function generateToken(machineName: string): string {
@@ -82,29 +89,41 @@ export function mountAuthRoutes(app: Hono): void {
   );
 
   // ---------------------------------------------------------------------------
-  // POST /api/auth/rename — change a machine's display name in place.
-  // Body: { machine_id, machine_name }. Same row, same machine_id, same token,
-  // same captures/memories. Avoids the bifurcated-history side effect of
-  // revoke+re-register when all the user wants is a rename.
+  // POST /api/auth/rename — change THIS machine's display name in place.
+  // Body: { machine_name }. The target machine_id is the calling token's own
+  // machine (server-stamped from ctx.auth.machineId), not anything in the
+  // body. A machine can only rename itself.
+  //
+  // No admin password — the per-machine bearer token is enough identity.
+  // Admin tokens (machineId === null) get 400 here; admin rename of another
+  // machine isn't supported by design (footgun: it would desync the target
+  // machine's local config). If admin really needs to rename another machine,
+  // do it via direct DB.
+  //
+  // Same row, same machine_id, same token, same captures/memories — only
+  // _ops.api_keys.name changes. Avoids the bifurcated-history side effect
+  // of revoke+re-register when all the user wants is a rename.
   // ---------------------------------------------------------------------------
   app.post(
     "/api/auth/rename",
     mnemeRoute("api.auth.rename"),
-    requireAuth("admin"),
+    requireAuth("capture"),
     async (c) => {
+      const auth = currentAuth();
+      const machineId = auth?.machineId;
+      if (!machineId) {
+        return c.json(
+          { error: "self-rename requires a per-machine token, not admin" },
+          400,
+        );
+      }
       const body = (await c.req.json().catch(() => null)) as {
-        machine_id?: unknown;
         machine_name?: unknown;
       } | null;
-      const machineId =
-        typeof body?.machine_id === "string" && body.machine_id.trim()
-          ? body.machine_id.trim()
-          : "";
       const machineName =
         typeof body?.machine_name === "string" && body.machine_name.trim()
           ? body.machine_name.trim()
           : "";
-      if (!machineId) return c.json({ error: "machine_id required" }, 400);
       if (!machineName) return c.json({ error: "machine_name required" }, 400);
 
       const result = await sql<{ id: string; name: string }[]>`
@@ -114,7 +133,7 @@ export function mountAuthRoutes(app: Hono): void {
         RETURNING id, name
       `;
       if (result.length === 0) {
-        return c.json({ error: "no active key for that machine_id" }, 404);
+        return c.json({ error: "no active key for this machine" }, 404);
       }
       return c.json({
         machine_id: machineId,

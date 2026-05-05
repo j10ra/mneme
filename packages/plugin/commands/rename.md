@@ -1,25 +1,23 @@
 ---
-description: Rename a Mneme machine in place (no token reissue, no bifurcated history)
-argument-hint: <machine-name-or-id> <new-name>
-allowed-tools: Bash, mcp__plugin_mneme_mneme__mneme_sql
+description: Rename THIS machine in Mneme (in place, no token reissue)
+argument-hint: <new-name>
+allowed-tools: Bash
 ---
 
-The user wants to rename a registered machine. Arguments: `$ARGUMENTS` — first token is the target (current name or UUID), second is the new name.
+Rename this machine to: $ARGUMENTS
 
-**Resolve the target to a `machine_id` (uuid) before invoking the slash.**
+This is a self-rename: it can only rename the machine the slash is run from. Renaming another machine isn't supported by design — that would leave the other machine's local `~/.mneme/config.json` stale.
 
-1. **Parse args.** Split `$ARGUMENTS` on whitespace. First token = target, second token (and onward, joined with `-`) = new name. If either is missing, ask the user.
+1. **Validate.** `$ARGUMENTS` is the new name. If empty or only whitespace, ask the user. Names get lowercased and `[^a-z0-9-]` collapsed to `-` server-side, so a name like `Qube Laptop` becomes `qube-laptop`. Surface that to the user before running if it differs.
 
-2. **UUID passthrough.** If the target matches `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`, use it directly.
+2. **Confirm.** Show the user `<current-name> → <new-name>` and ask "Rename? (y/n)". Pull the current name from `cfg.machine.name` in `~/.mneme/config.json` (read it, don't ask).
 
-3. **Name lookup.** Otherwise query `mneme.sql` against the `machines` view: `SELECT machine_id, name, last_used_at FROM machines WHERE name = '<target>' AND revoked_at IS NULL` (or `name ILIKE '%<target>%'` if no exact hit). If multiple match, ask which one. If none, say so plainly.
-
-4. **Confirm.** Show the user `<old-name> → <new-name>` (and `machine_id`, `last_used_at`) and ask "Rename? (y/n)". This is in-place: same `machine_id`, same token, same captures/memories — only the label changes.
-
-5. **Run.** Pass `machine_id` and the new name on argv, admin password on stdin:
+3. **Run.** No admin password needed — the per-machine token in `~/.mneme/config.json` is the identity. Server stamps the rename target from the bearer:
 
 ```bash
-echo -n "<admin-password>" | bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" rename "<machine-id>" "<new-name>"
+bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" rename "<new-name>"
 ```
 
-After it runs, confirm the new name to the user. The `machines` view will reflect the change immediately on the next query.
+The slash hits `POST /api/auth/rename`, the server updates `_ops.api_keys.name` for the calling token's `machine_id`, and the slash writes the new label back into `~/.mneme/config.json` so server and local stay in sync. Same `machine_id`, same token, same captures and memories — only the label changes.
+
+After it runs, confirm the new name to the user.
