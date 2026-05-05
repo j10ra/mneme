@@ -244,6 +244,37 @@ async function machines(): Promise<void> {
   }
 }
 
+/** Rename a machine in place. machine_id + new name on argv; admin password on stdin.
+ *  Same machine_id, same token, same captures/memories — only the display
+ *  name in `_ops.api_keys.name` changes. Use this instead of revoke+register
+ *  when you just want the label updated without bifurcating history. */
+async function rename(machineId: string, machineName: string): Promise<void> {
+  if (!machineId) throw new Error("machine_id required");
+  if (!machineName) throw new Error("machine_name required");
+  const adminPassword = await readStdin();
+  if (!adminPassword) throw new Error("admin password required on stdin");
+  const cfg = loadConfig();
+  const resp = await fetch(serverUrl(cfg, "/api/auth/rename"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${adminPassword}`,
+    },
+    body: JSON.stringify({ machine_id: machineId, machine_name: machineName }),
+  });
+  if (!resp.ok) {
+    throw new Error(
+      `POST /api/auth/rename failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
+    );
+  }
+  const r = (await resp.json()) as {
+    machine_id: string;
+    machine_name: string;
+    renamed: number;
+  };
+  console.log(`✓ renamed ${r.renamed} key(s) for machine ${r.machine_id} → ${r.machine_name}`);
+}
+
 /** Revoke a machine. machine_id on argv; admin password on stdin. */
 async function revoke(machineId: string): Promise<void> {
   if (!machineId) throw new Error("machine_id required");
@@ -317,9 +348,14 @@ async function main(): Promise<void> {
     case "revoke":
       await revoke(process.argv[3] ?? "");
       return;
+    case "rename":
+      await rename(process.argv[3] ?? "", process.argv[4] ?? "");
+      return;
     default:
       console.error(`unknown subcommand: ${cmd}`);
-      console.error("usage: slash.ts <setup|memory|pin|unpin|machines|revoke> [args]");
+      console.error(
+        "usage: slash.ts <setup|memory|pin|unpin|machines|revoke|rename> [args]",
+      );
       process.exit(1);
   }
 }

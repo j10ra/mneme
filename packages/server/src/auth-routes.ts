@@ -1,10 +1,11 @@
 // Admin-password gated routes for issuing/revoking per-machine bearer tokens.
-// Three endpoints:
-//   POST /api/auth/register {machine_name}      → mints a token, returns once
-//   POST /api/auth/revoke   {machine_id}        → marks the row revoked
-//   GET  /api/auth/machines                     → lists active machines
+// Four endpoints:
+//   POST /api/auth/register {machine_name}                → mints a token, returns once
+//   POST /api/auth/revoke   {machine_id}                  → marks the row revoked
+//   POST /api/auth/rename   {machine_id, machine_name}    → updates the row's name in place
+//   GET  /api/auth/machines                               → lists active machines
 //
-// All three are gated by requireAuth("admin"). Only the ADMIN_PASSWORD bearer
+// All four are gated by requireAuth("admin"). Only the ADMIN_PASSWORD bearer
 // satisfies that scope (via the admin-fallback short-circuit in core/auth.ts);
 // regular per-machine tokens with scopes={capture,read,mcp} get a 403.
 
@@ -77,6 +78,49 @@ export function mountAuthRoutes(app: Hono): void {
         WHERE machine_id = ${machineId} AND revoked_at IS NULL
       `;
       return c.json({ machine_id: machineId, revoked: result.count });
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // POST /api/auth/rename — change a machine's display name in place.
+  // Body: { machine_id, machine_name }. Same row, same machine_id, same token,
+  // same captures/memories. Avoids the bifurcated-history side effect of
+  // revoke+re-register when all the user wants is a rename.
+  // ---------------------------------------------------------------------------
+  app.post(
+    "/api/auth/rename",
+    mnemeRoute("api.auth.rename"),
+    requireAuth("admin"),
+    async (c) => {
+      const body = (await c.req.json().catch(() => null)) as {
+        machine_id?: unknown;
+        machine_name?: unknown;
+      } | null;
+      const machineId =
+        typeof body?.machine_id === "string" && body.machine_id.trim()
+          ? body.machine_id.trim()
+          : "";
+      const machineName =
+        typeof body?.machine_name === "string" && body.machine_name.trim()
+          ? body.machine_name.trim()
+          : "";
+      if (!machineId) return c.json({ error: "machine_id required" }, 400);
+      if (!machineName) return c.json({ error: "machine_name required" }, 400);
+
+      const result = await sql<{ id: string; name: string }[]>`
+        UPDATE _ops.api_keys
+        SET name = ${machineName}
+        WHERE machine_id = ${machineId} AND revoked_at IS NULL
+        RETURNING id, name
+      `;
+      if (result.length === 0) {
+        return c.json({ error: "no active key for that machine_id" }, 404);
+      }
+      return c.json({
+        machine_id: machineId,
+        machine_name: machineName,
+        renamed: result.length,
+      });
     },
   );
 
