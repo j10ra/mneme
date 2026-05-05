@@ -42,13 +42,13 @@ Mneme stores your memories in Postgres + pgvector. The agent talks to it through
 ### `ingest_jobs` — worker queue
 You usually don't query this. `phase` ∈ `extract`, `embed`, `dream`. `state` ∈ `queued`, `running`, `done`, `error`.
 
-### `machines` — name → machine_id lookup (view)
-Read-only view exposing the `(machine_id, name, created_at, last_used_at, revoked_at)` mapping that lives in `_ops.api_keys`. Use this whenever the user refers to a machine by its friendly name ("get recent conversation from qube-laptop"): resolve the name to a `machine_id` first, then query `captures` / `memories`.
+### `_ops.machines` — name → machine_id lookup (view)
+Read-only view in the `_ops` schema exposing the `(machine_id, name, created_at, last_used_at, revoked_at)` mapping that lives in `_ops.api_keys`. Schema-qualify on every reference (`_ops.machines`, never bare `machines`). Use this whenever the user refers to a machine by its friendly name ("get recent conversation from qube-laptop"): resolve the name to a `machine_id` first, then query `captures` / `memories`.
 
 ```sql
 -- Resolve "qube-laptop" → machine_id, then pull recent captures
 WITH m AS (
-  SELECT machine_id FROM machines
+  SELECT machine_id FROM _ops.machines
   WHERE name = 'qube-laptop' AND revoked_at IS NULL
   LIMIT 1
 )
@@ -60,7 +60,7 @@ ORDER BY c.captured_at DESC
 LIMIT 20;
 ```
 
-If `name = '<exact>'` returns nothing, fall back to `name ILIKE '%<fragment>%'`. A machine that's been renamed in place stays the same `machine_id` (its captures don't bifurcate); a machine that was revoked + re-registered shows two rows here.
+If `name = '<exact>'` returns nothing, fall back to `name ILIKE '%<fragment>%'`. A machine renamed in place via `/mneme:rename` keeps the same `machine_id` (its captures don't bifurcate); a machine that was revoked + re-registered shows two rows here.
 
 ### Common mistakes (READ THIS BEFORE WRITING SQL)
 
