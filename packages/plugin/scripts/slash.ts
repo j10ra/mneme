@@ -13,7 +13,7 @@ import {
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { type MnemeConfig, loadConfig, serverUrl } from "./config.ts";
+import { type MnemeConfig, loadConfig, saveConfig, serverUrl } from "./config.ts";
 import { baseScope } from "./scope.ts";
 
 async function readStdin(): Promise<string> {
@@ -273,6 +273,20 @@ async function rename(machineId: string, machineName: string): Promise<void> {
     renamed: number;
   };
   console.log(`✓ renamed ${r.renamed} key(s) for machine ${r.machine_id} → ${r.machine_name}`);
+
+  // If the renamed machine IS this one, keep the local label in sync. Nothing
+  // in the runtime reads `machine.name` from the local config (hooks send
+  // machine_id + os.hostname), but a stale label is confusing for humans
+  // inspecting ~/.mneme/config.json. When renaming a different machine, leave
+  // local untouched — that machine will need its own /mneme:rename run, or a
+  // manual edit.
+  if (cfg.machine.id === r.machine_id) {
+    cfg.machine.name = r.machine_name;
+    saveConfig(cfg);
+    console.log(
+      `✓ synced ~/.mneme/config.json (machine.name = "${r.machine_name}")`,
+    );
+  }
 }
 
 /** Revoke a machine. machine_id on argv; admin password on stdin. */

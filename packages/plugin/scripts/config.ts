@@ -54,23 +54,23 @@ export function isProjectRegistered(cfg: MnemeConfig, cwd: string): boolean {
   );
 }
 
-/** Append cwd to config.projects[] if not already there. Atomic write via
- *  tempfile + rename (POSIX rename is atomic on the same filesystem). */
+/** Atomic config write: tempfile (mode 0600) + rename. POSIX rename is atomic
+ *  on the same filesystem, and setting the mode at write time means the live
+ *  config never sits at the default umask, even briefly. */
+export function saveConfig(cfg: MnemeConfig): void {
+  const path = configPath();
+  const tmp = `${path}.tmp.${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(tmp, path);
+}
+
+/** Append cwd to config.projects[] if not already there. */
 export function registerProject(cwd: string): boolean {
   const cfg = loadConfig();
   const projects = cfg.projects ?? [];
   if (projects.some((p) => p.path === cwd)) return false;
   projects.push({ path: cwd, registered_at: new Date().toISOString() });
   cfg.projects = projects;
-
-  const path = configPath();
-  const tmp = `${path}.tmp.${process.pid}`;
-  // Mode 0600 set at write time (not via a separate chmod after the fact)
-  // so the tempfile never exists at the default umask, even briefly. A
-  // crash or concurrent reader between writeFile and chmod would otherwise
-  // catch the file at 0644. Atomic rename then makes the live config
-  // inherit the tempfile's mode, so the post-rename live file is 0600 too.
-  writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  renameSync(tmp, path);
+  saveConfig(cfg);
   return true;
 }
