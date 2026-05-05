@@ -1,6 +1,6 @@
 ---
 name: using-mneme
-description: How to query Mneme — your cross-machine memory store. SQL-first via the mneme.sql tool. Use embed('text') for semantic search, ts_rank for keyword. Three tables (captures, memories, ingest_jobs). Default scope filters keep recall focused; the embed() macro is auto-substituted with a voyage-code-3 vector before execution.
+description: How to query Mneme — your cross-machine memory store. SQL-first via the mneme.sql tool. Use embed('text') for semantic search, ts_rank for keyword. Three tables (captures, memories, ingest_jobs). The embed() macro is auto-substituted with a 1024-dim vector from the configured embedder before execution. Surface rows show an [8-char id prefix] you can pivot from with `id::text LIKE '<prefix>%'`.
 ---
 
 # Mneme: cross-machine memory via SQL
@@ -15,7 +15,7 @@ Mneme stores your memories in Postgres + pgvector. The agent talks to it through
 | `id` | uuid PK | |
 | `content` | text | scrubbed at edge for secrets and `<private>` blocks |
 | `content_sha256` | text | dedup key |
-| `source` | text | `claude_hook`, `claude_summary`, `claude_memory`, `manual`, `http`, `dream`, ... |
+| `source` | text | `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`, `manual:/memory`, `manual:/api/memory`. (Dream writes directly to `memories`, not through `/api/capture`, so no `dream` source on captures.) |
 | `machine_id`, `hostname`, `repo`, `harness`, `agent`, `session_id` | text | scope |
 | `topics` | text[] | optional tags |
 | `private` | bool | true = origin-machine only on read |
@@ -31,10 +31,10 @@ Mneme stores your memories in Postgres + pgvector. The agent talks to it through
 | `chunk_id` | text UNIQUE | composite hash; encodes embedding model so re-embed is safe |
 | `content` | text | |
 | `content_hash` | text | |
-| `embedding` | vector(1024) | voyage-code-3 |
-| `embedding_model` | text | currently `voyage-code-3` |
+| `embedding` | vector(1024) | populated by the configured embedder provider |
+| `embedding_model` | text | model name from the embedder; varies by deployment. `chunk_id = sha256(content_hash + ":" + embedding_model)` so re-embedding under a different model produces fresh rows instead of overwriting. |
 | `tsv` | tsvector | for `ts_rank`, `websearch_to_tsquery` |
-| `kind` | text | `note`, `bugfix`, `feature`, `discovery`, `decision`, `preference`, `constraint`, `security_alert`, `reference`, `summary`, `cluster`, `claude_memory`, `pin` |
+| `kind` | text | one of: `note`, `bugfix`, `feature`, `discovery`, `decision`, `preference`, `constraint`, `security_alert`, `reference`, `summary`, `cluster`. (`claude_memory` is a *source* on captures, not a kind on memories. `pin` is a `raw_meta.kind` flag used to actuate `meta.pinned` — also not a memory kind.) |
 | `importance` | real | decays over time (nap), boosts on reference |
 | `meta` | jsonb | `related_to`, `member_ids`, `superseded_by`, `shadow_of`, `pinned`, `one_line` |
 | same scope cols | | denormalized from capture |
@@ -81,17 +81,18 @@ LIMIT 20;
 ```
 
 The `source` column tells you what kind of event:
-- `claude_hook` — a prompt you typed OR a tool call Claude made
+- `claude_hook` — a prompt the user typed OR a tool call the agent made (UserPromptSubmit + PostToolUse)
 - `claude_summary` — Stop / PreCompact session digest (full payload as JSON)
-- `claude_memory` — auto-memory write detected by the hook
-- `manual:/memory` — explicit `/memory` slash command
-- `manual` — `/pin`, `/unpin`, etc.
+- `claude_assistant` — assistant turns transcribed from the session JSONL
+- `claude_memory` — auto-memory write detected by the hook on `~/.claude/projects/*/memory/*.md`
+- `manual:/memory` — explicit `/mneme:memory` slash command
+- `manual:/api/memory` — direct memory write (used by `/mneme:pin <text>`, which bypasses the extract worker)
 
-For "what did I say" specifically, filter on `source = 'claude_hook'` and look at `content` — your prompts are short text, tool calls are JSON beginning with `{"tool":...}`.
+For "what did the user say" specifically, filter on `source = 'claude_hook'` and look at `content` — user prompts are short text, tool calls are JSON beginning with `{"tool":...}`. For "what did the agent say back," filter on `source = 'claude_assistant'`.
 
 ## The `embed()` macro
 
-Inside any SELECT, `embed('your query text')` is replaced with a voyage-code-3 1024-dim vector before execution. Use with `<=>` (cosine distance):
+Inside any SELECT, `embed('your query text')` is replaced with a 1024-dim vector from the configured embedder before execution. Use with `<=>` (cosine distance):
 
 ```sql
 SELECT id, content, 1 - (embedding <=> embed('payment integration')) AS sim
@@ -139,6 +140,31 @@ ORDER BY created_at DESC LIMIT 20;
 ```sql
 SELECT * FROM memories WHERE id = '<uuid>';
 ```
+
+**Pivoting from a surface row** — the SessionStart surface (the markdown that lands in your context at session start) prefixes every line with an 8-char hex id and a kind glyph, e.g.:
+
+```
+- [a3f29c7d] ⚖️ 0.90 Use the local LLM provider for extraction
+- [c4f2a1b9] 5d ago · 🔴 Pin actuation needed UUID validation
+```
+
+To fetch the full memory + related context for one of those rows, match the prefix:
+
+```sql
+SELECT id, content, kind, importance, repo, machine_id,
+       meta->'related_to' AS related_ids,
+       meta->>'in_cluster' AS in_cluster,
+       meta->>'shadow_of' AS shadowed_by
+FROM memories
+WHERE id::text LIKE 'a3f29c7d%'
+  AND archived_at IS NULL
+LIMIT 1;
+```
+
+The 8-char prefix is unambiguous at personal scale. If you want the cluster summary that contains a surface row, follow `meta.in_cluster`; for siblings, follow `meta.related_to`.
+
+**Glyph legend** (for reading the surface):
+🔴 bugfix · 🟣 feature · ⚖️ decision · 🔵 discovery · 💬 preference · 🚧 constraint · 🚨 security_alert · 📎 reference · 🎯 summary · 🧩 cluster · 🧠 claude_memory · 📝 note
 
 **Cluster summaries only:**
 ```sql

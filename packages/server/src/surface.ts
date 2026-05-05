@@ -89,6 +89,30 @@ function oneLine(s: string, max = 140): string {
   return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
 }
 
+// Emoji per kind. Drives the visual scan in the rendered surface and lets the
+// agent map kind → glyph at a glance. Unknown kinds fall back to a neutral dot.
+const KIND_GLYPH: Record<string, string> = {
+  bugfix: "🔴",
+  feature: "🟣",
+  decision: "⚖️",
+  discovery: "🔵",
+  preference: "💬",
+  constraint: "🚧",
+  security_alert: "🚨",
+  reference: "📎",
+  summary: "🎯",
+  cluster: "🧩",
+  claude_memory: "🧠",
+  note: "📝",
+};
+const glyph = (kind: string | null): string =>
+  (kind && KIND_GLYPH[kind]) || "•";
+
+// 8-char hex prefix is globally unique at personal scale (and well past it —
+// 2^32 birthday bound). The skill teaches `WHERE id::text LIKE '<prefix>%'`
+// so the agent can pivot from a surface row to the full row in one query.
+const idPrefix = (id: string): string => id.slice(0, 8);
+
 function relativeTime(d: Date): string {
   const ms = Date.now() - d.getTime();
   const days = Math.floor(ms / 86_400_000);
@@ -134,7 +158,7 @@ function renderSurface(s: Omit<Surface, "rendered">): string {
     lines.push("## Pinned");
     for (const i of s.pinned) {
       lines.push(
-        `- (${i.kind ?? "note"} · ${i.importance.toFixed(2)}) ${oneLine(i.content)}`,
+        `- [${idPrefix(i.id)}] ${glyph(i.kind)} ${i.importance.toFixed(2)} ${oneLine(i.content)}`,
       );
     }
   }
@@ -143,7 +167,7 @@ function renderSurface(s: Omit<Surface, "rendered">): string {
     lines.push("");
     lines.push("## Rules");
     for (const i of s.rules) {
-      lines.push(`- (${i.kind}) ${oneLine(i.content)}`);
+      lines.push(`- [${idPrefix(i.id)}] ${glyph(i.kind)} ${oneLine(i.content)}`);
     }
   }
 
@@ -152,7 +176,7 @@ function renderSurface(s: Omit<Surface, "rendered">): string {
     lines.push("## Recent (last 14 days)");
     for (const i of s.decisions) {
       lines.push(
-        `- ${relativeTime(i.created_at)} · (${i.kind}) ${oneLine(i.content)}`,
+        `- [${idPrefix(i.id)}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${oneLine(i.content)}`,
       );
     }
   }
@@ -161,7 +185,9 @@ function renderSurface(s: Omit<Surface, "rendered">): string {
     lines.push("");
     lines.push("## Recent sessions");
     for (const i of s.sessions) {
-      lines.push(`- ${relativeTime(i.created_at)} · ${oneLine(i.content, 110)}`);
+      lines.push(
+        `- [${idPrefix(i.id)}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${oneLine(i.content, 110)}`,
+      );
     }
   }
 

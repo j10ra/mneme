@@ -1,92 +1,157 @@
+<div align="center">
+
 # Mneme
 
-> Greek muse of memory. A personal, cross-machine, cross-harness, cross-AI memory layer for coding sessions.
+**Cross-machine memory for your AI coding assistant.**
 
-Captures Claude Code (and any other harness via HTTP), distils into structured memories, surfaces relevant context at the start of every session, and clusters related memories nightly. Postgres + pgvector + tsvector as the single source of truth, fronted by a one-tool MCP server.
+*Greek muse of memory. Your assistant remembers everything you've worked on, across every machine, every harness, every model.*
 
-For the full design and rationale see [ARCHITECTURE.md](./ARCHITECTURE.md).
-
----
-
-## Why
-
-- **claude-mem** captures coding sessions richly, but everything stays on the laptop.
-- **OB1** is cross-AI via MCP, but has no hook surface (captures are manual).
-- Switching machine, harness, or model loses context.
-
-Mneme: hooks for write, MCP + skill for read, Supabase as the shared source of truth.
+</div>
 
 ---
 
-## Architecture in 30 seconds
+You open Claude Code on your laptop. Before you type a single word, the agent already sees a tight digest of what you decided last week, what's pinned, what bug you fixed yesterday, and what summaries the agent wrote at the end of recent sessions.
 
+Later that day on your desktop, you open Claude Code again. Same digest. Same memory.
+
+That's Mneme.
+
+> Full design and rationale: see [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+---
+
+## The mental model
+
+Three pieces. That's the whole shape.
+
+```mermaid
+flowchart LR
+    subgraph Machines["your machines (laptop, desktop, work box, …)"]
+        direction TB
+        CC["Claude Code<br/>+ Mneme plugin"]
+        Hooks["hooks · slashes · MCP proxy"]
+        CC --- Hooks
+    end
+
+    subgraph Server["server (one Bun process)"]
+        direction TB
+        API["capture API<br/>read API<br/>MCP endpoint"]
+        Workers["workers:<br/>extract · embed · nap · dream"]
+        API --- Workers
+    end
+
+    subgraph DB["database (Postgres + pgvector + tsvector)"]
+        Tables["captures · memories · ingest_jobs"]
+    end
+
+    Machines -- HTTPS --> Server
+    Server -- TCP --> DB
+
+    classDef m fill:#1e3a8a,stroke:#3b82f6,color:#fff
+    classDef s fill:#7c2d12,stroke:#f59e0b,color:#fff
+    classDef d fill:#064e3b,stroke:#10b981,color:#fff
+    class Machines m
+    class Server s
+    class DB d
 ```
-hooks ─┐
-slash ─┼─→ POST /api/capture ─→ captures (raw, immutable)
-HTTP  ─┘                            │
-                                    ▼
-                          extract worker (LLM)
-                                    │
-                                    ▼
-                            memories (structured)
-                                    │
-              ┌─────────────────────┼─────────────────────┐
-              ▼                     ▼                     ▼
-       embed (pgvector)        nap (decay,           dream (cluster,
-                                shadow, relate)         distil)
-                                    │
-                                    ▼
-                  POST /api/session/start  ── SessionStart context
-                  POST /mcp (mneme.sql)    ── on-demand recall via skill
-```
 
-Three tables (`captures`, `memories`, `_ops.api_keys`). One MCP tool (`mneme.sql`). Workers are queue-driven (extract, embed) or scheduler-driven (nap, dream, keepalive).
+**Your machines** run a small plugin. Hooks send what you do (prompts, tool calls, session summaries) to the server. A panel of slash commands (`/mneme:memory`, `/mneme:pin`, `/mneme:recall`, …) lets you write or query memory by hand.
+
+**The server** is one Bun process. It receives captures, stores them raw, and runs four background workers that turn them into structured, searchable memories. It exposes a single MCP tool (`mneme.sql`) so any AI agent on any harness can read.
+
+**The database** holds everything. Three small tables in plain Postgres. The vector index makes semantic search fast; the text index makes keyword search fast; the rest is JSON.
+
+One database. One server. N machines.
 
 ---
 
-## Setup
+## What it feels like to use
 
-Server runs on Railway, DB on Supabase, LLM/embedder behind a Cloudflare Tunnel pointing at homelab Ollama + TEI. Any OpenAI-compatible endpoint drops in.
+| When | What happens |
+|---|---|
+| **Session start** | Pinned facts, rules, recent decisions, and recent session summaries land in your context automatically. No file written. No tool call. |
+| **Working** | Every prompt you type and every tool the agent runs is captured in the background. You don't notice. |
+| **Wanting something specific** | Ask the agent (*"what was the env var for the timeout fix again?"*) and it queries Mneme via the MCP tool. The bundled skill teaches it the SQL. |
+| **Pinning a fact** | `/mneme:pin <one-line truth>` keeps it surfacing in every future session, on every machine. |
+| **Switching machines** | Open Claude Code. Same memory. Nothing to sync. |
 
-### Server
+---
 
-1. `bun install`
-2. Set env (`.env` for local, Railway dashboard for prod):
-   ```
-   DATABASE_URL=postgresql://...
-   MNEME_READER_DATABASE_URL=postgresql://...   # mneme_reader role for /mcp
-   LLM_PROVIDER=local
-   LLM_URL=https://your-llm-endpoint
-   LLM_BEARER=...
-   LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
-   EMBEDDER_PROVIDER=local
-   EMBEDDER_URL=https://your-embedder-endpoint
-   EMBEDDER_BEARER=...
-   EMBEDDER_MODEL=BAAI/bge-large-en-v1.5
-   ADMIN_PASSWORD=...                            # roots all auth
-   ```
-3. `bun run migrate` (applies SQL in `migrations/`)
-4. `bun run dev` (or deploy via Procfile)
+## How it actually works
 
-### Plugin (per machine)
+The plugin's hooks fire as you work and `POST /api/capture` to the server. The server scrubs secrets, deduplicates, and queues the capture. An **extract** worker picks up a small batch of captures from the same session and asks an LLM to pull out atomic observations (a decision, a bugfix, a constraint, a discovery, …). An **embed** worker turns each observation into a vector.
 
-In Claude Code, add the marketplace and install the plugin:
+**Nap** runs every 6 hours to decay importance, mark exact duplicates, and link semantically related memories. **Dream** runs every 24 hours to cluster related memories and write a one-paragraph summary that surfaces above the raw rows for broad questions.
+
+When you start a new session anywhere, the plugin asks the server for the relevant slice for the repos you have open, and the server returns a compact markdown digest that lands directly in the agent's context.
+
+---
+
+## Install in three steps
+
+You need a Postgres database, a host that runs Bun, and Claude Code on at least one machine. Mneme is host-agnostic: Postgres can be Supabase / Neon / RDS / a $5 VPS / your own box; the Bun process can run on Railway / Fly.io / Render / a VPS / your homelab.
+
+### 1 · Database
+
+Any Postgres with the `pgvector` and `pg_cron` extensions. Free tiers cover personal use indefinitely (Supabase, Neon).
+
+You'll need one connection string for writes (`DATABASE_URL`) and a read-only role for the MCP tool (`MNEME_READER_DATABASE_URL`).
+
+### 2 · Server
+
+```bash
+git clone <this repo>
+cd mneme
+bun install
+cp .env.example .env       # fill in connection strings + provider config
+bun run migrate            # creates the schema, the _ops tables, and the cron jobs
+bun run dev                # local dev; for prod, deploy to any Bun-capable host
+```
+
+<details>
+<summary><b>Provider configuration</b> — what to put in <code>.env</code></summary>
+
+The two decisions: which **LLM provider** runs extract + dream, and which **embedder** turns text into vectors. Both speak OpenAI-compatible HTTP. Defaults assume self-hosted endpoints (Ollama + TEI), but pointing at any cloud API is four env-var changes.
+
+```env
+# Database
+DATABASE_URL=postgresql://...
+MNEME_READER_DATABASE_URL=postgresql://...   # mneme_reader role for /mcp
+
+# LLM (extract + dream distillation)
+LLM_PROVIDER=local
+LLM_URL=https://your-llm-endpoint
+LLM_BEARER=...
+LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
+
+# Embedder (1024-dim)
+EMBEDDER_PROVIDER=local
+EMBEDDER_URL=https://your-embedder-endpoint
+EMBEDDER_BEARER=...
+EMBEDDER_MODEL=BAAI/bge-large-en-v1.5
+
+# Auth root of trust
+ADMIN_PASSWORD=...
+```
+
+Cost scenarios (self-hosted, mixed cloud, BYO API keys) live in [ARCHITECTURE.md §13](./ARCHITECTURE.md#13-cost-model).
+
+</details>
+
+### 3 · Plugin (per machine)
+
+In Claude Code:
 
 ```
 /plugin marketplace add j10ra/mneme
 /plugin install mneme@j10ra-mneme
-```
-
-Then register this machine with your server:
-
-```
-/setup <server-url> <admin-password> [machine-name]
+/mneme:setup <server-url> <admin-password> [machine-name]
 /reload-plugins
 ```
 
-`/setup` POSTs `/api/auth/register`, gets back a per-machine token, writes it to `~/.mneme/config.json` (mode 0600). Token plaintext is shown once; the DB stores `sha256(token)` only.
+`/mneme:setup` mints a per-machine token, writes it to `~/.mneme/config.json` (mode `0600`), and you're done. Repeat the last two lines on every other machine.
 
-To pull plugin updates later:
+To update later:
 
 ```
 /plugin update mneme
@@ -97,34 +162,35 @@ To pull plugin updates later:
 
 ## Daily use
 
-| Slash | Effect |
+| Command | Effect |
 |---|---|
-| `/setup <url> <admin-pw> [name]` | Register this machine, mint a token |
-| `/memory <text>`                  | Drop a manual capture |
-| `/pin <text-or-uuid>`             | Pin a fact (always surfaces) or pin an existing memory by id |
-| `/unpin <description-or-uuid>`    | Unpin |
-| `/pinned`                         | Show what's pinned |
-| `/recall <query>`                 | Hybrid + recency search via the skill |
-| `/summarise`                      | Wrap-up the current session as a memory |
-| `/mneme:machines`                 | List registered machines (admin pw via stdin) |
-| `/mneme:revoke <name-or-id>`      | Revoke a machine's token |
+| `/mneme:memory <text>` | Save a fact in your own words. The extract worker turns it into structured observations. |
+| `/mneme:pin <text-or-id>` | Pin a one-liner so it surfaces every session, on every machine. |
+| `/mneme:unpin <text-or-id>` | Stop a memory from surfacing. (It still exists; recall can still find it.) |
+| `/mneme:pinned [scope]` | List what's currently pinned. |
+| `/mneme:recall <query>` | Hybrid (semantic + keyword + recency) search via the bundled skill. |
+| `/mneme:summarise [scope]` | Wrap up the recent thread as a session summary. |
+| `/mneme:machines` | List your registered machines. |
+| `/mneme:revoke <name-or-id>` | Revoke a machine's token (e.g., lost laptop). |
 
-Hooks fire automatically: `SessionStart` injects relevant context, `PostToolUse` / `UserPromptSubmit` capture interesting events.
+Hooks fire on their own. You shouldn't have to think about them.
 
 ---
 
 ## What's in this repo
 
-- `packages/server/`  — Hono + Bun server, workers (extract, embed, nap, dream, keepalive)
-- `packages/core/`    — auth, logger, trace store, route + fn instrumentation
-- `packages/plugin/`  — Claude Code plugin (hooks, slashes, MCP proxy, skill)
-- `migrations/`       — sequential SQL migrations
-- `ARCHITECTURE.md`   — design doc
+| Path | Purpose |
+|---|---|
+| `packages/server/` | Bun + Hono server and the four workers |
+| `packages/core/`   | auth, logger, trace store, route + fn instrumentation |
+| `packages/plugin/` | Claude Code plugin (hooks, slashes, MCP proxy, skill) |
+| `migrations/`      | sequential SQL migrations applied by `bun run migrate` |
+| `ARCHITECTURE.md`  | full design doc, including deferred-items list and cost model |
 
 ---
 
 ## Status
 
-Personal tool. Single user. Three machines. Not multi-tenant. Not team memory.
+Mneme is a personal tool. One user, several machines. **Phases 0–7 shipped:** capture, extract, embed, nap (decay + shadow + relate + retry), dream (cluster + distil), surface. Phases 8 (multi-harness: Codex, Cursor, OpenCode) and 9 (polish) are tracked in [ARCHITECTURE.md §16](./ARCHITECTURE.md#16-deferred-items-one-place-to-come-back-to).
 
-Phase 0–6.0 shipped: capture → extract → embed → nap (decay/shadow/relate/retry) → dream (cluster/distil). See `ARCHITECTURE.md` §12 for the build phases.
+> Not multi-tenant. Not team memory. Not a search engine. One human, multiple machines, one continuous memory.
