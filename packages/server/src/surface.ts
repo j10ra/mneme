@@ -56,6 +56,7 @@ export const buildSurface = mnemeFn(
       WHERE archived_at IS NULL
         AND kind IN ('preference', 'constraint')
         AND importance >= 0.7
+        AND (repo = ANY(${repos}) OR repo IS NULL)
         AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY importance DESC, created_at DESC
       LIMIT 3
