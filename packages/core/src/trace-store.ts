@@ -26,6 +26,13 @@ const identity: Scrubber = (data) => data;
 
 const MAX_BODY_BYTES = 256 * 1024;
 
+// Bound the in-flight buffers so a runaway producer (or a trace whose root
+// span never ends, e.g. crash before pushTrace) can't grow memory unbounded.
+// When a bucket exceeds this, oldest entries are dropped with a stderr
+// warning. Realistic ceilings for a personal tool; raise if needed.
+const MAX_PENDING_SPANS_PER_TRACE = 1000;
+const MAX_PENDING_TRACES = 200;
+
 export class TraceStore {
   private sql: postgres.Sql;
   private flushIntervalMs: number;
@@ -33,9 +40,17 @@ export class TraceStore {
   private scrub: Scrubber;
   private timer: ReturnType<typeof setInterval> | null = null;
 
+  // Flush-ready buffers: only these get drained by flush().
   private traceBuffer: TraceRecord[] = [];
   private spanBuffer: SpanRecord[] = [];
   private logBuffer: LogRecord[] = [];
+
+  // Pending buffers, keyed by traceId. Spans and trace-attributed logs land
+  // here until their trace finalizes (pushTrace). This guarantees that the
+  // _ops.traces row exists in the same tx as anything that FKs to it, so
+  // _ops.spans (and _ops.logs since 0008) don't violate the FK on insert.
+  private pendingSpans = new Map<string, SpanRecord[]>();
+  private pendingLogs = new Map<string, LogRecord[]>();
 
   constructor(opts: {
     sql: postgres.Sql;
@@ -62,25 +77,102 @@ export class TraceStore {
       clearInterval(this.timer);
       this.timer = null;
     }
+    // Drop in-flight pending entries: their trace never finalized, so they'd
+    // FK-violate if forced through. Surface the count for visibility.
+    const orphanedSpans = [...this.pendingSpans.values()].reduce(
+      (n, list) => n + list.length,
+      0,
+    );
+    const orphanedLogs = [...this.pendingLogs.values()].reduce(
+      (n, list) => n + list.length,
+      0,
+    );
+    if (orphanedSpans > 0 || orphanedLogs > 0) {
+      process.stderr.write(
+        `[mneme/core] trace store stop: dropped ${orphanedSpans} pending span(s) and ${orphanedLogs} pending log(s) from in-flight traces\n`,
+      );
+    }
+    this.pendingSpans.clear();
+    this.pendingLogs.clear();
     await this.flush();
   }
 
   pushTrace(t: TraceRecord): void {
+    // Move any spans + trace-attributed logs accumulated for this trace into
+    // the flush-ready buffers alongside the trace itself. flush() will then
+    // insert all three in one tx, in the right order.
+    const spans = this.pendingSpans.get(t.traceId);
+    if (spans) {
+      this.spanBuffer.push(...spans);
+      this.pendingSpans.delete(t.traceId);
+    }
+    const logs = this.pendingLogs.get(t.traceId);
+    if (logs) {
+      this.logBuffer.push(...logs);
+      this.pendingLogs.delete(t.traceId);
+    }
     this.traceBuffer.push(t);
     this.maybeFlushOverflow();
   }
 
   pushSpan(s: SpanRecord): void {
-    this.spanBuffer.push({
+    const scrubbed: SpanRecord = {
       ...s,
       input: this.scrub(s.input),
       output: this.scrub(s.output),
-    });
+    };
+    let bucket = this.pendingSpans.get(s.traceId);
+    if (!bucket) {
+      // Cap concurrent in-flight traces. Drop the oldest bucket if exceeded.
+      if (this.pendingSpans.size >= MAX_PENDING_TRACES) {
+        const firstKey = this.pendingSpans.keys().next().value as string | undefined;
+        if (firstKey !== undefined) {
+          const dropped = this.pendingSpans.get(firstKey)?.length ?? 0;
+          this.pendingSpans.delete(firstKey);
+          process.stderr.write(
+            `[mneme/core] trace store: dropped ${dropped} pending span(s) for stale trace ${firstKey} (MAX_PENDING_TRACES exceeded)\n`,
+          );
+        }
+      }
+      bucket = [];
+      this.pendingSpans.set(s.traceId, bucket);
+    }
+    if (bucket.length >= MAX_PENDING_SPANS_PER_TRACE) {
+      // Trace producing too many spans without finalizing. Drop oldest in the
+      // bucket — keep recent activity, lose ancient context.
+      bucket.shift();
+    }
+    bucket.push(scrubbed);
     this.maybeFlushOverflow();
   }
 
   pushLog(l: LogRecord): void {
-    this.logBuffer.push(l);
+    // Untraced logs flush immediately (no FK to satisfy). Trace-attributed
+    // logs go into the per-trace pending bucket.
+    if (!l.traceId) {
+      this.logBuffer.push(l);
+      this.maybeFlushOverflow();
+      return;
+    }
+    let bucket = this.pendingLogs.get(l.traceId);
+    if (!bucket) {
+      if (this.pendingLogs.size >= MAX_PENDING_TRACES) {
+        const firstKey = this.pendingLogs.keys().next().value as string | undefined;
+        if (firstKey !== undefined) {
+          const dropped = this.pendingLogs.get(firstKey)?.length ?? 0;
+          this.pendingLogs.delete(firstKey);
+          process.stderr.write(
+            `[mneme/core] trace store: dropped ${dropped} pending log(s) for stale trace ${firstKey} (MAX_PENDING_TRACES exceeded)\n`,
+          );
+        }
+      }
+      bucket = [];
+      this.pendingLogs.set(l.traceId, bucket);
+    }
+    if (bucket.length >= MAX_PENDING_SPANS_PER_TRACE) {
+      bucket.shift();
+    }
+    bucket.push(l);
     this.maybeFlushOverflow();
   }
 
