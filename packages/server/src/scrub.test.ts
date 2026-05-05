@@ -80,6 +80,25 @@ describe("scrub - secret patterns", () => {
     );
   });
 
+  test("URL userinfo (https with user:token)", () => {
+    expect(scrub("https://alice:supersecrettoken@github.com/x/y.git")).toBe(
+      "https://[REDACTED:url_userinfo]@github.com/x/y.git",
+    );
+  });
+
+  test("URL userinfo preserves scheme + host", () => {
+    expect(
+      scrub("clone from https://user:pat_abcdef@example.org/repo.git ok"),
+    ).toBe(
+      "clone from https://[REDACTED:url_userinfo]@example.org/repo.git ok",
+    );
+  });
+
+  test("URL without userinfo untouched", () => {
+    const s = "see https://github.com/owner/repo for details";
+    expect(scrub(s)).toBe(s);
+  });
+
   test("SSH private key block", () => {
     const block = `-----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW

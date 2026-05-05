@@ -339,7 +339,11 @@ app.post(
       : typeof body.repo === "string" && body.repo
         ? [body.repo]
         : [];
-    const surface = await buildSurface(repos);
+    // Server-stamped machine_id from the bearer token. Admin-token callers
+    // (machineId === null) get only public rows. The body's machine_id is
+    // ignored for privacy enforcement so a machine can't impersonate another.
+    const auth = currentAuth();
+    const surface = await buildSurface(repos, auth?.machineId ?? null);
     return c.json(surface);
   },
 );

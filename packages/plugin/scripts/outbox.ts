@@ -19,7 +19,7 @@ export function outboxDir(): string {
 }
 
 export function ensureOutbox(): void {
-  if (!existsSync(OUTBOX_DIR)) mkdirSync(OUTBOX_DIR, { recursive: true });
+  if (!existsSync(OUTBOX_DIR)) mkdirSync(OUTBOX_DIR, { recursive: true, mode: 0o700 });
 }
 
 export function writeOutbox(payload: unknown, source: string): void {
@@ -27,7 +27,11 @@ export function writeOutbox(payload: unknown, source: string): void {
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   const safe = source.replace(/[^a-z0-9_-]/gi, "_");
   const filename = join(OUTBOX_DIR, `${ts}-${safe}.json`);
-  writeFileSync(filename, JSON.stringify(payload));
+  // 0600 — outbox files contain raw capture payloads (prompts, tool inputs,
+  // and assistant turns) that haven't been delivered yet. They sit on disk
+  // until the next SessionStart drains them; default umask would leave them
+  // group/other-readable. Match the config.json policy.
+  writeFileSync(filename, JSON.stringify(payload), { mode: 0o600 });
 }
 
 export async function drainOutbox(

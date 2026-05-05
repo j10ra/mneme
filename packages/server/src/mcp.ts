@@ -129,6 +129,12 @@ const runSql = mnemeFn(
     const withEmbeds = await substituteEmbeds(single);
     const withLimit = injectLimit(withEmbeds);
 
+    // Privacy enforcement is at the role level: mneme_reader has an RLS
+    // policy on memories + captures of `USING (private = false)`. No GUC
+    // dependency, no SQL-rewrite gates — the agent can run any SELECT and
+    // physically cannot see private rows. The SessionStart surface uses a
+    // separate code path that runs as the writer role and applies its own
+    // machine-aware filter.
     const rows = await readerSql.unsafe(withLimit);
     const capped = capResult(rows as unknown[]);
     return { ...capped, rewritten_sql: withLimit };

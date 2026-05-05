@@ -18,7 +18,7 @@ Mneme stores your memories in Postgres + pgvector. The agent talks to it through
 | `source` | text | `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`, `manual:/memory`, `manual:/api/memory`. (Dream writes directly to `memories`, not through `/api/capture`, so no `dream` source on captures.) |
 | `machine_id`, `hostname`, `repo`, `harness`, `agent`, `session_id` | text | scope |
 | `topics` | text[] | optional tags |
-| `private` | bool | true = origin-machine only on read |
+| `private` | bool | true rows are invisible via `mneme.sql`. The MCP reader role has an RLS policy of `USING (private = false)`, so private rows are physically unreachable from this tool — no `WHERE private = false` is needed and no filter you write can surface them. The SessionStart surface uses a separate server-side path that applies a machine-aware filter. |
 | `raw_meta` | jsonb | source-specific extras |
 | `captured_at`, `archived_at` | timestamptz | |
 | `UNIQUE(content_sha256, machine_id)` | | |
@@ -193,8 +193,9 @@ ORDER BY last_active DESC LIMIT 10;
 
 - `repo = '<canonical-git-url>'` — same repo across all machines (recommended default)
 - `machine_id = '<uuid>'` — same machine only
-- `(private = false OR machine_id = '<this-machine>')` — respect privacy
 - `archived_at IS NULL` — alive memories only (almost always include this)
+
+Privacy is enforced at the role level — `mneme.sql` physically can't return rows with `private = true`. You don't need (and shouldn't add) a `private = false` filter in your queries.
 
 ## What the tool will *not* run
 

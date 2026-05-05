@@ -20,8 +20,11 @@ const SHADOW_DECAY = 0.1;
 // Transient error patterns. These match upstream-flake messages worth retrying
 // after a grace window. Anything not matching is treated as content-related
 // and retired to state='dead'. Uses POSIX regex (~*), so [0-9] not \d.
+// Covers: 5xx server errors, 408 / 429 rate-limit, generic timeouts, the
+// Node socket errno strings that pop out of fetch() (ECONNRESET / REFUSED,
+// ENOTFOUND, EAI_AGAIN), and the common "socket hang up" string.
 const TRANSIENT_REGEX =
-  "HTTP 5[0-9][0-9]|timed out|timeout|ECONNRESET|tunnel|gateway|connection (refused|reset|closed|aborted)";
+  "HTTP (4(29|08)|5[0-9][0-9])|status (4(29|08)|5[0-9][0-9])|rate.?limit|timed out|timeout|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|tunnel|gateway|connection (refused|reset|closed|aborted)";
 
 // Semantic relations: cosine distance threshold for "near enough to be related"
 // and max neighbors recorded per memory. 0.15 is empirically tight (real
@@ -65,16 +68,25 @@ export const runNapOnce = mnemeFn(
           END
       `;
 
-      // 2. Exact-text shadows: in each content_hash group, keep the highest-
-      //    importance row; mark the rest as meta.shadow_of=<keeper>, importance×0.1.
+      // 2. Exact-text shadows: in each (content_hash, repo, scope) group,
+      //    keep the highest-importance row; mark the rest as
+      //    meta.shadow_of=<keeper>, importance×0.1. Scope is `public` for
+      //    private=false rows (so identical public content from machines A
+      //    and B in the same repo coalesces) and the machine_id for private
+      //    rows (so private content from machine A never shadows machine B's
+      //    private copy of the same string). Repo is part of the key so the
+      //    same observation made in two unrelated repos isn't collapsed.
       const shadowed = await tx`
         WITH groups AS (
           SELECT content_hash,
+                 COALESCE(repo, '__null__') AS repo_key,
+                 CASE WHEN private THEN machine_id ELSE 'public' END AS scope_key,
                  (array_agg(id ORDER BY importance DESC, created_at DESC))[1] AS keeper_id
           FROM memories
           WHERE archived_at IS NULL
             AND (meta->>'shadow_of') IS NULL
-          GROUP BY content_hash
+          GROUP BY content_hash, COALESCE(repo, '__null__'),
+                   CASE WHEN private THEN machine_id ELSE 'public' END
           HAVING count(*) > 1
         )
         UPDATE memories m
@@ -82,6 +94,8 @@ export const runNapOnce = mnemeFn(
             meta = m.meta || jsonb_build_object('shadow_of', g.keeper_id::text)
         FROM groups g
         WHERE m.content_hash = g.content_hash
+          AND COALESCE(m.repo, '__null__') = g.repo_key
+          AND CASE WHEN m.private THEN m.machine_id ELSE 'public' END = g.scope_key
           AND m.id <> g.keeper_id
           AND (m.meta->>'shadow_of') IS NULL
       `;

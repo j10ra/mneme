@@ -538,7 +538,6 @@ sequenceDiagram
 SELECT id, content, kind, repo, importance, created_at
 FROM memories
 WHERE archived_at IS NULL
-  AND (private = false OR machine_id = $2)
   AND (meta->>'shadow_of') IS NULL
   AND (meta->>'superseded_by') IS NULL
 ORDER BY
@@ -550,6 +549,8 @@ LIMIT 8;
 ```
 
 Three-component score: cosine semantic similarity (55%), keyword `ts_rank` (35%), and an exponential recency boost with a 7-day characteristic period (10%). Older strong matches still win on topic, but recent context gets a fair lane against deep history.
+
+No `private` filter in the query: the MCP reader role has an RLS policy of `USING (private = false)`, so `mneme.sql` physically can't return private rows. See §9.5 and §16 for the deferred per-machine-recall fix.
 
 **What recall doesn't use yet:**
 - `importance` is computed and decayed by nap but not factored into the recall score directly. Surface (§6.6) uses it heavily; recall doesn't. Adding `+ 0.05 * importance` would tilt scores toward higher-importance memories at retrieval time. Not done — current recall feels topical enough without it; revisit if recall surfaces low-importance noise.
@@ -587,14 +588,16 @@ Non-`SessionStart` events (UserPromptSubmit, PostToolUse, Stop, PreCompact) skip
 
 Hook POSTs `{ machine_id, repos: string[], session_id }` to `/api/session/start`. The aggregator (`packages/server/src/surface.ts`) builds 4 lists by querying `memories` with `repo = ANY(repos)`:
 
-| List | Filter | Cap |
+All four queries also gate on `(private = false OR machine_id = $caller_machine_id)`, where `$caller_machine_id` is server-stamped from the bearer token (admin tokens substitute `null`, which only matches public rows). This is the only path through which a machine can recall its own private memories — the MCP `mneme.sql` tool is public-only by RLS (§9.5).
+
+| List | Filter (privacy gate omitted for brevity) | Cap |
 |---|---|---|
 | **Pinned** | `(meta->>'pinned')::boolean = true AND (repo = ANY(repos) OR repo IS NULL)`, ORDER BY importance DESC, created_at DESC | 5 |
 | **Rules** | `kind IN ('preference','constraint') AND importance >= 0.7` (no repo filter — rules are global), ORDER BY importance DESC, created_at DESC | 3 |
 | **Recent** | `repo = ANY(repos) AND kind IN ('decision','feature','bugfix','discovery') AND importance >= 0.6 AND created_at > now() - interval '14 days'`, ORDER BY importance DESC, created_at DESC | 8 |
 | **Sessions** | `repo = ANY(repos) AND kind = 'summary'`, ORDER BY created_at DESC | 3 |
 
-**No `machine_id` filter on the queries** — this is how cross-machine works. A memory written on machine A with `repo='github.com/acme/web'` surfaces in any session on machine B that calls `discoverRepos` and gets `github.com/acme/web` in its array. The repo is the cross-machine join key; the union across machines is implicit. (`private = true` filtering by machine_id is reserved for a later pass.)
+**No machine filter on the public-row matches** — this is how cross-machine works. A memory written on machine A with `repo='github.com/acme/web'` surfaces in any session on machine B that calls `discoverRepos` and gets `github.com/acme/web` in its array. The repo is the cross-machine join key; the union across machines is implicit. Private rows stay scoped to their origin machine.
 
 #### 6.6.4 What the rendered surface looks like
 
@@ -660,7 +663,7 @@ sequenceDiagram
         Note over Cfg: idempotent: no-op if already in projects[]
         Hook->>Hook: discoverRepos(cwd) → string[]<br/>self + children/.git + wt/*
         Hook->>API: { machine_id, repos[], session_id }<br/>5s timeout
-        API->>DB: 4 SELECT queries (pinned, rules, recent, sessions)<br/>repo = ANY(repos), no machine_id filter
+        API->>DB: 4 SELECT queries (pinned, rules, recent, sessions)<br/>repo = ANY(repos) + (private = false OR machine_id = caller)
         DB-->>API: ranked rows
         API->>API: renderSurface(rows) → markdown
         API-->>Hook: { repos, pinned, rules, decisions, sessions, rendered }
@@ -738,7 +741,10 @@ The skill encourages adding repo filters explicitly:
 
 ### Cross-machine privacy
 
-`private = true` memories are returned only when the request's `machine_id` matches `memories.machine_id`. Enforced in the default `WHERE` clause the skill teaches.
+Two paths, two enforcement points:
+
+- **SessionStart surface** (`/api/session/start`, runs as the writer role): server-built queries gate on `(private = false OR machine_id = $caller_machine_id)`, where `$caller_machine_id` is server-stamped from the bearer token. A machine's private rows surface in its own session and nowhere else.
+- **MCP `mneme.sql`** (runs as `mneme_reader`): RLS policy `USING (private = false)` makes private rows physically unreachable. No GUC, no agent-controllable surface — the role itself can't see them. The skill no longer teaches a `WHERE private = ... OR machine_id = ...` filter because the role enforces it. Per-machine private recall via MCP is deferred (§16); for now, machines can't recall their own private memories through `mneme.sql`.
 
 ---
 
@@ -755,6 +761,7 @@ The skill encourages adding repo filters explicitly:
 | Auth | Opaque Bearer tokens in `Authorization` header, per-machine, scoped, revocable. Plaintext exists only on the issuing machine in `~/.mneme/config.json` (`chmod 0600`); the server stores `sha256(token)` only. Admin password is the root of trust. See §9.5. |
 | Server-stamped identity | `/api/capture` and `/api/memory` pull `machine_id` from the authenticated key, ignoring the request body. Per-machine tokens cannot spoof another machine's identity. |
 | DB role | MCP `sql` tool connects as `mneme_reader` (SELECT-only on `public.*`, blocked from `_ops.*`). Writes never go through SQL. |
+| MCP privacy | `mneme_reader` has an RLS policy of `USING (private = false)` on `memories` and `captures`. The MCP tool physically cannot return private rows — no GUC, no SQL-rewrite gates, agent can't escalate. Per-machine private recall via MCP is deferred (§16); the SessionStart surface is the privacy-aware read path that runs as the writer role and applies a server-stamped `machine_id` filter. |
 | SQL safety | server rejects DML/DDL by regex + parser, single-statement only, comment stripping, auto-`LIMIT 200` if absent, 5s `statement_timeout`, 1MB result cap |
 | Transport | HTTPS only |
 | Local outbox | hooks write to `~/.mneme/outbox/*.json` if server unreachable, drained at next `SessionStart`. **Known gap:** outbox files contain raw content; scrubbing currently only happens server-side. See §16. |
@@ -1106,7 +1113,7 @@ The skill is the documentation and the orientation. Loaded via Anthropic's progr
    - Recall by recency: `AND created_at > now() - interval '7 days'`
    - Cluster summaries only: `WHERE kind = 'cluster'`
    - Backlinks via meta jsonb: `WHERE meta->'related_to' ? $1::text`
-5. **Scope filtering** (current repo, current machine, private flag).
+5. **Scope filtering** (current repo, current machine, `archived_at IS NULL`). Privacy is role-enforced — `mneme_reader` can't see `private = true` rows at all — so the skill explicitly tells the agent *not* to write a `private` filter.
 6. **Write reminder**: writes go through `/memory` slash command or `POST /api/capture`. Never via SQL.
 7. **What `nap` and `dream` do** so the agent understands why it sees `kind='cluster'` rows and what `meta.superseded_by` means.
 
@@ -1420,6 +1427,7 @@ Everything that's been intentionally postponed. Each entry has the *why deferred
 | **CLI for export / dump / migrate** | Postgres console + `pg_dump` cover one-off needs. Worth bundling into a `mneme` CLI when there's a second user. | Phase 9 |
 | **Viewer UI** | Postgres console + saved queries cover v1. A web viewer makes sense once Mneme is shared with a non-SQL-fluent user, not before. | Phase 9 |
 | **HDBSCAN or alternative cluster algorithm** | Cosine-NN + union-find produces clean clusters at current scale. Revisit if dream output looks noisy or one super-cluster keeps absorbing everything. | §14 |
+| **Per-machine private recall via MCP** | The `mneme.sql` MCP tool runs arbitrary SELECTs through `mneme_reader`, so identity has to live somewhere the agent can't change. A custom GUC + RLS was tried (migrations 0009/0010) but the agent owns the SQL — quoted function aliases like `"set_config"(...)` re-flip the GUC mid-transaction, and regex-blocking each variant is whack-a-mole. The current policy is the honest one: `USING (private = false)`. Machines can't recall their own private memories via MCP. The proper fix when a `private = true` capture flow ships is **per-machine reader roles** (each machine gets its own NOLOGIN role with `USING (private = false OR machine_id = '<baked-in-uuid>')`, derived at registration), or AST-level rewriting in mcp.ts that injects the privacy `WHERE` clause the caller can't bypass. Today: zero private rows in production, so the constraint is invisible. | §9.5, migrations 0009-0011 |
 
 ---
 

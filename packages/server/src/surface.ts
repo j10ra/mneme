@@ -31,10 +31,12 @@ const EMPTY_SURFACE: Surface = {
 
 /** Build the SessionStart surface for a set of repos (workspace = N repos,
  *  single repo = array of length 1). Cross-machine: filter by repo, union
- *  across all machines. */
+ *  across all machines. The caller's `machineId` is used to enforce the
+ *  privacy invariant: rows with `private=true` are visible only to the
+ *  machine that captured them. */
 export const buildSurface = mnemeFn(
   "surface.build",
-  async (repos: string[]): Promise<Surface> => {
+  async (repos: string[], callerMachineId: string | null): Promise<Surface> => {
     if (repos.length === 0) return EMPTY_SURFACE;
 
     const pinned = await sql<SurfaceItem[]>`
@@ -43,6 +45,7 @@ export const buildSurface = mnemeFn(
       WHERE archived_at IS NULL
         AND (meta->>'pinned')::boolean = true
         AND (repo = ANY(${repos}) OR repo IS NULL)
+        AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY importance DESC, created_at DESC
       LIMIT 5
     `;
@@ -53,6 +56,7 @@ export const buildSurface = mnemeFn(
       WHERE archived_at IS NULL
         AND kind IN ('preference', 'constraint')
         AND importance >= 0.7
+        AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY importance DESC, created_at DESC
       LIMIT 3
     `;
@@ -65,6 +69,7 @@ export const buildSurface = mnemeFn(
         AND kind IN ('decision', 'feature', 'bugfix', 'discovery')
         AND importance >= 0.6
         AND created_at > now() - interval '14 days'
+        AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY importance DESC, created_at DESC
       LIMIT 8
     `;
@@ -75,6 +80,7 @@ export const buildSurface = mnemeFn(
       WHERE archived_at IS NULL
         AND repo = ANY(${repos})
         AND kind = 'summary'
+        AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY created_at DESC
       LIMIT 3
     `;

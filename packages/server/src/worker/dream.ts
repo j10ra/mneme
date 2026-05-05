@@ -57,6 +57,7 @@ export const runDreamOnce = mnemeFn(
         WHERE archived_at IS NULL
           AND embedding IS NOT NULL
           AND kind <> 'cluster'
+          AND private = false
           AND NOT COALESCE((meta->>'pinned')::boolean, false)
           AND (meta->>'shadow_of') IS NULL
           AND (meta->>'superseded_by') IS NULL
@@ -187,7 +188,38 @@ export const runDreamOnce = mnemeFn(
             RETURNING id
           `;
           const clusterId = clusterRows[0]?.id;
-          if (!clusterId) return; // duplicate summary content; skip member-marking too
+
+          // Duplicate summary content (chunk_id collision). The cluster row
+          // already exists from a prior cycle; we still need to mark the
+          // current members as `in_cluster` so the same component doesn't
+          // re-distill on every dream cycle (a deterministic NN graph + idle
+          // members = nightly LLM call burning the same content forever).
+          //
+          // Filter the lookup to `kind = 'cluster' AND archived_at IS NULL`:
+          // chunk_id is sha256(content_hash + ":" + EMBEDDER_MODEL), shared by
+          // extract and dream, so a summary that happens to match an existing
+          // non-cluster memory (or an archived cluster) would otherwise mark
+          // members `in_cluster` against the wrong row and permanently
+          // suppress real distillation for that component.
+          if (!clusterId) {
+            const existing = await tx<{ id: string }[]>`
+              SELECT id FROM memories
+              WHERE chunk_id = ${chunkId}
+                AND kind = 'cluster'
+                AND archived_at IS NULL
+              LIMIT 1
+            `;
+            const existingId = existing[0]?.id;
+            if (existingId) {
+              await tx`
+                UPDATE memories
+                SET meta = meta || jsonb_build_object('in_cluster', ${existingId}::text)
+                WHERE id = ANY(${memberIds})
+                  AND (meta->>'in_cluster') IS NULL
+              `;
+            }
+            return;
+          }
 
           await tx`
             UPDATE memories

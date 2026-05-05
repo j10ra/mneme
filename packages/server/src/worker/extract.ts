@@ -68,8 +68,18 @@ export const runExtractOnce = mnemeFn(
 
     // ── Phase 1: lock (short tx) ───────────────────────────────────────
     const locked = await sql.begin(async (tx) => {
-      const seeds = await tx<{ job_id: string; capture_id: string; session_id: string | null; captured_at: Date }[]>`
-        SELECT j.id AS job_id, j.capture_id, c.session_id, c.captured_at
+      const seeds = await tx<
+        {
+          job_id: string;
+          capture_id: string;
+          session_id: string | null;
+          captured_at: Date;
+          repo: string | null;
+          private: boolean;
+        }[]
+      >`
+        SELECT j.id AS job_id, j.capture_id, c.session_id, c.captured_at,
+               c.repo, c.private
         FROM ingest_jobs j
         JOIN captures c ON c.id = j.capture_id
         WHERE j.phase = 'extract'
@@ -86,7 +96,14 @@ export const runExtractOnce = mnemeFn(
       const seed = seeds[0];
       if (!seed) return [] as LockedRow[];
 
-      // Pick siblings (capped) — same session, within coalesce window.
+      // Pick siblings (capped) — same session, within coalesce window, AND
+      // homogeneous scope: same `private` flag and same `repo` as seed. A
+      // batch with mixed scope would write a single memory tagged with seed's
+      // values, leaking private content into a public row or mis-attributing
+      // a capture's repo. The session_id filter is necessary but not
+      // sufficient (a session can span sub-repos via cwd changes mid-session,
+      // and a future flow could mix private/public captures within one
+      // session).
       const siblingIds = await tx<{ job_id: string }[]>`
         SELECT j.id AS job_id
         FROM ingest_jobs j
@@ -101,6 +118,8 @@ export const runExtractOnce = mnemeFn(
           AND j.id <> ${seed.job_id}
           AND ${seed.session_id}::text IS NOT NULL
           AND c.session_id = ${seed.session_id}
+          AND c.private = ${seed.private}
+          AND c.repo IS NOT DISTINCT FROM ${seed.repo}
           AND c.captured_at
               BETWEEN ${seed.captured_at}::timestamptz - interval '${sql.unsafe(COALESCE_WINDOW)}'
                   AND ${seed.captured_at}::timestamptz + interval '${sql.unsafe(COALESCE_WINDOW)}'
@@ -183,54 +202,75 @@ export const runExtractOnce = mnemeFn(
     }
 
     // ── Phase 3: write (short tx) ──────────────────────────────────────
-    const inserted = await sql.begin(async (tx) => {
-      let n = 0;
-      for (const obs of observations) {
-        const content = obs.content.trim();
-        if (!content) continue;
-        const contentHash = await sha256Hex(content);
-        const chunkId = await sha256Hex(`${contentHash}:${EMBEDDER_MODEL}`);
-        const importance = Math.max(0.1, Math.min(1, obs.importance));
-        const meta = {
-          source_capture_ids: captureIds,
-          extracted_kind: obs.kind,
-        };
+    // Wrap in try/catch: a write failure (DB blip, unique constraint,
+    // serialization error) used to leave jobs stranded in `state='running'`
+    // until STALE_RUNNING re-eligibled them. Once `attempts` reached 5 the
+    // selector excluded them and nap's resurrect logic only inspects rows in
+    // `state='error'` — they became permanently invisible. Surface failures
+    // as `error` so nap can either retry (transient) or retire (dead).
+    let inserted = 0;
+    try {
+      inserted = await sql.begin(async (tx) => {
+        let n = 0;
+        for (const obs of observations) {
+          const content = obs.content.trim();
+          if (!content) continue;
+          const contentHash = await sha256Hex(content);
+          const chunkId = await sha256Hex(`${contentHash}:${EMBEDDER_MODEL}`);
+          const importance = Math.max(0.1, Math.min(1, obs.importance));
+          const meta = {
+            source_capture_ids: captureIds,
+            extracted_kind: obs.kind,
+          };
 
-        const rows = await tx<{ id: string }[]>`
-          INSERT INTO memories (
-            capture_id, chunk_id, content, content_hash,
-            embedding_model, tsv,
-            kind, importance,
-            machine_id, repo, harness, agent, topics, private,
-            meta
-          )
-          VALUES (
-            ${seed.capture_id}, ${chunkId}, ${content}, ${contentHash},
-            ${EMBEDDER_MODEL}, to_tsvector('english', ${content}),
-            ${obs.kind}, ${importance},
-            ${seed.machine_id}, ${seed.repo}, ${seed.harness}, ${seed.agent},
-            ${obs.topics ?? []}, ${seed.private},
-            ${sql.json(meta as never)}
-          )
-          ON CONFLICT (chunk_id) DO NOTHING
-          RETURNING id
-        `;
-        const memoryId = rows[0]?.id;
-        if (memoryId) {
-          n++;
-          await tx`
-            INSERT INTO ingest_jobs (memory_id, phase, state)
-            VALUES (${memoryId}, 'embed', 'queued')
+          const rows = await tx<{ id: string }[]>`
+            INSERT INTO memories (
+              capture_id, chunk_id, content, content_hash,
+              embedding_model, tsv,
+              kind, importance,
+              machine_id, repo, harness, agent, topics, private,
+              meta
+            )
+            VALUES (
+              ${seed.capture_id}, ${chunkId}, ${content}, ${contentHash},
+              ${EMBEDDER_MODEL}, to_tsvector('english', ${content}),
+              ${obs.kind}, ${importance},
+              ${seed.machine_id}, ${seed.repo}, ${seed.harness}, ${seed.agent},
+              ${obs.topics ?? []}, ${seed.private},
+              ${sql.json(meta as never)}
+            )
+            ON CONFLICT (chunk_id) DO NOTHING
+            RETURNING id
           `;
+          const memoryId = rows[0]?.id;
+          if (memoryId) {
+            n++;
+            await tx`
+              INSERT INTO ingest_jobs (memory_id, phase, state)
+              VALUES (${memoryId}, 'embed', 'queued')
+            `;
+          }
         }
-      }
-      await tx`
+        await tx`
+          UPDATE ingest_jobs
+          SET state = 'done', finished_at = now()
+          WHERE id = ANY(${jobIds})
+        `;
+        return n;
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      Logger.error("extract: write failed", e, { jobs: jobIds.length });
+      await sql`
         UPDATE ingest_jobs
-        SET state = 'done', finished_at = now()
+        SET state = 'error',
+            error = ${msg},
+            finished_at = now(),
+            scheduled_at = now() + (attempts * interval '2 minutes')
         WHERE id = ANY(${jobIds})
       `;
-      return n;
-    });
+      return { didWork: true };
+    }
 
     const elapsed_s = Number(((Date.now() - t0) / 1000).toFixed(1));
     const kindCounts = observations.reduce<Record<string, number>>((acc, o) => {

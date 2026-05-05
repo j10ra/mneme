@@ -190,8 +190,13 @@ async function setup(
     ...(existing.projects ? { projects: existing.projects } : {}),
   };
 
-  if (!existsSync(cfgDir)) mkdirSync(cfgDir, { recursive: true });
-  writeFileSync(cfgPath, `${JSON.stringify(config, null, 2)}\n`);
+  if (!existsSync(cfgDir)) mkdirSync(cfgDir, { recursive: true, mode: 0o700 });
+  // Mode 0600 set at write time so the freshly-minted token never sits at
+  // the default umask, not even between writeFile and chmod. If the file
+  // already exists at 0600 from a prior setup, writeFile preserves its
+  // existing mode (the `mode` option only applies on creation), so an
+  // explicit chmod is still belt-and-suspenders.
+  writeFileSync(cfgPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   chmodSync(cfgPath, 0o600);
 
   console.log("✓ registered with mneme server");

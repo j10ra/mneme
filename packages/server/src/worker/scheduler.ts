@@ -55,18 +55,34 @@ async function syncRegistry(): Promise<void> {
 async function tick(): Promise<void> {
   if (state.stopped) return;
 
-  // Find jobs due to run. SKIP LOCKED so multi-replica deploys (someday)
-  // don't both fire the same job. We only lock+update one job at a time so
-  // a long-running nap doesn't block keepalive's scheduling check.
-  const due = await sql<{ job_name: string }[]>`
-    SELECT job_name FROM _ops.worker_runs
-    WHERE next_run_at <= now()
-    ORDER BY next_run_at ASC
-    LIMIT 5
-    FOR UPDATE SKIP LOCKED
-  `;
+  // Claim due jobs by advancing `next_run_at` inside the locking transaction.
+  // The lock from FOR UPDATE SKIP LOCKED only persists during this select; if
+  // we ran the job afterwards and updated next_run_at on completion, a long
+  // job (e.g. dream during a 2-minute LLM call) would still be due on the
+  // next 60s tick and re-fire. Advancing the schedule first means a hung or
+  // slow job is invisible to subsequent ticks until at least scheduleMs has
+  // elapsed since claim time. On crash the transaction rolls back so the
+  // job is eligible again on the next tick — preserving the prior retry
+  // behavior. The post-run UPDATE only writes last_* metadata; it never
+  // re-touches next_run_at.
+  const claimed = await sql.begin(async (tx) => {
+    const due = await tx<{ job_name: string; schedule_ms: number }[]>`
+      SELECT job_name, schedule_ms FROM _ops.worker_runs
+      WHERE next_run_at <= now()
+      ORDER BY next_run_at ASC
+      LIMIT 5
+      FOR UPDATE SKIP LOCKED
+    `;
+    if (due.length === 0) return [] as { job_name: string }[];
+    await tx`
+      UPDATE _ops.worker_runs
+      SET next_run_at = now() + (schedule_ms || ' milliseconds')::interval
+      WHERE job_name = ANY(${due.map((d) => d.job_name)})
+    `;
+    return due;
+  });
 
-  for (const { job_name } of due) {
+  for (const { job_name } of claimed) {
     const job = registry.get(job_name);
     if (!job) {
       // Row exists in DB but no in-process registration. Could be a job
@@ -89,7 +105,6 @@ async function tick(): Promise<void> {
     await sql`
       UPDATE _ops.worker_runs
       SET last_run_at = now(),
-          next_run_at = now() + (${job.scheduleMs} || ' milliseconds')::interval,
           last_status = ${status},
           last_error = ${errorMsg},
           last_duration_ms = ${elapsed}
@@ -116,6 +131,38 @@ export async function startScheduler(): Promise<void> {
     await syncRegistry();
   } catch (e) {
     Logger.error("scheduler: registry sync failed (will retry on next tick)", e);
+  }
+  // Recover stale claims. The "advance next_run_at inside the locking tx"
+  // pattern stops long jobs from re-firing on subsequent ticks, but if the
+  // process dies between commit-of-claim and the post-run UPDATE, the job
+  // is stuck waiting a full schedule_ms before the next tick re-eligibles
+  // it (24h for dream). At startup, two paths:
+  //   (a) last_run_at NOT NULL: prior cycles ran cleanly, but this cycle's
+  //       last_run_at lags next_run_at by more than one full schedule —
+  //       claim happened, completion never recorded.
+  //   (b) last_run_at IS NULL: the row has never recorded a successful run.
+  //       A fresh sync sets next_run_at = now(), so a NULL row with
+  //       next_run_at far in the future means the very first claim
+  //       crashed before completing. The 5-minute slack is wider than a
+  //       tick interval (60s) so we don't false-positive on a row that
+  //       just got synced.
+  // Both cases reset next_run_at to now() so the first tick after boot
+  // re-runs them.
+  try {
+    const recovered = await sql`
+      UPDATE _ops.worker_runs
+      SET next_run_at = now()
+      WHERE
+        (last_run_at IS NOT NULL
+         AND last_run_at < (next_run_at - (schedule_ms || ' milliseconds')::interval))
+        OR
+        (last_run_at IS NULL AND next_run_at > now() + interval '5 minutes')
+    `;
+    if (recovered.count > 0) {
+      Logger.info("scheduler: recovered stale claims", { count: recovered.count });
+    }
+  } catch (e) {
+    Logger.error("scheduler: stale-claim recovery failed", e);
   }
   state.timer = setInterval(() => {
     void (async () => {

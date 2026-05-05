@@ -19,6 +19,15 @@ const SECRET_PATTERNS: Pattern[] = [
     name: "ssh_private_key",
     re: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g,
   },
+  // URL userinfo: `https://user:token@host/...` or `git://user:pat@host`.
+  // The capture path explicitly comments that credentials embedded in repo
+  // URLs (`user:token@host`) flow through scrub, so the regex set must
+  // actually catch them. Lookbehind on the scheme so only the `user:pass`
+  // segment is redacted; scheme and host stay readable.
+  {
+    name: "url_userinfo",
+    re: /(?<=\b[a-zA-Z][a-zA-Z0-9+.-]{0,30}:\/\/)[^\s/@:]+:[^\s/@]+(?=@)/g,
+  },
 ];
 
 const PRIVATE_TAG_RE = /<private[^>]*>[\s\S]*?<\/private>/gi;

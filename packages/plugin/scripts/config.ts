@@ -65,7 +65,12 @@ export function registerProject(cwd: string): boolean {
 
   const path = configPath();
   const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
+  // Mode 0600 set at write time (not via a separate chmod after the fact)
+  // so the tempfile never exists at the default umask, even briefly. A
+  // crash or concurrent reader between writeFile and chmod would otherwise
+  // catch the file at 0644. Atomic rename then makes the live config
+  // inherit the tempfile's mode, so the post-rename live file is 0600 too.
+  writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, path);
   return true;
 }
