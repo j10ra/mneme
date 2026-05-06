@@ -8,6 +8,7 @@
 // Switching to a different-dim provider requires a `vector(N)` migration on
 // the memories.embedding column AND a re-embed pass for existing rows.
 
+import { env } from "../env.ts";
 import * as local from "./local.ts";
 
 const PROVIDERS = {
@@ -16,7 +17,7 @@ const PROVIDERS = {
 
 type ProviderName = keyof typeof PROVIDERS;
 
-const PROVIDER_NAME = (process.env.EMBEDDER_PROVIDER ?? "local") as ProviderName;
+const PROVIDER_NAME = env.EMBEDDER_PROVIDER as ProviderName;
 
 if (!(PROVIDER_NAME in PROVIDERS)) {
   throw new Error(

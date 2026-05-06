@@ -1,17 +1,8 @@
 import postgres from "postgres";
-
-const url = process.env.DATABASE_URL;
-if (!url) {
-  throw new Error("DATABASE_URL not set (check .env)");
-}
-
-const readerUrl = process.env.MNEME_READER_DATABASE_URL;
-if (!readerUrl) {
-  throw new Error("MNEME_READER_DATABASE_URL not set (check .env)");
-}
+import { env } from "./env.ts";
 
 /** Admin pool — full schema access. Used by /api/capture, workers, auth. */
-export const sql = postgres(url, {
+export const sql = postgres(env.DATABASE_URL, {
   max: 10,
   idle_timeout: 30,
   connect_timeout: 10,
@@ -19,7 +10,7 @@ export const sql = postgres(url, {
 
 /** Reader pool — connects as `mneme_reader` (SELECT-only on public.*).
  *  Used by the /mcp tool. Statement timeout enforced at connection level. */
-export const readerSql = postgres(readerUrl, {
+export const readerSql = postgres(env.MNEME_READER_DATABASE_URL, {
   max: 5,
   idle_timeout: 30,
   connect_timeout: 10,

@@ -1,21 +1,13 @@
 import { Logger, mnemeFn } from "@mneme/core";
+import {
+  NAP_DECAY_PER_CYCLE,
+  NAP_FLOOR,
+  NAP_PIN_FLOOR,
+  NAP_RELATE_DISTANCE,
+  NAP_RELATE_MAX_NEIGHBORS,
+  NAP_SHADOW_DECAY,
+} from "../config.ts";
 import { sql } from "../db.ts";
-
-// Per-cycle multiplicative decay for non-pinned memories. With τ=30 days and
-// 4 naps/day = 120 naps over the time constant, factor = exp(-1/120) ≈ 0.9917.
-// After 30 days a memory's importance lands at original × 1/e (~37%).
-const PER_NAP_DECAY = Math.exp(-1 / 120);
-
-// Importance floors. Pinned memories decay like any other memory but stop at
-// PIN_FLOOR — high enough to keep them surfacing, low enough that fresh pins
-// naturally outrank stale ones. Unpinned memories decay all the way to
-// FLOOR. The asymmetric floor is what gives "pin" its meaning: pinned
-// content stays in recall's high zone forever; unpinned content fades.
-const FLOOR = 0.05;
-const PIN_FLOOR = 0.5;
-
-// Hard reduction applied to memories shadowed in this cycle (exact-text dups).
-const SHADOW_DECAY = 0.1;
 
 // Transient error patterns. These match upstream-flake messages worth retrying
 // after a grace window. Anything not matching is treated as content-related
@@ -25,12 +17,6 @@ const SHADOW_DECAY = 0.1;
 // ENOTFOUND, EAI_AGAIN), and the common "socket hang up" string.
 const TRANSIENT_REGEX =
   "HTTP (4(29|08)|5[0-9][0-9])|status (4(29|08)|5[0-9][0-9])|rate.?limit|timed out|timeout|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|tunnel|gateway|connection (refused|reset|closed|aborted)";
-
-// Semantic relations: cosine distance threshold for "near enough to be related"
-// and max neighbors recorded per memory. 0.15 is empirically tight (real
-// relatedness, not just topical adjacency); 5 caps the meta.related_to growth.
-const RELATE_DISTANCE = 0.15;
-const RELATE_MAX_NEIGHBORS = 5;
 
 export type NapResult = {
   decayed: number;
@@ -56,15 +42,15 @@ export const runNapOnce = mnemeFn(
         UPDATE memories
         SET importance = GREATEST(
           CASE WHEN COALESCE((meta->>'pinned')::boolean, false)
-               THEN ${PIN_FLOOR}::real
-               ELSE ${FLOOR}::real
+               THEN ${NAP_PIN_FLOOR}::real
+               ELSE ${NAP_FLOOR}::real
           END,
-          importance * ${PER_NAP_DECAY}::real
+          importance * ${NAP_DECAY_PER_CYCLE}::real
         )
         WHERE archived_at IS NULL
           AND importance > CASE
-            WHEN COALESCE((meta->>'pinned')::boolean, false) THEN ${PIN_FLOOR}::real
-            ELSE ${FLOOR}::real
+            WHEN COALESCE((meta->>'pinned')::boolean, false) THEN ${NAP_PIN_FLOOR}::real
+            ELSE ${NAP_FLOOR}::real
           END
       `;
 
@@ -90,7 +76,7 @@ export const runNapOnce = mnemeFn(
           HAVING count(*) > 1
         )
         UPDATE memories m
-        SET importance = m.importance * ${SHADOW_DECAY}::real,
+        SET importance = m.importance * ${NAP_SHADOW_DECAY}::real,
             meta = m.meta || jsonb_build_object('shadow_of', g.keeper_id::text)
         FROM groups g
         WHERE m.content_hash = g.content_hash
@@ -128,9 +114,9 @@ export const runNapOnce = mnemeFn(
               AND m.embedding IS NOT NULL
               AND m.repo IS NOT DISTINCT FROM s.repo
               AND m.id <> s.id
-              AND s.embedding <=> m.embedding < ${RELATE_DISTANCE}
+              AND s.embedding <=> m.embedding < ${NAP_RELATE_DISTANCE}
             ORDER BY s.embedding <=> m.embedding
-            LIMIT ${RELATE_MAX_NEIGHBORS}
+            LIMIT ${NAP_RELATE_MAX_NEIGHBORS}
           ) n
         ),
         mutual AS (

@@ -1,13 +1,11 @@
 import { Logger } from "@mneme/core";
+import { EMBED_INTERVAL_MS, EXTRACT_INTERVAL_MS } from "../config.ts";
 import { runDreamOnce } from "./dream.ts";
 import { runEmbedOnce, type EmbedResult } from "./embed.ts";
 import { runExtractOnce, type ExtractResult } from "./extract.ts";
 import { runKeepaliveOnce } from "./keepalive.ts";
 import { runNapOnce } from "./nap.ts";
 import { register, startScheduler } from "./scheduler.ts";
-
-const EXTRACT_INTERVAL_MS = 10_000;
-const EMBED_INTERVAL_MS = 5_000;
 
 type Result = ExtractResult | EmbedResult;
 
@@ -24,11 +22,14 @@ type SingletonState = {
   embedTimer: ReturnType<typeof setTimeout> | null;
 };
 
-const g = globalThis as unknown as { [key: symbol]: SingletonState | undefined };
+const g = globalThis as unknown as {
+  [key: symbol]: SingletonState | undefined;
+};
 
 if (g[SINGLETON_KEY]) {
   g[SINGLETON_KEY].stopped = true;
-  if (g[SINGLETON_KEY].extractTimer) clearTimeout(g[SINGLETON_KEY].extractTimer);
+  if (g[SINGLETON_KEY].extractTimer)
+    clearTimeout(g[SINGLETON_KEY].extractTimer);
   if (g[SINGLETON_KEY].embedTimer) clearTimeout(g[SINGLETON_KEY].embedTimer);
   Logger.info("worker: prior instance detected, signaled stop");
 }
@@ -74,8 +75,18 @@ export function startWorker(): void {
   void loop("embed", runEmbedOnce, EMBED_INTERVAL_MS);
 
   register({ name: "nap", scheduleMs: 6 * 60 * 60 * 1000, run: runNapOnce });
-  register({ name: "dream", scheduleMs: 24 * 60 * 60 * 1000, run: runDreamOnce });
-  register({ name: "keepalive", scheduleMs: 24 * 60 * 60 * 1000, run: runKeepaliveOnce });
+
+  register({
+    name: "dream",
+    scheduleMs: 24 * 60 * 60 * 1000,
+    run: runDreamOnce,
+  });
+
+  register({
+    name: "keepalive",
+    scheduleMs: 24 * 60 * 60 * 1000,
+    run: runKeepaliveOnce,
+  });
   void startScheduler();
 }
 

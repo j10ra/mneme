@@ -13,6 +13,7 @@ import {
 import { mountAuthRoutes } from "./auth-routes.ts";
 import { sql, sha256Hex } from "./db.ts";
 import { EMBEDDER_MODEL } from "./embedder/index.ts";
+import { env } from "./env.ts";
 import { KINDS, type Kind } from "./llm/index.ts";
 import { handleHttp as handleMcp } from "./mcp.ts";
 import { scrub, scrubData } from "./scrub.ts";
@@ -22,7 +23,7 @@ import { startWorker, stopWorker } from "./worker/index.ts";
 // Wire core to DB and env. Scrubber runs on every span input/output so
 // `_ops.spans` never see raw secrets either.
 configureLogger({
-  jsonMode: process.env.NODE_ENV === "production",
+  jsonMode: env.IS_PRODUCTION,
   minLevel: "debug",
 });
 configureAuth(sql);
@@ -362,7 +363,7 @@ app.post("/mcp", mnemeRoute("mcp"), requireAuth("mcp"), async (c) => {
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
-const port = Number(process.env.PORT ?? 3100);
+const port = env.PORT;
 
 async function shutdown(signal: string): Promise<void> {
   Logger.info(`${signal} received, flushing traces and closing pool`);

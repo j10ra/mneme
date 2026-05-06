@@ -21,9 +21,11 @@
 //   - blank / unset                  → auto
 
 import { Logger } from "@mneme/core";
+import { PICKER_COOLDOWN_MS, PICKER_FAILURE_THRESHOLD } from "../config.ts";
+import { env } from "../env.ts";
 import * as local from "./providers/local.ts";
 import * as openrouter from "./providers/openrouter.ts";
-import type { DreamLimits, ExtractLimits, LLMProvider } from "./types.ts";
+import type { LLMProvider, DreamLimits, ExtractLimits } from "./types.ts";
 
 const PROVIDERS = {
   local,
@@ -32,24 +34,13 @@ const PROVIDERS = {
 
 export type ProviderName = keyof typeof PROVIDERS;
 
-const FAILURE_THRESHOLD = 3;
-const COOLDOWN_MS = 5 * 60_000;
-
 type BreakerState = { failures: number; openUntil: number };
 const breakers: Record<ProviderName, BreakerState> = {
   local: { failures: 0, openUntil: 0 },
   openrouter: { failures: 0, openUntil: 0 },
 };
 
-const RAW_FORCE = (process.env.LLM_PROVIDER_FORCE ?? "").trim();
-const FORCE: ProviderName | null =
-  RAW_FORCE === "local" || RAW_FORCE === "openrouter" ? RAW_FORCE : null;
-if (RAW_FORCE && !FORCE) {
-  Logger.error(
-    `llm.pick: invalid LLM_PROVIDER_FORCE=${RAW_FORCE} — ignoring (valid: "local", "openrouter", or empty)`,
-  );
-}
-const HAS_OPENROUTER = !!process.env.OPENROUTER_API_KEY;
+const FORCE: ProviderName | null = env.LLM_PROVIDER_FORCE || null;
 
 function isBreakerOpen(name: ProviderName): boolean {
   return Date.now() < breakers[name].openUntil;
@@ -57,7 +48,7 @@ function isBreakerOpen(name: ProviderName): boolean {
 
 function pickProviderName(): ProviderName {
   if (FORCE) return FORCE;
-  if (!HAS_OPENROUTER) return "local";
+  if (!env.HAS_OPENROUTER) return "local";
   if (isBreakerOpen("openrouter")) return "local";
   return "openrouter";
 }
@@ -98,8 +89,11 @@ export function reportSuccess(name: ProviderName): void {
 export function reportFailure(name: ProviderName): void {
   const state = breakers[name];
   state.failures += 1;
-  if (state.failures >= FAILURE_THRESHOLD && state.openUntil <= Date.now()) {
-    state.openUntil = Date.now() + COOLDOWN_MS;
+  if (
+    state.failures >= PICKER_FAILURE_THRESHOLD &&
+    state.openUntil <= Date.now()
+  ) {
+    state.openUntil = Date.now() + PICKER_COOLDOWN_MS;
     Logger.info("llm.pick: breaker opened", {
       provider: name,
       failures: state.failures,
@@ -110,6 +104,6 @@ export function reportFailure(name: ProviderName): void {
 
 Logger.info("llm.pick: configured", {
   force: FORCE ?? "(auto)",
-  hasOpenrouter: HAS_OPENROUTER,
+  hasOpenrouter: env.HAS_OPENROUTER,
   defaultPick: pickProviderName(),
 });

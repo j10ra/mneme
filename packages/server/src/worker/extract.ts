@@ -1,29 +1,15 @@
 import { Logger, mnemeFn } from "@mneme/core";
+import {
+  EXTRACT_BREAKER_PAUSE_MS,
+  EXTRACT_BREAKER_THRESHOLD,
+  EXTRACT_COALESCE_WINDOW,
+  EXTRACT_STALE_RUNNING,
+} from "../config.ts";
 import { sha256Hex, sql } from "../db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
 import { pickExtract, reportFailure, reportSuccess } from "../llm/pick.ts";
 import type { Observation } from "../llm/types.ts";
 
-const COALESCE_WINDOW = "5 minutes";
-// Per-provider sibling and prompt-size caps come from the picker — local
-// stays conservative under the CF Tunnel 100s no-data window (3000 chars ≈
-// 750 user tokens, ~25s prompt-eval on 7B, comfortably inside the wall);
-// OpenRouter can be much more generous because there's no tunnel in the
-// path and 72B-class models handle big prompts cheaply. See the per-
-// provider `extractLimits` constants in llm/providers/*.ts for values.
-//
-// A 'running' job older than this is treated as crashed mid-flight and
-// re-eligible. Bounded by the LLM TIMEOUT_MS plus headroom.
-const STALE_RUNNING = "15 minutes";
-
-// Circuit breaker — when the LLM is down or saturated, stop generating load
-// so the upstream can recover. After FAILURE_THRESHOLD consecutive cycle
-// failures, pause the worker for BREAKER_PAUSE_MS. The first success after
-// reopen resets the counter. This complements the per-job backoff: per-job
-// backoff staggers retries of the same captures, the breaker stops *new*
-// captures (attempts=0) from piling fresh load onto a failing endpoint.
-const FAILURE_THRESHOLD = 3;
-const BREAKER_PAUSE_MS = 5 * 60_000;
 let consecutiveFailures = 0;
 let breakerOpenUntil = 0;
 
@@ -88,7 +74,7 @@ export const runExtractOnce = mnemeFn(
           AND j.scheduled_at <= now()
           AND (
             j.state IN ('queued', 'error')
-            OR (j.state = 'running' AND j.started_at < now() - interval '${sql.unsafe(STALE_RUNNING)}')
+            OR (j.state = 'running' AND j.started_at < now() - interval '${sql.unsafe(EXTRACT_STALE_RUNNING)}')
           )
         ORDER BY j.scheduled_at ASC
         LIMIT 1
@@ -114,7 +100,7 @@ export const runExtractOnce = mnemeFn(
           AND j.scheduled_at <= now()
           AND (
             j.state IN ('queued', 'error')
-            OR (j.state = 'running' AND j.started_at < now() - interval '${sql.unsafe(STALE_RUNNING)}')
+            OR (j.state = 'running' AND j.started_at < now() - interval '${sql.unsafe(EXTRACT_STALE_RUNNING)}')
           )
           AND j.id <> ${seed.job_id}
           AND ${seed.session_id}::text IS NOT NULL
@@ -122,8 +108,8 @@ export const runExtractOnce = mnemeFn(
           AND c.private = ${seed.private}
           AND c.repo IS NOT DISTINCT FROM ${seed.repo}
           AND c.captured_at
-              BETWEEN ${seed.captured_at}::timestamptz - interval '${sql.unsafe(COALESCE_WINDOW)}'
-                  AND ${seed.captured_at}::timestamptz + interval '${sql.unsafe(COALESCE_WINDOW)}'
+              BETWEEN ${seed.captured_at}::timestamptz - interval '${sql.unsafe(EXTRACT_COALESCE_WINDOW)}'
+                  AND ${seed.captured_at}::timestamptz + interval '${sql.unsafe(EXTRACT_COALESCE_WINDOW)}'
         ORDER BY c.captured_at ASC
         LIMIT ${limits.maxSiblings - 1}
         FOR UPDATE OF j SKIP LOCKED
@@ -200,10 +186,10 @@ export const runExtractOnce = mnemeFn(
         WHERE id = ANY(${jobIds})
       `;
       consecutiveFailures++;
-      if (consecutiveFailures >= FAILURE_THRESHOLD) {
-        breakerOpenUntil = Date.now() + BREAKER_PAUSE_MS;
+      if (consecutiveFailures >= EXTRACT_BREAKER_THRESHOLD) {
+        breakerOpenUntil = Date.now() + EXTRACT_BREAKER_PAUSE_MS;
         Logger.warn("extract: circuit breaker open", undefined, {
-          pause_min: BREAKER_PAUSE_MS / 60_000,
+          pause_min: EXTRACT_BREAKER_PAUSE_MS / 60_000,
           consecutive_failures: consecutiveFailures,
         });
         consecutiveFailures = 0;

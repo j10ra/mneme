@@ -17,6 +17,7 @@
 // per-model differences.
 
 import { Logger, mnemeFn } from "@mneme/core";
+import { env } from "../../env.ts";
 import { CLUSTER_PROMPT, SYSTEM_PROMPT } from "../prompt.ts";
 import {
   type ClusterDistillation,
@@ -27,12 +28,6 @@ import {
 } from "../types.ts";
 
 const URL = "https://openrouter.ai/api/v1/chat/completions";
-const API_KEY = process.env.OPENROUTER_API_KEY ?? "";
-const EXTRACT_MODEL =
-  process.env.OPENROUTER_EXTRACT_MODEL ?? "qwen/qwen-2.5-72b-instruct";
-const DREAM_MODEL =
-  process.env.OPENROUTER_DREAM_MODEL ?? "anthropic/claude-sonnet-4";
-const TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS ?? 120_000);
 
 // Optional attribution for OpenRouter's dashboard. Sent on every request
 // so spend / latency / model usage shows up under a stable app label.
@@ -85,7 +80,7 @@ async function consumeStream(resp: Response): Promise<string> {
 function authHeaders(): Record<string, string> {
   return {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${API_KEY}`,
+    Authorization: `Bearer ${env.OPENROUTER_API_KEY ?? ""}`,
     Accept: "text/event-stream",
     "HTTP-Referer": REFERER,
     "X-Title": APP_TITLE,
@@ -95,14 +90,14 @@ function authHeaders(): Record<string, string> {
 export const extractObservations = mnemeFn(
   "llm.openrouter.extract",
   async (captureText: string): Promise<Observation[]> => {
-    if (!API_KEY) throw new Error("OPENROUTER_API_KEY not set");
+    if (!env.HAS_OPENROUTER) throw new Error("OPENROUTER_API_KEY not set");
     if (!captureText.trim()) return [];
 
     const resp = await fetch(URL, {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({
-        model: EXTRACT_MODEL,
+        model: env.OPENROUTER_EXTRACT_MODEL,
         temperature: 0.2,
         max_tokens: extractLimits.maxOutputTokens,
         stream: true,
@@ -112,12 +107,12 @@ export const extractObservations = mnemeFn(
           { role: "user", content: captureText },
         ],
       }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(env.OPENROUTER_TIMEOUT_MS),
     });
 
     Logger.info("llm.openrouter.extract: response", {
       status: resp.status,
-      model: EXTRACT_MODEL,
+      model: env.OPENROUTER_EXTRACT_MODEL,
     });
 
     if (!resp.ok) {
@@ -153,14 +148,14 @@ export const extractObservations = mnemeFn(
 export const distillCluster = mnemeFn(
   "llm.openrouter.distill",
   async (memberContents: string): Promise<ClusterDistillation> => {
-    if (!API_KEY) throw new Error("OPENROUTER_API_KEY not set");
+    if (!env.HAS_OPENROUTER) throw new Error("OPENROUTER_API_KEY not set");
     if (!memberContents.trim()) throw new Error("distillCluster: empty input");
 
     const resp = await fetch(URL, {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({
-        model: DREAM_MODEL,
+        model: env.OPENROUTER_DREAM_MODEL,
         temperature: dreamLimits.temperature,
         max_tokens: dreamLimits.maxOutputTokens,
         stream: true,
@@ -170,12 +165,12 @@ export const distillCluster = mnemeFn(
           { role: "user", content: memberContents },
         ],
       }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(env.OPENROUTER_TIMEOUT_MS),
     });
 
     Logger.info("llm.openrouter.distill: response", {
       status: resp.status,
-      model: DREAM_MODEL,
+      model: env.OPENROUTER_DREAM_MODEL,
     });
 
     if (!resp.ok) {
@@ -229,5 +224,5 @@ export const dreamLimits: DreamLimits = {
 // Recorded into memories.meta.extractor_model / distiller_model so each
 // memory carries the model that wrote it. Picks up env overrides so a
 // model swap (e.g. Sonnet 4 → GPT-5) is reflected without a code change.
-export const extractModel = EXTRACT_MODEL;
-export const dreamModel = DREAM_MODEL;
+export const extractModel = env.OPENROUTER_EXTRACT_MODEL;
+export const dreamModel = env.OPENROUTER_DREAM_MODEL;

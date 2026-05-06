@@ -7,6 +7,7 @@
   "dependencies": {
     "@mneme/core": "workspace:*",
     "hono": "^4.6.0",
-    "postgres": "^3.4.5"
+    "postgres": "^3.4.5",
+    "zod": "^3.23.8"
   }
 }

@@ -1,21 +1,13 @@
 import { Logger, mnemeFn } from "@mneme/core";
+import {
+  DREAM_CLUSTER_DISTANCE,
+  DREAM_MAX_CLUSTER_SIZE,
+  DREAM_MAX_NEIGHBORS_PER_MEMORY,
+  DREAM_MIN_CLUSTER_SIZE,
+} from "../config.ts";
 import { sha256Hex, sql } from "../db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
 import { pickDream, reportFailure, reportSuccess } from "../llm/pick.ts";
-
-// Tighter than nap's 0.15: cluster members must be genuinely about the same
-// thing, not just topically adjacent.
-const CLUSTER_DISTANCE = 0.10;
-
-// Components below MIN_CLUSTER_SIZE are pair-noise; above MAX_CLUSTER_SIZE
-// blow the LLM context budget. v1 just skips out-of-range components — a
-// later refinement could recursively split too-large ones.
-const MIN_CLUSTER_SIZE = 3;
-const MAX_CLUSTER_SIZE = 20;
-
-// Per-memory NN cap inside the LATERAL JOIN. Without it a hub memory in a
-// dense cluster would emit 100+ edges and slow union-find for no benefit.
-const MAX_NEIGHBORS_PER_MEMORY = 20;
 
 function clip(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
@@ -74,9 +66,9 @@ export const runDreamOnce = mnemeFn(
         FROM candidates m
         WHERE m.repo IS NOT DISTINCT FROM c.repo
           AND m.id <> c.id
-          AND c.embedding <=> m.embedding < ${CLUSTER_DISTANCE}
+          AND c.embedding <=> m.embedding < ${DREAM_CLUSTER_DISTANCE}
         ORDER BY c.embedding <=> m.embedding
-        LIMIT ${MAX_NEIGHBORS_PER_MEMORY}
+        LIMIT ${DREAM_MAX_NEIGHBORS_PER_MEMORY}
       ) n ON true
     `;
 
@@ -135,8 +127,11 @@ export const runDreamOnce = mnemeFn(
     let clustersFailed = 0;
 
     for (const memberIds of components.values()) {
-      if (memberIds.length < MIN_CLUSTER_SIZE || memberIds.length > MAX_CLUSTER_SIZE) {
-        if (memberIds.length >= MIN_CLUSTER_SIZE) clustersSkippedSize++;
+      if (
+        memberIds.length < DREAM_MIN_CLUSTER_SIZE ||
+        memberIds.length > DREAM_MAX_CLUSTER_SIZE
+      ) {
+        if (memberIds.length >= DREAM_MIN_CLUSTER_SIZE) clustersSkippedSize++;
         continue;
       }
 
@@ -146,7 +141,7 @@ export const runDreamOnce = mnemeFn(
         WHERE id = ANY(${memberIds})
         ORDER BY created_at ASC
       `;
-      if (members.length < MIN_CLUSTER_SIZE) continue;
+      if (members.length < DREAM_MIN_CLUSTER_SIZE) continue;
 
       // Pick provider per cluster so the breaker can open mid-cycle if a
       // provider starts failing — the rest of the cycle then runs against

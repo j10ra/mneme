@@ -1,10 +1,7 @@
 import { Logger, mnemeFn } from "@mneme/core";
+import { EMBED_BATCH_SIZE, EMBED_STALE_RUNNING } from "../config.ts";
 import { sql } from "../db.ts";
 import { embedBatch } from "../embedder/index.ts";
-
-const BATCH_SIZE = 32;
-// A 'running' embed job older than this is treated as crashed mid-flight.
-const STALE_RUNNING = "5 minutes";
 
 type LockedRow = {
   job_id: string;
@@ -34,10 +31,10 @@ export const runEmbedOnce = mnemeFn(
             AND scheduled_at <= now()
             AND (
               state IN ('queued', 'error')
-              OR (state = 'running' AND started_at < now() - interval '${sql.unsafe(STALE_RUNNING)}')
+              OR (state = 'running' AND started_at < now() - interval '${sql.unsafe(EMBED_STALE_RUNNING)}')
             )
           ORDER BY scheduled_at ASC
-          LIMIT ${BATCH_SIZE}
+          LIMIT ${EMBED_BATCH_SIZE}
           FOR UPDATE SKIP LOCKED
         )
       RETURNING j.id AS job_id, j.memory_id AS memory_id, m.content AS content

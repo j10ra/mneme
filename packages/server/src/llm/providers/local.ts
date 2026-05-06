@@ -5,6 +5,7 @@
 // pointing LLM_URL at it.
 
 import { Logger, mnemeFn } from "@mneme/core";
+import { env } from "../../env.ts";
 import { CLUSTER_PROMPT, SYSTEM_PROMPT } from "../prompt.ts";
 import {
   type ClusterDistillation,
@@ -14,14 +15,11 @@ import {
   type Observation,
 } from "../types.ts";
 
-const URL = process.env.LLM_URL ?? "";
-const BEARER = process.env.LLM_BEARER ?? process.env.AUTH_BEARER ?? "";
-const MODEL = process.env.LLM_MODEL ?? "qwen2.5:3b-instruct-q4_K_M";
-// 120s — covers warm 3B at 11.6 tok/s through the full 1450-token prompt +
-// 500-token generation (~77s expected, ~110s on edge cases). CF only cares
-// about gaps between SSE chunks (under its ~100s no-data window), not total
-// duration; once generation starts streaming, longer total times are fine.
-const TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 120_000);
+// LLM_TIMEOUT_MS covers warm 3B at ~11.6 tok/s through the full ~1450-token
+// prompt + 500-token generation (~77s expected, ~110s on edge cases). CF
+// only cares about gaps between SSE chunks (under its ~100s no-data window),
+// not total duration; once generation starts streaming, longer total times
+// are fine.
 
 type StreamChunk = {
   choices?: Array<{ delta?: { content?: string } }>;
@@ -76,30 +74,31 @@ async function consumeStream(resp: Response): Promise<string> {
 export const extractObservations = mnemeFn(
   "llm.local.extract",
   async (captureText: string): Promise<Observation[]> => {
-    if (!URL) throw new Error("LLM_URL not set");
-    if (!BEARER) throw new Error("LLM_BEARER (or AUTH_BEARER) not set");
     if (!captureText.trim()) return [];
 
-    const resp = await fetch(`${URL.replace(/\/$/, "")}/llm/v1/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${BEARER}`,
-        Accept: "text/event-stream",
+    const resp = await fetch(
+      `${env.LLM_URL.replace(/\/$/, "")}/llm/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${env.LLM_BEARER}`,
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          model: env.LLM_MODEL,
+          temperature: 0.2,
+          max_tokens: extractLimits.maxOutputTokens,
+          stream: true,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: captureText },
+          ],
+        }),
+        signal: AbortSignal.timeout(env.LLM_TIMEOUT_MS),
       },
-      body: JSON.stringify({
-        model: MODEL,
-        temperature: 0.2,
-        max_tokens: 2048,
-        stream: true,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: captureText },
-        ],
-      }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    );
 
     const upstream = resp.headers.get("x-mneme-upstream");
     Logger.info("llm.local.extract: response", {
@@ -143,33 +142,34 @@ export const extractObservations = mnemeFn(
 export const distillCluster = mnemeFn(
   "llm.local.distill",
   async (memberContents: string): Promise<ClusterDistillation> => {
-    if (!URL) throw new Error("LLM_URL not set");
-    if (!BEARER) throw new Error("LLM_BEARER (or AUTH_BEARER) not set");
     if (!memberContents.trim()) throw new Error("distillCluster: empty input");
 
-    const resp = await fetch(`${URL.replace(/\/$/, "")}/llm/v1/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${BEARER}`,
-        Accept: "text/event-stream",
+    const resp = await fetch(
+      `${env.LLM_URL.replace(/\/$/, "")}/llm/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${env.LLM_BEARER}`,
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          model: env.LLM_MODEL,
+          temperature: dreamLimits.temperature,
+          // dream is a 24h batch job, latency doesn't matter and a
+          // paragraph-length summary is much more useful at recall time
+          // than a terse 1-3 sentence version.
+          max_tokens: dreamLimits.maxOutputTokens,
+          stream: true,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: CLUSTER_PROMPT },
+            { role: "user", content: memberContents },
+          ],
+        }),
+        signal: AbortSignal.timeout(env.LLM_TIMEOUT_MS),
       },
-      body: JSON.stringify({
-        model: MODEL,
-        temperature: 0.2,
-        // 1024 — dream is a 24h batch job, latency doesn't matter and a
-        // paragraph-length summary is much more useful at recall time than
-        // a terse 1-3 sentence version. ~88s of generation per cluster max.
-        max_tokens: 1024,
-        stream: true,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: CLUSTER_PROMPT },
-          { role: "user", content: memberContents },
-        ],
-      }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    );
 
     const upstream = resp.headers.get("x-mneme-upstream");
     Logger.info("llm.local.distill: response", {
@@ -226,5 +226,5 @@ export const dreamLimits: DreamLimits = {
 // installed on the answering VM (7B on inference-vm, 3B on homelab-vm).
 // To distinguish 7B vs 3B at recall time, cross-reference with the
 // X-Mneme-Upstream header logged on each call.
-export const extractModel = MODEL;
-export const dreamModel = MODEL;
+export const extractModel = env.LLM_MODEL;
+export const dreamModel = env.LLM_MODEL;
