@@ -9,92 +9,283 @@ type SurfaceItem = {
   repo: string | null;
   machine_id: string;
   created_at: Date;
+  cluster_title?: string | null;
+};
+
+export type SurfaceSection = {
+  items: SurfaceItem[];
+  total: number;
 };
 
 export type Surface = {
   repos: string[];
-  pinned: SurfaceItem[];
-  rules: SurfaceItem[];
-  decisions: SurfaceItem[];
-  sessions: SurfaceItem[];
+  pinned: SurfaceSection;
+  rules: SurfaceSection;
+  themes: SurfaceSection;
+  decisions: SurfaceSection;
+  sessions: SurfaceSection;
+  supersededCount: number;
+  delta: { since: Date; captures: number; memories: number } | null;
   rendered: string;
 };
 
+const EMPTY_SECTION: SurfaceSection = { items: [], total: 0 };
 const EMPTY_SURFACE: Surface = {
   repos: [],
-  pinned: [],
-  rules: [],
-  decisions: [],
-  sessions: [],
+  pinned: EMPTY_SECTION,
+  rules: EMPTY_SECTION,
+  themes: EMPTY_SECTION,
+  decisions: EMPTY_SECTION,
+  sessions: EMPTY_SECTION,
+  supersededCount: 0,
+  delta: null,
   rendered: "",
+};
+
+// Row carries `total_count` from `COUNT(*) OVER ()` so each section returns
+// {items, total} in one round trip — lets the renderer show "(3 of 12)"
+// without a follow-up count query.
+type Row = SurfaceItem & { total_count: string };
+const toSection = (rows: Row[]): SurfaceSection => {
+  const first = rows[0];
+  return {
+    items: rows.map(({ total_count: _t, ...r }) => r),
+    total: first ? Number(first.total_count) : 0,
+  };
 };
 
 /** Build the SessionStart surface for a set of repos (workspace = N repos,
  *  single repo = array of length 1). Cross-machine: filter by repo, union
  *  across all machines. The caller's `machineId` is used to enforce the
  *  privacy invariant: rows with `private=true` are visible only to the
- *  machine that captured them. */
+ *  machine that captured them.
+ *
+ *  All section queries exclude `meta.superseded_by` rows: surfaced facts
+ *  must be the current version. Old versions are still queryable via
+ *  recall (rank-down × SUPERSEDE_RECALL_PENALTY); the surface is curated. */
 export const buildSurface = mnemeFn(
   "surface.build",
   async (repos: string[], callerMachineId: string | null): Promise<Surface> => {
     if (repos.length === 0) return EMPTY_SURFACE;
 
-    const pinned = await sql<SurfaceItem[]>`
-      SELECT id, kind, importance, content, repo, machine_id, created_at
+    const pinnedQ = sql<Row[]>`
+      SELECT id, kind, importance, content, repo, machine_id, created_at,
+             COUNT(*) OVER () AS total_count
       FROM memories
       WHERE archived_at IS NULL
         AND (meta->>'pinned')::boolean = true
+        AND (meta->>'superseded_by') IS NULL
         AND (repo = ANY(${repos}) OR repo IS NULL)
         AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY importance DESC, created_at DESC
       LIMIT 5
     `;
 
-    const rules = await sql<SurfaceItem[]>`
-      SELECT id, kind, importance, content, repo, machine_id, created_at
+    const rulesQ = sql<Row[]>`
+      SELECT id, kind, importance, content, repo, machine_id, created_at,
+             COUNT(*) OVER () AS total_count
       FROM memories
       WHERE archived_at IS NULL
         AND kind IN ('preference', 'constraint')
         AND importance >= 0.7
+        AND (meta->>'superseded_by') IS NULL
         AND (repo = ANY(${repos}) OR repo IS NULL)
         AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY importance DESC, created_at DESC
       LIMIT 3
     `;
 
-    const decisions = await sql<SurfaceItem[]>`
-      SELECT id, kind, importance, content, repo, machine_id, created_at
+    // Themes = LLM-distilled cluster summaries (dream worker output).
+    // The most condensed signal Mneme produces — surface them above the
+    // raw recent stream so the agent gets the synthesis before the noise.
+    const themesQ = sql<Row[]>`
+      SELECT id, kind, importance, content, repo, machine_id, created_at,
+             meta->>'cluster_title' AS cluster_title,
+             COUNT(*) OVER () AS total_count
+      FROM memories
+      WHERE archived_at IS NULL
+        AND kind = 'cluster'
+        AND repo = ANY(${repos})
+        AND (meta->>'superseded_by') IS NULL
+        AND (private = false OR machine_id = ${callerMachineId})
+      ORDER BY importance DESC, created_at DESC
+      LIMIT 3
+    `;
+
+    // Recent capped at 6 (was 8) to keep total surface ≤ 20 items
+    // after Themes joins the budget: 5+3+3+6+3 = 20.
+    const decisionsQ = sql<Row[]>`
+      SELECT id, kind, importance, content, repo, machine_id, created_at,
+             COUNT(*) OVER () AS total_count
       FROM memories
       WHERE archived_at IS NULL
         AND repo = ANY(${repos})
         AND kind IN ('decision', 'feature', 'bugfix', 'discovery')
         AND importance >= 0.6
         AND created_at > now() - interval '14 days'
+        AND (meta->>'superseded_by') IS NULL
         AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY importance DESC, created_at DESC
-      LIMIT 8
+      LIMIT 6
     `;
 
-    const sessions = await sql<SurfaceItem[]>`
-      SELECT id, kind, importance, content, repo, machine_id, created_at
+    const sessionsQ = sql<Row[]>`
+      SELECT id, kind, importance, content, repo, machine_id, created_at,
+             COUNT(*) OVER () AS total_count
       FROM memories
       WHERE archived_at IS NULL
         AND repo = ANY(${repos})
         AND kind = 'summary'
+        AND (meta->>'superseded_by') IS NULL
         AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY created_at DESC
       LIMIT 3
     `;
 
-    const rendered = renderSurface({ repos, pinned, rules, decisions, sessions });
-    return { repos, pinned, rules, decisions, sessions, rendered };
+    const supersededQ = sql<{ n: string }[]>`
+      SELECT COUNT(*)::text AS n FROM memories
+      WHERE archived_at IS NULL
+        AND repo = ANY(${repos})
+        AND (meta->>'superseded_by') IS NOT NULL
+        AND (private = false OR machine_id = ${callerMachineId})
+    `;
+
+    const [pinnedR, rulesR, themesR, decisionsR, sessionsR, supersededR] =
+      await Promise.all([
+        pinnedQ,
+        rulesQ,
+        themesQ,
+        decisionsQ,
+        sessionsQ,
+        supersededQ,
+      ]);
+
+    const pinned = toSection(pinnedR);
+    const rules = toSection(rulesR);
+    const themes = toSection(themesR);
+    const decisions = toSection(decisionsR);
+    const sessions = toSection(sessionsR);
+    const supersededCount = Number(supersededR[0]?.n ?? 0);
+
+    const delta = await computeDelta(repos, callerMachineId);
+
+    const machineIds = [
+      ...new Set(
+        [
+          ...pinned.items,
+          ...rules.items,
+          ...themes.items,
+          ...decisions.items,
+          ...sessions.items,
+        ].map((i) => i.machine_id),
+      ),
+    ];
+    const machineNames =
+      machineIds.length > 1
+        ? await loadMachineNames(machineIds)
+        : new Map<string, string>();
+
+    const rendered = renderSurface(
+      {
+        repos,
+        pinned,
+        rules,
+        themes,
+        decisions,
+        sessions,
+        supersededCount,
+        delta,
+      },
+      machineNames,
+    );
+
+    return {
+      repos,
+      pinned,
+      rules,
+      themes,
+      decisions,
+      sessions,
+      supersededCount,
+      delta,
+      rendered,
+    };
   },
 );
 
-function oneLine(s: string, max = 140): string {
-  const cleaned = s.replace(/\s+/g, " ").trim();
-  return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
+// Cutoff = most-recent `summary` memory on these repos. Anchors the
+// "what's new" line to the last session boundary the agent saw, so the
+// agent reads "12 captures, 7 memories since 5h ago" instead of an
+// arbitrary 24h window. Returns null if no prior summary exists
+// (brand-new repo) — the renderer then drops the line entirely.
+async function computeDelta(
+  repos: string[],
+  callerMachineId: string | null,
+): Promise<Surface["delta"]> {
+  const cutRows = await sql<{ created_at: Date }[]>`
+    SELECT created_at FROM memories
+    WHERE archived_at IS NULL
+      AND repo = ANY(${repos})
+      AND kind = 'summary'
+      AND (private = false OR machine_id = ${callerMachineId})
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+  const cut = cutRows[0];
+  if (!cut) return null;
+  const since = cut.created_at;
+
+  const [capturesR, memoriesR] = await Promise.all([
+    sql<{ n: string }[]>`
+      SELECT COUNT(*)::text AS n FROM captures
+      WHERE archived_at IS NULL
+        AND repo = ANY(${repos})
+        AND created_at > ${since}
+    `,
+    sql<{ n: string }[]>`
+      SELECT COUNT(*)::text AS n FROM memories
+      WHERE archived_at IS NULL
+        AND repo = ANY(${repos})
+        AND created_at > ${since}
+        AND (private = false OR machine_id = ${callerMachineId})
+    `,
+  ]);
+
+  return {
+    since,
+    captures: Number(capturesR[0]?.n ?? 0),
+    memories: Number(memoriesR[0]?.n ?? 0),
+  };
 }
+
+// DISTINCT ON picks one name per machine_id, preferring active rows
+// (revoked_at NULLS FIRST) and the most recent registration. Multiple
+// active api_keys for the same machine_id is rare but legal — pick one
+// rather than emit duplicates.
+async function loadMachineNames(
+  machineIds: string[],
+): Promise<Map<string, string>> {
+  const rows = await sql<{ machine_id: string; name: string }[]>`
+    SELECT DISTINCT ON (machine_id) machine_id, name
+    FROM _ops.api_keys
+    WHERE machine_id = ANY(${machineIds})
+    ORDER BY machine_id, revoked_at NULLS FIRST, created_at DESC
+  `;
+  const m = new Map<string, string>();
+  for (const r of rows) m.set(r.machine_id, slugify(r.name));
+  return m;
+}
+
+const slugify = (s: string): string =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+// Whitespace-collapse only — no length cap. The surface is the most
+// cache-friendly slot in the prompt; truncating with `…` saved nothing
+// real and cost the agent inline scan-ability.
+const collapse = (s: string): string => s.replace(/\s+/g, " ").trim();
 
 // Emoji per kind. Drives the visual scan in the rendered surface and lets the
 // agent map kind → glyph at a glance. Unknown kinds fall back to a neutral dot.
@@ -132,13 +323,31 @@ function relativeTime(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-function renderSurface(s: Omit<Surface, "rendered">): string {
-  const machines = new Set(
-    [...s.pinned, ...s.rules, ...s.decisions, ...s.sessions].map(
-      (i) => i.machine_id,
-    ),
-  );
-  const machineCount = machines.size;
+const sectionHeader = (title: string, section: SurfaceSection): string => {
+  const shown = section.items.length;
+  return shown >= section.total
+    ? `## ${title} (${shown})`
+    : `## ${title} (${shown} of ${section.total})`;
+};
+
+type RenderInput = Omit<Surface, "rendered">;
+
+function renderSurface(s: RenderInput, names: Map<string, string>): string {
+  const allItems = [
+    ...s.pinned.items,
+    ...s.rules.items,
+    ...s.themes.items,
+    ...s.decisions.items,
+    ...s.sessions.items,
+  ];
+  const machineCount = new Set(allItems.map((i) => i.machine_id)).size;
+  const showMachine = machineCount > 1;
+  const tag = (item: SurfaceItem): string => {
+    if (!showMachine) return "";
+    const n = names.get(item.machine_id);
+    return n ? ` · @${n}` : "";
+  };
+
   const lines: string[] = [];
 
   if (s.repos.length > 1) {
@@ -158,42 +367,73 @@ function renderSurface(s: Omit<Surface, "rendered">): string {
     );
   }
 
+  // Delta + supersede counter on one italic line under the header. Anchors
+  // "what's new" at the most-recent summary boundary; supersede count tells
+  // the agent the rank-down machinery has been doing work.
+  const deltaParts: string[] = [];
+  if (s.delta) {
+    deltaParts.push(
+      `Since last session (${relativeTime(s.delta.since)}): ${s.delta.captures} captures, ${s.delta.memories} memories`,
+    );
+  }
+  if (s.supersededCount > 0) {
+    deltaParts.push(`${s.supersededCount} superseded all-time`);
+  }
+  if (deltaParts.length > 0) {
+    lines.push(`_${deltaParts.join(" · ")}_`);
+  }
+
   const sectionsBefore = lines.length;
 
-  if (s.pinned.length > 0) {
+  if (s.pinned.items.length > 0) {
     lines.push("");
-    lines.push("## Pinned");
-    for (const i of s.pinned) {
+    lines.push(sectionHeader("Pinned", s.pinned));
+    for (const i of s.pinned.items) {
       lines.push(
-        `- [${idPrefix(i.id)}] ${glyph(i.kind)} ${i.importance.toFixed(2)} ${oneLine(i.content)}`,
+        `- [${idPrefix(i.id)}] ${glyph(i.kind)} ${i.importance.toFixed(2)} ${collapse(i.content)}${tag(i)}`,
       );
     }
   }
 
-  if (s.rules.length > 0) {
+  if (s.rules.items.length > 0) {
     lines.push("");
-    lines.push("## Rules");
-    for (const i of s.rules) {
-      lines.push(`- [${idPrefix(i.id)}] ${glyph(i.kind)} ${oneLine(i.content)}`);
-    }
-  }
-
-  if (s.decisions.length > 0) {
-    lines.push("");
-    lines.push("## Recent (last 14 days)");
-    for (const i of s.decisions) {
+    lines.push(sectionHeader("Rules", s.rules));
+    for (const i of s.rules.items) {
       lines.push(
-        `- [${idPrefix(i.id)}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${oneLine(i.content)}`,
+        `- [${idPrefix(i.id)}] ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`,
       );
     }
   }
 
-  if (s.sessions.length > 0) {
+  if (s.themes.items.length > 0) {
     lines.push("");
-    lines.push("## Recent sessions");
-    for (const i of s.sessions) {
+    lines.push(sectionHeader("Themes", s.themes));
+    for (const i of s.themes.items) {
+      const title = i.cluster_title
+        ? `**${collapse(i.cluster_title)}** — `
+        : "";
       lines.push(
-        `- [${idPrefix(i.id)}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${oneLine(i.content, 110)}`,
+        `- [${idPrefix(i.id)}] ${glyph(i.kind)} ${title}${collapse(i.content)}${tag(i)}`,
+      );
+    }
+  }
+
+  if (s.decisions.items.length > 0) {
+    lines.push("");
+    lines.push(sectionHeader("Recent (last 14 days)", s.decisions));
+    for (const i of s.decisions.items) {
+      lines.push(
+        `- [${idPrefix(i.id)}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`,
+      );
+    }
+  }
+
+  if (s.sessions.items.length > 0) {
+    lines.push("");
+    lines.push(sectionHeader("Recent sessions", s.sessions));
+    for (const i of s.sessions.items) {
+      lines.push(
+        `- [${idPrefix(i.id)}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`,
       );
     }
   }
