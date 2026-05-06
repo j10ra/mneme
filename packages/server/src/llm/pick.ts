@@ -21,6 +21,7 @@
 //   - blank / unset                  → auto
 
 import { Logger } from "@mneme/core";
+import { Breaker } from "../breaker.ts";
 import { PICKER_COOLDOWN_MS, PICKER_FAILURE_THRESHOLD } from "../config.ts";
 import { env } from "../env.ts";
 import * as local from "./providers/local.ts";
@@ -34,16 +35,21 @@ const PROVIDERS = {
 
 export type ProviderName = keyof typeof PROVIDERS;
 
-type BreakerState = { failures: number; openUntil: number };
-const breakers: Record<ProviderName, BreakerState> = {
-  local: { failures: 0, openUntil: 0 },
-  openrouter: { failures: 0, openUntil: 0 },
+const breakers: Record<ProviderName, Breaker> = {
+  local: new Breaker({
+    threshold: PICKER_FAILURE_THRESHOLD,
+    pauseMs: PICKER_COOLDOWN_MS,
+  }),
+  openrouter: new Breaker({
+    threshold: PICKER_FAILURE_THRESHOLD,
+    pauseMs: PICKER_COOLDOWN_MS,
+  }),
 };
 
 const FORCE: ProviderName | null = env.LLM_PROVIDER_FORCE || null;
 
 function isBreakerOpen(name: ProviderName): boolean {
-  return Date.now() < breakers[name].openUntil;
+  return breakers[name].gate().open;
 }
 
 function pickProviderName(): ProviderName {
@@ -78,26 +84,19 @@ export function pickDream(): DreamPick {
 }
 
 export function reportSuccess(name: ProviderName): void {
-  const state = breakers[name];
-  if (state.failures > 0 || state.openUntil > 0) {
+  const r = breakers[name].report("success");
+  if (r.priorFailures > 0) {
     Logger.info("llm.pick: breaker reset", { provider: name });
-    state.failures = 0;
-    state.openUntil = 0;
   }
 }
 
 export function reportFailure(name: ProviderName): void {
-  const state = breakers[name];
-  state.failures += 1;
-  if (
-    state.failures >= PICKER_FAILURE_THRESHOLD &&
-    state.openUntil <= Date.now()
-  ) {
-    state.openUntil = Date.now() + PICKER_COOLDOWN_MS;
+  const r = breakers[name].report("failure");
+  if (r.openedNow) {
     Logger.info("llm.pick: breaker opened", {
       provider: name,
-      failures: state.failures,
-      reopensAt: new Date(state.openUntil).toISOString(),
+      failures: r.priorFailures + 1,
+      reopensAt: new Date(Date.now() + PICKER_COOLDOWN_MS).toISOString(),
     });
   }
 }

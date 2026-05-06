@@ -1,4 +1,5 @@
 import { Logger, mnemeFn } from "@mneme/core";
+import { Breaker } from "../breaker.ts";
 import {
   EXTRACT_BREAKER_PAUSE_MS,
   EXTRACT_BREAKER_THRESHOLD,
@@ -10,8 +11,10 @@ import { EMBEDDER_MODEL } from "../embedder/index.ts";
 import { pickExtract, reportFailure, reportSuccess } from "../llm/pick.ts";
 import type { Observation } from "../llm/types.ts";
 
-let consecutiveFailures = 0;
-let breakerOpenUntil = 0;
+const breaker = new Breaker({
+  threshold: EXTRACT_BREAKER_THRESHOLD,
+  pauseMs: EXTRACT_BREAKER_PAUSE_MS,
+});
 
 function clip(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
@@ -42,10 +45,8 @@ export const runExtractOnce = mnemeFn(
   "worker.extract.once",
   async (): Promise<ExtractResult> => {
     // Circuit breaker — short-circuit if the LLM has been failing.
-    const now = Date.now();
-    if (now < breakerOpenUntil) {
-      return { didWork: false, pauseMs: breakerOpenUntil - now };
-    }
+    const g = breaker.gate();
+    if (g.open) return { didWork: false, pauseMs: g.pauseMs };
 
     // Pick the provider for this whole cycle. Locking + concat use its
     // limits; the LLM call uses the same provider; success/failure feeds
@@ -162,11 +163,11 @@ export const runExtractOnce = mnemeFn(
     try {
       observations = await provider.extractObservations(concatenated);
       reportSuccess(providerName);
-      if (consecutiveFailures > 0) {
+      const r = breaker.report("success");
+      if (r.priorFailures > 0) {
         Logger.info("extract: circuit breaker recovered", {
-          prior_failures: consecutiveFailures,
+          prior_failures: r.priorFailures,
         });
-        consecutiveFailures = 0;
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -185,14 +186,12 @@ export const runExtractOnce = mnemeFn(
             scheduled_at = now() + (attempts * interval '2 minutes')
         WHERE id = ANY(${jobIds})
       `;
-      consecutiveFailures++;
-      if (consecutiveFailures >= EXTRACT_BREAKER_THRESHOLD) {
-        breakerOpenUntil = Date.now() + EXTRACT_BREAKER_PAUSE_MS;
+      const r = breaker.report("failure");
+      if (r.openedNow) {
         Logger.warn("extract: circuit breaker open", undefined, {
           pause_min: EXTRACT_BREAKER_PAUSE_MS / 60_000,
-          consecutive_failures: consecutiveFailures,
+          consecutive_failures: r.priorFailures + 1,
         });
-        consecutiveFailures = 0;
       }
       return { didWork: true };
     }
