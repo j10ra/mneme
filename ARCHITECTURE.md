@@ -33,7 +33,7 @@ Mneme takes the best parts of four existing systems.
 | Cross-AI | ✅ via Gemini/OpenCode plugins | ✅ any MCP client | ✅ any MCP / CLI client | ✅ any MCP client | ✅ |
 | Consolidation | ❌ none | ❌ none | `memsearch compact` (LLM chunk summarisation) | ❌ | Nightly **dream**: cluster + distill |
 | Importance/decay | ❌ | ❌ | ❌ | ❌ | **Nap**: exp decay + shadows + relations |
-| Contradiction | ❌ | ❌ | ❌ | Bitemporal triples (`valid_from` / `valid_to`) | Bitemporal supersede via `meta.superseded_by` (deferred, see §16) |
+| Contradiction | ❌ | ❌ | ❌ | Bitemporal triples (`valid_from` / `valid_to`) | Bitemporal supersede via `meta.superseded_by` (rule-based pass in nap, LLM pass in dream) |
 | Dedup | `UNIQUE(content_hash, session)` | SHA-256 fingerprint | composite chunk_id with model | file-level skip on mining + cosine gating in `add_drawer` | All four, additive |
 | In-session surface | ✅ Per-folder CLAUDE.md regen + SessionStart hook | ❌ pull-only via tool calls | partial (3-layer progressive retrieval) | partial (`wake-up` + hooks) | ✅ SessionStart pointer list — no files written |
 | Tool surface | ~3-4 MCP tools (`search`, `timeline`, `get_observations`) | 4 + 2 ChatGPT aliases | none direct (CLI + Python API + plugins) | ~20 MCP tools | One: `mneme.sql` + skill |
@@ -74,7 +74,7 @@ Mneme takes the best parts of four existing systems.
 | **Importance** | Salience score in `[0, 1]`. Decays with each nap cycle. Floors at `FLOOR=0.05` for unpinned, `PIN_FLOOR=0.5` for pinned. |
 | **Embed macro** | `embed('text')` inside SQL. The MCP `sql` tool replaces it with a vector literal from the configured embedder provider before execution. |
 | **Nap** | Every 6 hours (scheduler-driven worker): decay importance with asymmetric floors, exact-text shadow grouping, semantic-relation linking via `meta.related_to`, resurrect transient ingest failures, retire non-transient errors to `state='dead'`. Pure SQL, no LLM. |
-| **Dream** | Every 24 hours (scheduler-driven worker): per-repo cosine-NN clustering at distance < 0.10, union-find connected components, LLM-distill clusters of size 3-20 into a new `kind='cluster'` memory, mark members `meta.in_cluster`. Supersede detection is deferred (see §16). |
+| **Dream** | Every 24 hours (scheduler-driven worker): per-repo cosine-NN clustering at distance < 0.10, union-find connected components, LLM-distill clusters of size 3-20 into a new `kind='cluster'` memory, mark members `meta.in_cluster`. Supersede pass runs after distill on the cloud path (Sonnet via OpenRouter), checking cluster members + cosine-near neighbours; skipped entirely on the local provider. |
 | **Surface** | Per-session injection of pinned + `preference`/`constraint` memories + recent decisions/features/bugfixes/discoveries + recent session summaries via the harness's SessionStart hook stdout (claude-mem pattern). Never writes to `CLAUDE.md` or any user file. Token-capped, scoped to discovered repos. |
 | **Source** | The origin tag on a capture row. Today: `claude_hook` (UserPromptSubmit + PostToolUse), `claude_summary` (Stop / PreCompact), `claude_assistant` (assistant turn transcription), `claude_memory` (Anthropic auto-memory mirror), `manual:/memory` (slash), `manual:/api/memory` (direct write). Dream writes directly to `memories` and inherits `capture_id` from a seed member. |
 | **Urgent capture** | Kinds `security_alert`, `decision` skip the 5-min coalescing window and extract immediately. |
@@ -371,7 +371,7 @@ sequenceDiagram
 | `claude_memory` | Claude Code `PostToolUse(Write\|Edit)` on path `~/.claude/projects/*/memory/*.md` | `claude_memory` (frontmatter `type:` lands in `meta.original_type`) | Mirrors Anthropic auto-memory writes into Mneme |
 | `manual:/memory` | `/mneme:memory <text>` slash command | (extracted) | User-authored context; goes through extract like any other capture |
 | `manual:/api/memory` | `POST /api/memory` (used by `/mneme:pin <text>`) | `note` | Direct memory write bypassing extract; creates a synthetic capture for provenance and the memory in one transaction |
-| Future: `codex_hook` / `cursor_hook` / `opencode_hook` | harness-native hooks | (extracted) | Phase 8 (deferred) |
+| Future: `codex_hook` / `cursor_hook` / `opencode_hook` | harness-native hooks | (extracted) | [#6](https://github.com/j10ra/mneme/issues/6) |
 
 **Worker-driven writes** (do not flow through `/api/capture`):
 
@@ -551,7 +551,7 @@ LIMIT 8;
 
 Three-component score: cosine semantic similarity (55%), keyword `ts_rank` (35%), and an exponential recency boost with a 7-day characteristic period (10%). Older strong matches still win on topic, but recent context gets a fair lane against deep history.
 
-No `private` filter in the query: the MCP reader role has an RLS policy of `USING (private = false)`, so `mneme.sql` physically can't return private rows. See §9.5 and §16 for the deferred per-machine-recall fix.
+No `private` filter in the query: the MCP reader role has an RLS policy of `USING (private = false)`, so `mneme.sql` physically can't return private rows. See §9.5 and [#13](https://github.com/j10ra/mneme/issues/13) for the deferred per-machine-recall fix.
 
 **What recall doesn't use yet:**
 - `importance` is computed and decayed by nap but not factored into the recall score directly. Surface (§6.6) uses it heavily; recall doesn't. Adding `+ 0.05 * importance` would tilt scores toward higher-importance memories at retrieval time. Not done — current recall feels topical enough without it; revisit if recall surfaces low-importance noise.
@@ -680,7 +680,7 @@ sequenceDiagram
 `/api/session/start` is harness-agnostic. Any caller posts `repos: string[]` and gets back the structured payload + rendered markdown:
 
 - **Claude Code** — SessionStart hook (this section).
-- **Codex / Cursor / OpenCode** (Phase 8) — first `mneme.sql` response from MCP prepends `rendered` as a preamble (no SessionStart hook concept in those harnesses).
+- **Codex / Cursor / OpenCode** ([#6](https://github.com/j10ra/mneme/issues/6)) — first `mneme.sql` response from MCP prepends `rendered` as a preamble (no SessionStart hook concept in those harnesses).
 - **CLI** — `mneme surface` (future, prints `rendered` to terminal for manual check).
 - **Any HTTP client** — same payload, returns the same JSON.
 
@@ -749,7 +749,7 @@ The skill encourages adding repo filters explicitly:
 Two paths, two enforcement points:
 
 - **SessionStart surface** (`/api/session/start`, runs as the writer role): server-built queries gate on `(private = false OR machine_id = $caller_machine_id)`, where `$caller_machine_id` is server-stamped from the bearer token. A machine's private rows surface in its own session and nowhere else.
-- **MCP `mneme.sql`** (runs as `mneme_reader`): RLS policy `USING (private = false)` makes private rows physically unreachable. No GUC, no agent-controllable surface — the role itself can't see them. The skill no longer teaches a `WHERE private = ... OR machine_id = ...` filter because the role enforces it. Per-machine private recall via MCP is deferred (§16); for now, machines can't recall their own private memories through `mneme.sql`.
+- **MCP `mneme.sql`** (runs as `mneme_reader`): RLS policy `USING (private = false)` makes private rows physically unreachable. No GUC, no agent-controllable surface — the role itself can't see them. The skill no longer teaches a `WHERE private = ... OR machine_id = ...` filter because the role enforces it. Per-machine private recall via MCP is deferred ([#13](https://github.com/j10ra/mneme/issues/13)); for now, machines can't recall their own private memories through `mneme.sql`.
 
 ---
 
@@ -766,10 +766,10 @@ Two paths, two enforcement points:
 | Auth | Opaque Bearer tokens in `Authorization` header, per-machine, scoped, revocable. Plaintext exists only on the issuing machine in `~/.mneme/config.json` (`chmod 0600`); the server stores `sha256(token)` only. Admin password is the root of trust. See §9.5. |
 | Server-stamped identity | `/api/capture` and `/api/memory` pull `machine_id` from the authenticated key, ignoring the request body. Per-machine tokens cannot spoof another machine's identity. |
 | DB role | MCP `sql` tool connects as `mneme_reader` (SELECT-only on `public.*`, blocked from `_ops.*`). Writes never go through SQL. |
-| MCP privacy | `mneme_reader` has an RLS policy of `USING (private = false)` on `memories` and `captures`. The MCP tool physically cannot return private rows — no GUC, no SQL-rewrite gates, agent can't escalate. Per-machine private recall via MCP is deferred (§16); the SessionStart surface is the privacy-aware read path that runs as the writer role and applies a server-stamped `machine_id` filter. |
+| MCP privacy | `mneme_reader` has an RLS policy of `USING (private = false)` on `memories` and `captures`. The MCP tool physically cannot return private rows — no GUC, no SQL-rewrite gates, agent can't escalate. Per-machine private recall via MCP is deferred ([#13](https://github.com/j10ra/mneme/issues/13)); the SessionStart surface is the privacy-aware read path that runs as the writer role and applies a server-stamped `machine_id` filter. |
 | SQL safety | server rejects DML/DDL by regex + parser, single-statement only, comment stripping, auto-`LIMIT 200` if absent, 5s `statement_timeout`, 1MB result cap |
 | Transport | HTTPS only |
-| Local outbox | hooks write to `~/.mneme/outbox/*.json` if server unreachable, drained at next `SessionStart`. **Known gap:** outbox files contain raw content; scrubbing currently only happens server-side. See §16. |
+| Local outbox | hooks write to `~/.mneme/outbox/*.json` if server unreachable, drained at next `SessionStart`. **Known gap:** outbox files contain raw content; scrubbing currently only happens server-side. See [#7](https://github.com/j10ra/mneme/issues/7). |
 
 ---
 
@@ -1079,11 +1079,11 @@ claude-mem's real differentiation isn't "memory in a vector DB." It's a small se
 | **Rich observation taxonomy** (`bugfix`, `feature`, `decision`, `discovery`, `security_alert`, `preference`, `constraint`, `reference`) | Same taxonomy in `memories.kind`, used by recall filters and the surface aggregator | §3 Glossary, §5 Schema |
 | **Per-event extraction** (every PostToolUse → secondary Claude) | 5-min coalescing per `session_id` for cost. Override: `kind ∈ {security_alert, decision}` are flagged urgent at hook time and bypass coalescing | §6.2 Process, §6.1 Capture |
 | **Always-on local capture daemon with crash resilience** | Hooks fire-and-forget to `POST /api/capture`. Local outbox `~/.mneme/outbox/` retries on next session start. No daemon to keep alive. | §6.1 Capture, §8 Privacy |
-| **Multi-harness installers (Gemini CLI, OpenCode)** | Reference deployment is Claude Code today. The capture API and skill are harness-agnostic; thin install scripts for Codex/Cursor/OpenCode are deferred (Phase 8, §16). | §12 Phases |
+| **Multi-harness installers (Gemini CLI, OpenCode)** | Reference deployment is Claude Code today. The capture API and skill are harness-agnostic; thin install scripts for Codex/Cursor/OpenCode are deferred ([#6](https://github.com/j10ra/mneme/issues/6)). | [#6](https://github.com/j10ra/mneme/issues/6) |
 | **Specialised MCP tools** (`search`, `timeline`, `get_observations`) | All expressible as SQL via the skill's canned templates. One read tool, many query shapes — the skill teaches the shapes. | §11 Skill |
 | **`<private>` tag stripping** | Same. Edge scrubber in `POST /api/capture` (now applied to every string field, not just content). | §8 Privacy |
 | **SDK-driven dedup** (UNIQUE on content_hash + session) | `UNIQUE (content_sha256, machine_id)` on captures + composite `chunk_id` (model-aware) on memories. | §5 Schema |
-| **Web viewer UI** | Deferred. Postgres console + saved queries cover v1; revisit only when it earns its keep. | §16 |
+| **Web viewer UI** | Deferred. Postgres console + saved queries cover v1; revisit only when it earns its keep. | [#11](https://github.com/j10ra/mneme/issues/11) |
 
 **What we let go:**
 - Local-only by design (we trade local latency for cross-machine; outbox covers offline).
@@ -1092,14 +1092,14 @@ claude-mem's real differentiation isn't "memory in a vector DB." It's a small se
 
 **What we improve over claude-mem:**
 - **Cross-machine source of truth.** claude-mem stores in `~/.claude-mem/` per laptop; Mneme stores in shared Postgres so a fact written on machine A surfaces on machine B at next SessionStart, no sync step.
-- **Bitemporal supersede via `meta.superseded_by`.** claude-mem doesn't model contradiction. (Mneme's supersede *detection* is deferred — see §16 — but the data model and recall filter are already in place.)
+- **Bitemporal supersede via `meta.superseded_by`.** claude-mem doesn't model contradiction. Mneme has both detection (rule-based in nap, LLM-based in dream when on cloud) and recall rank-down (× 0.3 score penalty for superseded rows).
 - **One-tool MCP via SQL.** claude-mem ships ~3-4 specialised tools (`search`, `timeline`, `get_observations`); Mneme ships one read primitive (`mneme.sql`) plus a skill that teaches query shapes. Schema changes update the skill, not the MCP surface.
 - **Importance / decay.** claude-mem keeps everything at equal weight; Mneme's `nap` worker decays unpinned memories on a 30-day half-life, floors pinned ones at 0.5, and shadows exact dups — so recall surfaces stay clean over months.
 - **Consolidation.** claude-mem's session-boundary summarisation is per-session; Mneme's `dream` worker clusters across sessions, machines, and weeks, distilling cluster summaries that outrank raw captures for broad queries.
 
 **Where claude-mem still leads** (worth tracking, not necessarily worth copying):
 - Per-folder regenerated `CLAUDE.md` files written into the project. Mneme deliberately writes nothing to user files — surface is hook stdout only — but claude-mem's approach has higher visibility for users who don't know to ask.
-- Larger ecosystem of harness installers shipped today (Gemini CLI, OpenCode plugins). Mneme's Phase 8 closes this gap.
+- Larger ecosystem of harness installers shipped today (Gemini CLI, OpenCode plugins). Mneme's multi-harness work ([#6](https://github.com/j10ra/mneme/issues/6)) closes this gap.
 
 ---
 
@@ -1133,156 +1133,34 @@ The skill is the documentation and the orientation. Loaded via Anthropic's progr
 
 ## 12. Build Phases
 
-Each phase has explicit "done when" criteria. Phases 0-3 give you a usable system across machines. Phases 4-7 add intelligence. Phase 8+ broadens reach.
+Phases 0-7 are shipped — the system is fully usable across machines today. The summary below describes what each phase delivered. Granular shipped checklists were retired once the work landed; commit history is the authoritative trail. Future work (multi-harness, polish slashes, viewer UI, etc.) lives in the [GitHub project board](https://github.com/users/j10ra/projects/6) with one issue per item.
 
-### Phase 0 — Foundation (shipped)
-**Goal:** infrastructure exists, with auth + observability from line one.
-- [x] Postgres + pgvector provisioned (any host).
-- [x] Mneme schema deployed (`captures`, `memories`, `ingest_jobs`).
-- [x] `_ops` schema deployed (`traces`, `spans`, `logs`, `api_keys`, `schema_migrations`, `worker_runs`).
-- [x] Bun monorepo scaffolded (`packages/server`, `packages/core`, `packages/plugin`, `packages/shared`).
-- [x] Hono server with `/health`, `/api/capture`, `/api/session/start`, `/mcp` routes.
-- [x] `@mneme/core` observability (`mnemeRoute`, `mnemeFn`, `Logger`, AsyncLocalStorage context, 100ms buffered flush to `_ops.*`).
-- [x] Bearer-token auth middleware on `/api/*` and `/mcp` (sha256 lookup against `_ops.api_keys`, scope check, 401/403).
-- [x] SQL migrations runner (`scripts/migrate.ts`, idempotent, tracks applied via `_ops.schema_migrations`).
-- [x] `pg_cron` daily prune of `_ops.traces` older than 14 days (`mneme_ops_prune` at `0 3 * * *`).
-- [x] Smoke test verified: `/health` 200, no-auth 401, wrong-scope 403, valid-scope 200, dedup path 200 with `deduped:true`, traces+spans+logs persisted in `_ops`.
+**Phase 0 — Foundation.** Postgres + pgvector, `captures` / `memories` / `ingest_jobs` schema, `_ops.*` schema (traces, spans, logs, api_keys, schema_migrations, worker_runs). Bun monorepo (`packages/server`, `core`, `plugin`, `shared`). Hono server with `/health`, `/api/capture`, `/api/session/start`, `/mcp`. `@mneme/core` observability via `mnemeRoute` / `mnemeFn` / `Logger` + AsyncLocalStorage context (100ms buffered flush). Bearer-token auth on `/api/*` and `/mcp` (sha256 lookup, scope check). Idempotent migrations runner. `pg_cron` daily prune of `_ops.traces`.
 
-**Done when:** an authed capture from any machine lands in Postgres **and** its full trace is queryable in `_ops`, **and** unauthed calls are rejected.
+**Phase 1 — Capture.** `POST /api/capture` with sha256 + machine_id dedup. Edge scrubber: `<private>...</private>` blocks plus 11 secret patterns (AWS keys, GitHub PATs classic + fine, OpenAI / Anthropic keys, generic API keys, Slack tokens, JWT, Bearer headers, SSH private keys, embedded `user:token@host` URLs). Hash computed on cleaned content; `_ops.spans` input/output also scrubbed. Scrubber widened to **every string field** (content, repo, source, hostname, harness, agent, session_id, topics, raw_meta) after a credential leaked through `repo`. `ingest_jobs` enqueued at capture time.
 
-### Phase 1 — Capture (shipped)
-**Goal:** captures land reliably, with secrets stripped at the edge.
-- [x] `POST /api/capture` with Bearer auth.
-- [x] sha256 + machine_id dedup on insert.
-- [x] Edge scrubber: `<private>...</private>` blocks + 11 secret patterns (AWS keys, GitHub PATs classic + fine, OpenAI, Anthropic, generic API keys, Slack, JWT, Bearer header, SSH private key, embedded `user:token@host` URLs). Hash is computed on cleaned content; `_ops.spans` input/output also scrubbed via the `TraceStore` scrubber hook.
-- [x] `ingest_jobs` enqueued at capture time.
-- [x] **v1.0.18:** scrubber widened to **every string field** (content, repo, source, hostname, harness, agent, session_id, topics, raw_meta) after the prior content-only path leaked git-URL credentials through `repo`.
+**Phase 2 — Recall.** `mneme_reader` Postgres role (SELECT-only on `public.*`, blocked from `_ops.*`); separate connection pool. `/mcp` JSON-RPC dispatcher (no SDK dep). Single tool `mneme.sql(query)` with five safety layers: comment stripping, single-statement check, SELECT/WITH-only regex (rejects 17+ keywords), `embed('text')` macro substitution (batched), auto-`LIMIT 200`, 5s `statement_timeout`, 1MB result cap. `mneme:using-mneme` skill at `packages/plugin/skills/using-mneme/SKILL.md`.
 
-**Done when:** content with `<private>...</private>` and embedded secrets posts successfully but the secrets are absent from `captures.*` AND `_ops.spans.input`. ✓ Verified.
+**Phase 3 — Hooks and plugin.** Claude Code plugin (installable via `/plugin marketplace add` + `/plugin install`). Bundled local stdio MCP proxy that translates JSON-RPC → `POST /mcp`, answering handshakes locally so the MCP attaches even when upstream is down. `PostToolUse` + `UserPromptSubmit` → capture. `Stop` + `PreCompact` → session digest + per-turn assistant transcript. `SessionStart` hook drains outbox + calls `/api/session/start` + emits surface markdown. Slash commands: `/setup`, `/memory`, `/recall`, `/summarise`, `/pin`, `/unpin`, `/pinned`, `/machines`, `/revoke`. Local outbox at `~/.mneme/outbox/` for failed captures.
 
-### Phase 2 — Recall (shipped)
-**Goal:** agents can search via SQL with vector + keyword + hybrid.
-- [x] `mneme_reader` Postgres role (SELECT-only on `public.*`, blocked from `_ops.*`); separate connection pool in the server.
-- [x] Embedder client (`embedText`, `embedBatch`) wrapped by `mnemeFn` so each call lands as a child span. Provider routed via `EMBEDDER_PROVIDER` env var; reference deployment uses `local` (TEI / OpenAI-compat at any 1024-dim model).
-- [x] `/mcp` JSON-RPC dispatcher: `initialize`, `tools/list`, `tools/call`, `notifications/initialized`, `ping`. No SDK dep.
-- [x] Single tool `mneme.sql(query)` with five safety layers: comment stripping, single-statement check, SELECT/WITH-only regex (rejects 17+ keywords), `embed('text')` macro substitution (batched), auto-`LIMIT 200`, 5s `statement_timeout` on the reader pool, 1MB result cap.
-- [x] `mneme:using-mneme` skill at `packages/shared/skills/using-mneme/SKILL.md` (schema reference + canned query templates).
-
-**Done when:** verified end-to-end: MCP `initialize` handshake works; `tools/list` returns the schema; `tools/call mneme.sql` runs vector / kind-filter / hybrid queries; INSERT/DELETE/multi-statement/`_ops.*` access all rejected (regex rejects writes, DB role rejects `_ops`). ✓
-
-### Phase 3 — Hooks and Plugin (v1.0.0 shipped)
-**Goal:** Claude Code captures automatically across all machines; plugin install ships MCP and hooks together.
-- [x] Claude Code plugin scaffold (`packages/plugin/`) — installable via `/plugin marketplace add <repo>` + `/plugin install mneme@<marketplace>`.
-- [x] **Bundled local stdio MCP proxy** (`packages/plugin/scripts/mcp-proxy.ts`): reads `~/.mneme/config.json`, translates MCP JSON-RPC stdio → `POST <server>/mcp` with `Authorization: Bearer <key>`. Answers `initialize` / `tools/list` / `notifications/initialized` / `ping` locally so the MCP attaches even when the upstream is unreachable; only `tools/call` is forwarded.
-- [x] Plugin `.mcp.json` declares stdio transport pointing at the bundled proxy.
-- [x] `PostToolUse` + `UserPromptSubmit` hooks → `POST /api/capture` with `source='claude_hook'`.
-- [x] `Stop` + `PreCompact` hooks → `POST /api/capture` with `source='claude_summary'` (session digest) **and** `source='claude_assistant'` (per-turn assistant transcript).
-- [x] `PostToolUse(Write|Edit)` with path matcher `~/.claude/projects/*/memory/*.md` → `source='claude_memory'`.
-- [x] `SessionStart` hook → drains outbox + `POST /api/session/start` + prints surface markdown to stdout (8s timeout, fail-empty).
-- [x] Slash commands: `/setup`, `/memory`, `/recall`, `/summarise`, `/pin`, `/unpin`, `/pinned`, `/machines`, `/revoke`.
-- [x] Local outbox (`~/.mneme/outbox/`) for failed captures, drained at next `SessionStart`.
-- [x] Client-side scope enrichment: `repo` from session payload's `cwd`, `machine_id` from config, `harness='claude-code'`, `agent` from `CLAUDE_MODEL` env.
-- [x] Pin actuation: `/api/capture` with `raw_meta.kind='pin'` triggers `UPDATE memories SET meta.pinned = ...` server-side (UUID-validated, try/catch wrapped).
-
-**Done when:** a fresh machine onboards with three commands plus a reload:
 ```
 /plugin marketplace add <marketplace-repo>
 /plugin install mneme@<marketplace>
 /mneme:setup <server-url> <admin-password> [machine-name]
 /reload-plugins
 ```
-After that, MCP, hooks, slash commands, and the SessionStart surface all work. A memory written on machine A is recalled from any other harness on machine B.
 
-Once installed, the **first `SessionStart` in any project automatically adds it to `~/.mneme/config.json` `projects[]`** — no per-project setup step. Subsequent events in unregistered cwd are rejected (defends against subagent / ghost-process leakage).
+The first `SessionStart` in any project auto-registers it in `~/.mneme/config.json`'s `projects[]`. Non-`SessionStart` events outside registered cwds are rejected (subagent / ghost-process defence).
 
-### Phase 4 — Process (extraction) (shipped)
-**Goal:** raw captures become structured memories.
-- [x] Coalescing window: extract worker locks an oldest-queued seed job + ≤9 session siblings within ±5 min, runs one LLM call on the bundle.
-- [x] LLM provider abstraction (`packages/server/src/llm/`): selector via `LLM_PROVIDER` env var. Reference deployment uses `local` against any OpenAI-compatible chat-completions endpoint with streaming + `response_format: { type: "json_object" }`. Cloud providers (Groq, OpenRouter, Anthropic, OpenAI, Mistral) drop in as additional files under `llm/`.
-- [x] Extraction prompt with full `kind` taxonomy + explicit `DO NOT extract` anti-pattern list (assistant meta, tool-call events, trivial status). Empty `observations: []` is the valid common answer.
-- [x] Input caps: 1500 chars/capture × 3000 chars/window, sized so prompt-processing latency stays under streaming-budget windows on small CPU-only models.
-- [x] Memory chunks: composite `chunk_id = sha256(content_hash + ":" + embedding_model)` so re-embedding under a new model creates fresh rows instead of overwriting.
-- [x] Embedder `embedBatch` (up to 32 memories per call) + `to_tsvector('english', content)` at insert time.
-- [x] Initial importance: LLM self-rated 0.1-1.0, clamped at write time.
-- [x] Two-phase queue: `extract` enqueued by `/api/capture`; `embed` enqueued per-memory by extract worker (migration 0006 added `memory_id` FK on `ingest_jobs`).
-- [x] Per-job exponential backoff (`attempts * 2 min` for extract, `attempts * 30s` for embed); 5-attempt cap before nap escalates the job.
-- [x] **Circuit breaker:** 3 consecutive cycle failures → 5-minute pause so a downed LLM doesn't burn job attempts.
+**Phase 4 — Process (extraction).** Extract worker locks an oldest-queued seed + ≤9 (or up to 30 on the cloud path) session siblings within ±5 min and runs one LLM call on the bundle. LLM provider abstraction under `packages/server/src/llm/providers/`: today `openrouter` (cloud, primary) and `local` (compute.jalipalo.dev, fallback). Per-pipeline picker in `llm/pick.ts` with primary/fallback breaker. Per-provider `extractLimits` describe wire-shape contract (chars, siblings, output tokens). Composite `chunk_id = sha256(content_hash + ":" + embedding_model)` so re-embedding under a new model creates fresh rows. Embedder `embedBatch` (up to 32 per call) + `to_tsvector('english', content)`. Initial importance LLM-rated 0.1-1.0, clamped at write time. Two-phase queue: extract enqueued at capture time; embed enqueued per-memory by extract worker. Per-job exponential backoff (extract: `attempts × 2 min`, embed: `attempts × 30s`); 5-attempt cap. Per-cycle circuit breaker (3 fails → 5 min pause).
 
-**Done when:** `mneme.sql` returns relevance-ranked, kind-filtered memories rather than chronological raw text. ✓
+**Phase 4.1 — Hardening.** Hook hard-blacklist of cwd patterns (`/.claude*/`, `/tmp/`, `/var/tmp/`, `/private/var/folders/`, `/proc/`, `/sys/`) — kills ghost-agent activity at the edge. Hook tool-name blacklist (`TodoWrite`, `Skill`, `Task*`, `EnterPlanMode`, `AskUserQuestion`, MCP-resource tools, `ScheduleWakeup`, `Monitor`, `ToolSearch`) plus regex on `/mneme/i` / `/claude.?mem/i` to break the recursive-memory loop. Project allowlist via `~/.mneme/config.json`. SessionStart matcher includes `resume`. Hook timeout 3s → 8s. Strengthened extraction prompt with explicit `DO NOT extract` examples and 0.3 importance floor.
 
-### Phase 4.1 — Hardening (shipped)
-**Goal:** keep the noise out so recall stays high-signal.
-- [x] Hook hard blacklist: skip captures from `/.claude*/`, `/tmp/`, `/var/tmp/`, `/private/var/folders/`, `/proc/`, `/sys/` — kills ghost-agent activity at the edge.
-- [x] Hook tool-name blacklist: `TodoWrite`, `Skill`, `Task*`, `EnterPlanMode`/`ExitPlanMode`, `AskUserQuestion`, `ListMcpResourcesTool`, `ReadMcpResourceTool`, `ScheduleWakeup`, `Monitor`, `ToolSearch`. Plus regex match on `/mneme/i` and `/claude.?mem/i` to break the recursive memory-about-the-memory-system loop.
-- [x] Hook project allowlist: `~/.mneme/config.json` grows a `projects: { path, registered_at }[]` array. `SessionStart` auto-registers the cwd if it passes the hard blacklist; non-`SessionStart` events check `cwd.startsWith(project.path)` and reject otherwise. Atomic write via tempfile + `rename`. `/setup` rerun preserves the array.
-- [x] **SessionStart matcher widened**: added `resume` to `startup|clear|compact` so resumed sessions also auto-register and fetch surface.
-- [x] **Hook timeout bumped 3s → 8s**; `fetchSurface` `AbortSignal` 3s → 5s. Multi-repo workspaces with several `git remote get-url` calls + server round-trip needed the headroom.
-- [x] Strengthened extraction prompt: explicit `DO NOT extract` examples (assistant meta, tool-call events, trivial status); importance floor 0.3 (drop anything below).
-- [x] Scrubber pattern set covers tokens for the providers Mneme has historically used (the patterns stay even if the corresponding provider isn't currently wired).
+**Phase 5 — Nap.** Server-worker scheduler (`worker/scheduler.ts` + `_ops.worker_runs`) chosen over `pg_cron` for observability + portability. Per-cycle decay `importance *= exp(-1/120) ≈ 0.9917` (τ=30 days at 4 naps/day) with asymmetric floors (`PIN_FLOOR = 0.5`, `FLOOR = 0.05`). Exact-text shadows: per `content_hash` group, highest-importance row wins; rest get `meta.shadow_of` + `× 0.1`. Semantic relations: LATERAL JOIN over HNSW finds ≤5 same-repo nearest neighbours at cosine < 0.15, mutual updates so old memories pick up new neighbours without re-seeding. Rule-based supersede pass: cosine < 0.05 + keyword match ("instead of", "no longer", "replaced", etc.) + 12h age gap → write `meta.superseded_by`, capped per cycle. Ingest-job retry policy: transients (5xx / timeout / tunnel / ECONNRESET) older than 1h reset to `queued`; non-transients older than 24h move to `dead`.
 
-**Done when:** a single recall returns mostly signal, not self-referential agent meta. ✓
+**Phase 6 — Dream.** Per-repo cosine-NN edges via HNSW LATERAL JOIN at `CLUSTER_DISTANCE = 0.10`, union-find connected components in TS. Skip-list: rows with `kind='cluster'`, `meta.pinned`, `meta.shadow_of`, `meta.superseded_by`, or `meta.in_cluster`. Cluster size 3-20; out-of-range components skipped this cycle. One LLM call per cluster via the picker; on the cloud path a second call against `findSupersedes` checks cluster members + cosine-near neighbours and writes `meta.superseded_by` for validated pairs. New `kind='cluster'` row written with `meta.cluster_title`, `meta.member_ids`, `meta.distiller_provider`, `meta.distiller_model`. Members get `meta.in_cluster = <cluster_id>` so they skip the next pass. Per-cluster failure isolation.
 
-### Phase 5 — Nap (shipped)
-**Goal:** quiet importance management without an LLM in the loop.
-- [x] **Server-worker scheduler** (chosen over pg_cron): `_ops.worker_runs` table + `worker/scheduler.ts` module. Time-driven jobs (nap, keepalive, dream) register `(name, scheduleMs, runFn)`; a single coordinator wakes every 60s, fires due jobs, persists `last_run_at` / `next_run_at` / `status` / `duration` per job. Restart-safe (host redeploys don't reset the schedule) and inspectable via `mneme.sql` against `_ops.worker_runs`. **Why scheduler over pg_cron:** keeps the LLM-bearing jobs (dream) in the same observability stream as extract/embed; doesn't require a Postgres extension; portable across hosts.
-- [x] **Decay with asymmetric floors.** Per-cycle multiplicative `importance *= exp(-1/120)` (≈0.9917) so τ=30 days at 4 naps/day. Pinned memories floor at `PIN_FLOOR=0.5`; unpinned at `FLOOR=0.05`. The asymmetric floor preserves pin's meaning (always in the high zone) while letting fresh pins outrank stale ones via natural decay.
-- [x] **Exact-text shadows.** Per `content_hash` group, keep the highest-importance row; rest get `meta.shadow_of=<keeper>` and importance ×0.1. Recall already filters `(meta->>'shadow_of') IS NULL`.
-- [x] **Semantic relations.** LATERAL JOIN over the HNSW index finds ≤5 same-repo nearest neighbours at cosine distance < 0.15 for each recent or never-processed memory. Mutual update — a→b implies b→a — so old memories get linked when new neighbours appear without re-seeding. Recall doesn't yet score on `related_to`; that's tracked in §16.
-- [x] **Ingest job retry policy.** Transient failures (HTTP 5xx, timeout, tunnel, ECONNRESET) older than 1h grace get reset to `queued, attempts=0`; non-transient failures older than 24h grace move to terminal `state='dead'`. Captures are immutable — only jobs retry. State machine: `queued → running → done` (happy), `→ error → queued` (retry under attempts cap), `→ error → dead` (terminal), or `→ error → queued (by nap)` (transient resurrection). See §6.3.
-
-**Done when:** untouched memories visibly fade over a week, pinned ones stay above 0.5, `meta.related_to` populates for similar items, and stuck transient failures self-resurrect within 1h. ✓
-
-### Phase 6 — Dream (shipped, Phase 6.1 deferred)
-**Goal:** consolidation that surfaces in recall.
-
-**Phase 6.0 (shipped):**
-- [x] `worker/dream.ts` registers with the scheduler at 24h interval — same pattern as nap.
-- [x] Per-repo cosine-NN edges via HNSW LATERAL JOIN at `CLUSTER_DISTANCE = 0.10`; union-find connected components in TS (cleaner than recursive CTE for the size we need).
-- [x] Skip-list: rows with `kind='cluster'`, `meta.pinned`, `meta.shadow_of`, `meta.superseded_by`, or `meta.in_cluster` are excluded from clustering.
-- [x] Cluster size: `MIN=3`, `MAX=20`. Components outside the range are skipped this cycle (logged separately).
-- [x] LLM call: one per cluster via `distillCluster()` in the configured LLM provider. `max_tokens=1024`; latency-tolerant since dream is a 24h batch.
-- [x] INSERT new `memories` row: `kind='cluster'`, `content=summary`, `meta.cluster_title`, `meta.member_ids=[…]`, `importance=0.8`. Embed enqueued via the existing two-phase ingest pattern.
-- [x] UPDATE each member: `meta.in_cluster = <cluster_id>` so they're skipped next pass.
-- [x] Per-cluster failure isolation: a 524 / timeout / bad-JSON on one cluster increments `clusters_failed` and continues to the next; doesn't poison the whole cycle.
-
-**Done when:** a broad-topic recall returns the `kind='cluster'` summary above raw captures, while a specific question still surfaces the original member memory. ✓
-
-**Phase 6.1 (deferred — see §16):** supersede detection.
-
-### Phase 7 — Surface (shipped)
-**Goal:** memories appear in Claude Code without a tool call, via SessionStart hook stdout. **No files written.**
-- [x] `POST /api/session/start` accepts `repos: string[]` (workspace = N repos, single repo = length 1) and unions surface across all of them, cross-machine.
-- [x] Aggregator (`packages/server/src/surface.ts`):
-  - **Pinned** — top 5 by importance, repo-filtered with global pinned fallback.
-  - **Rules** — top 3 cross-repo `kind IN ('preference','constraint')` with importance ≥ 0.7.
-  - **Recent** — top 8 `kind IN ('decision','feature','bugfix','discovery')` with importance ≥ 0.6, last 14 days, repo-filtered.
-  - **Sessions** — top 3 `kind='summary'` for the repo set.
-- [x] Multi-repo workspace handling: `discoverRepos(cwd)` in the plugin walks one level deep + `wt/*` worktree convention. Picks up sibling sub-repos and git worktrees automatically.
-- [x] **Workspace cwd's `dir:*` tag is included.** Captures from sessions opened at a non-git workspace root inherit `repo='dir:<basename>'`; the surface query unions both the discovered canonical URLs and the `dir:*` tag so those captures are findable.
-- [x] Workspace banner: when `repos.length > 1`, header says `# Mneme · workspace (N repos) · across M machines` with active-repos list. Single repo gets `# Mneme · <repo> · across M machines`.
-- [x] **Hook output envelope** (Claude Code-specific): hook emits `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<markdown>"}}`. Claude Code only injects context when the envelope is present; raw stdout is silently dropped. The visible terminal preview only shows the FIRST hook's output, but the agent receives ALL hooks' `additionalContext` as a `hook_additional_context` array attachment in the conversation transcript.
-- [x] Backwards-compat: legacy `repo: string` still accepted alongside `repos: string[]`.
-
-**Done when:** a pinned preference written on machine A appears as session additional-context on machine B at next Claude Code SessionStart, automatically. ✓
-
-### Phase 8 — Multi-harness (deferred)
-**Goal:** Codex, Cursor, OpenCode, and any MCP-capable harness all participate.
-- [ ] Codex hooks → `POST /api/capture` (harness-native hook story).
-- [ ] Cursor rules file or plugin → `POST /api/capture`.
-- [ ] OpenCode plugin parity with the Claude Code surface.
-- [ ] `mneme.sql` MCP server published as installable for any MCP client (separately from the bundled Claude Code plugin).
-- [ ] `mneme:using-mneme` skill ported to Codex / Cursor / OpenCode formats.
-- [ ] Surface body prepended to the first `mneme.sql` response from MCP for harnesses without a SessionStart equivalent.
-
-**Done when:** a memory written from Cursor on machine A is recalled from Codex on machine B.
-
-### Phase 9 — Polish (deferred)
-**Goal:** lived-in.
-- [ ] `/archive <id>` slash command (writes `archived_at` via a special-source `/api/capture`).
-- [ ] `NORMALIZE_VERSION` bump triggers re-embed backfill via the embed worker.
-- [ ] Observability dashboards: capture rate, queue depth, dream worker SLA, embed cost/day, surface freshness.
-- [ ] CLI for export / dump / migrate.
-- [ ] Optional viewer UI (revisit only if Postgres console + saved queries stop being enough).
+**Phase 7 — Surface.** `POST /api/session/start` accepts `repos: string[]` and unions surface across them, cross-machine. Aggregator (`packages/server/src/surface.ts`) returns Pinned (top 5 by importance, repo-filtered with global fallback), Rules (top 3 cross-repo `preference|constraint` ≥ 0.7), Recent (top 8 `decision|feature|bugfix|discovery` ≥ 0.6, last 14 days, repo-filtered), Sessions (top 3 `summary` for the repo set). `discoverRepos(cwd)` walks one level deep + `wt/*` worktree convention. `dir:<basename>` workspace tag is unioned alongside discovered canonical URLs so non-git-root captures stay findable. Hook emits Claude Code's `additionalContext` envelope; raw stdout would be dropped. Workspace banner adapts to single-repo vs multi-repo session.
 
 ---
 
@@ -1383,60 +1261,14 @@ Operational steps when actually switching:
 
 ## 14. Open Questions
 
-These are the questions still genuinely open. Resolved-and-evolved questions (LLM provider, embedder model, auth enrollment, MCP transport, single-statement SQL) are gone — their resolutions live in §4, §6.5, §9.5, §13.1.
+These are the genuinely-open questions where the answer waits on evidence rather than implementation. Tactical deferred work (specific slashes, scoring evolutions, multi-harness installers, etc.) lives in the [GitHub project board](https://github.com/users/j10ra/projects/6) — not in this doc.
 
-1. **Coalescing window length.** ±5 min was the v1 guess and has held up under input caps (1500 char/capture, 3000 char/window). Worth re-tuning if extract latency starts pushing toward the streaming budget — or if observation quality drops because too many distinct topics are bundled into one bundle.
-2. **Cluster algorithm.** Cosine-NN graph + connected components is the current v1.0 dream pass. HDBSCAN or other density-based clustering would handle uneven density better; revisit only if cluster summaries start looking noisy or repos with bimodal topic distribution produce one huge over-merged cluster.
-3. **When does the fourth table arrive?** Adds-when-needed rule: only when a query genuinely cannot be expressed against `meta jsonb` performantly. The current candidates that *could* graduate (relations graph, supersede chains, cluster membership) all still index fine via GIN-on-JSONB.
-4. **Per-sub-repo capture tagging in workspaces.** Captures from a workspace-root cwd inherit `dir:<basename>`, not the canonical URL of the active sub-repo. The surface aggregator works around it by unioning both. A real fix would require detecting the *active file* at hook time and walking up to its enclosing repo — non-trivial because hooks fire on tool events, not file selections.
-5. **Recall scoring evolutions.** Importance and `meta.related_to` are computed by nap but not yet factored into recall scoring. Two natural extensions are sketched in §6.5; both wait for evidence that recall surfaces low-importance noise or misses near-cluster context.
-6. **Multi-harness rollout order.** Phase 8 lists Codex, Cursor, OpenCode. Which first depends on which harness sees actual use — there's no point shipping integrations no one runs.
-7. **Phase 6.1 supersede detection.** Deferred (see §16). The hard part is the prompt: "X is the new Y" is fuzzy enough that an LLM eager to please will mark merely-different-context rows as superseded. Wait until there's signal that contradiction is actively confusing recall.
+1. **When does the fourth table arrive?** Adds-when-needed rule: only when a query genuinely cannot be expressed against `meta jsonb` performantly. Current candidates that *could* graduate (relations graph, supersede chains, cluster membership) all still index fine via GIN-on-JSONB.
+2. **Multi-harness rollout order.** Codex, Cursor, OpenCode are all candidates for first non-Claude-Code support (#6). Which first depends on which harness sees actual use — no point shipping integrations no one runs.
 
 ---
 
-## 15. Polish and Lived-in Quality
-
-A short list of UX moves that turn "the system works" into "the system feels finished." Tracked separately from build phases because each is independent and small enough to land opportunistically.
-
-| Item | Why it matters | Status |
-|---|---|---|
-| README at project root | First thing anyone (including future-you) reads. Should explain what Mneme is, what it isn't, and how to install. | ✓ shipped (v1.0.18) |
-| Surface header timestamp | Knowing when the surface was rendered (now? 6h ago because the resume came late?) helps the agent calibrate freshness. | shipped |
-| Slash command help (`/mneme:help`) | One-glance reminder of every slash and what it does. | not yet |
-| Per-repo redaction rules | A `.mneme/redact.json` per repo for project-specific scrubbing patterns (internal hostnames, customer ids). | not yet |
-| Surface "what's new since last session" | Diff against the last `SessionStart` for the same repo set, so resume sessions don't re-read static rules. | not yet |
-| Friendlier `/mneme:recall` rendering | Today the agent renders raw rows; could be tighter (one-line excerpts, kind icon, recency relative). | not yet |
-| Periodic queue health check | `/mneme:status` showing extract/embed/nap/dream lag, recent failures, breaker state. | not yet |
-| Plain-text mode for hooks | Today hooks emit Claude Code's JSON envelope. A plain-text fallback for harnesses that don't speak the envelope. | tied to Phase 8 |
-
----
-
-## 16. Deferred Items (one place to come back to)
-
-Everything that's been intentionally postponed. Each entry has the *why deferred* — the bar to revisit is "the why is no longer true."
-
-| Item | Why deferred | Section / context |
-|---|---|---|
-| **Phase 6.1 supersede detection** | "X is the new Y" is a fuzzy LLM call; eager models will mis-mark merely-different-context rows. Need data showing contradictions are confusing recall before tuning the prompt. | §6.4, §14 |
-| **Recall scoring with `importance`** | Adding `+ 0.05 * importance` to the hybrid score is one line, but current recall feels topical enough. Revisit if low-importance noise starts surfacing. | §6.5 |
-| **Recall scoring with `meta.related_to` (neighbour boost / co-render)** | Wait for the relation graph to fill out before tuning on it. Top-8 hybrid + recency is sufficient today. | §6.5 |
-| **Server-side surface cache** | Surface aggregator returns in ~50-250ms uncached today. A `(repos sorted, machine_id) → 60s TTL` cache is premature optimisation. | Phase 7 |
-| **Per-sub-repo capture tagging in workspaces** | Captures from a non-git workspace root tag as `dir:<basename>` instead of the active sub-repo's canonical URL. The surface aggregator unions both as a workaround. A real fix needs active-file tracking at hook time. | §6.6.2, §14 |
-| **Multi-harness installers (Codex / Cursor / OpenCode / web)** | The capture API and skill are already harness-agnostic. Plugin-side install scripts are real work that should follow actual usage demand, not precede it. | Phase 8 |
-| **Surface body via MCP for non-SessionStart harnesses** | Same blocker as above — wait until a non-Claude-Code harness is in active use. | Phase 8 |
-| **Knowledge-corpus Q&A slash (`/mneme-ask`)** | Recall + agent synthesis already happens in-skill via `mneme.sql`. A dedicated slash duplicates the path. **Not planned** — listed here so the question doesn't keep coming back. | §10 |
-| **Client-side outbox scrubbing** | Outbox files at `~/.mneme/outbox/*.json` hold raw content; scrubbing only runs server-side. A laptop that captures secrets while offline and then disappears would leak them. | §8 |
-| **`NORMALIZE_VERSION` re-embed cron** | Bumping a version constant should drop a re-embed-all job onto the queue. Today it's a manual operator step. | Phase 9 |
-| **`/archive <id>` slash** | Manual SQL covers the rare archival case for now. | Phase 9 |
-| **CLI for export / dump / migrate** | Postgres console + `pg_dump` cover one-off needs. Worth bundling into a `mneme` CLI when there's a second user. | Phase 9 |
-| **Viewer UI** | Postgres console + saved queries cover v1. A web viewer makes sense once Mneme is shared with a non-SQL-fluent user, not before. | Phase 9 |
-| **HDBSCAN or alternative cluster algorithm** | Cosine-NN + union-find produces clean clusters at current scale. Revisit if dream output looks noisy or one super-cluster keeps absorbing everything. | §14 |
-| **Per-machine private recall via MCP** | The `mneme.sql` MCP tool runs arbitrary SELECTs through `mneme_reader`, so identity has to live somewhere the agent can't change. A custom GUC + RLS was tried (migrations 0009/0010) but the agent owns the SQL — quoted function aliases like `"set_config"(...)` re-flip the GUC mid-transaction, and regex-blocking each variant is whack-a-mole. The current policy is the honest one: `USING (private = false)`. Machines can't recall their own private memories via MCP. The proper fix when a `private = true` capture flow ships is **per-machine reader roles** (each machine gets its own NOLOGIN role with `USING (private = false OR machine_id = '<baked-in-uuid>')`, derived at registration), or AST-level rewriting in mcp.ts that injects the privacy `WHERE` clause the caller can't bypass. Today: zero private rows in production, so the constraint is invisible. | §9.5, migrations 0009-0011 |
-
----
-
-## 17. Non-goals (so we don't drift)
+## 15. Non-goals (so we don't drift)
 
 - Multi-tenant or team memory.
 - Real-time sync between sessions.
