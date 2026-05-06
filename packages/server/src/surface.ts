@@ -240,7 +240,7 @@ async function computeDelta(
       SELECT COUNT(*)::text AS n FROM captures
       WHERE archived_at IS NULL
         AND repo = ANY(${repos})
-        AND created_at > ${since}
+        AND captured_at > ${since}
     `,
     sql<{ n: string }[]>`
       SELECT COUNT(*)::text AS n FROM memories
