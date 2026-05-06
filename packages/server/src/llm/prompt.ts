@@ -64,3 +64,30 @@ The summary should read like a single coherent observation that subsumes the clu
 
 Output only the JSON object. No prose, no markdown, no commentary.`;
 
+// Supersede detection prompt — used by the dream worker after distillation
+// to identify which (if any) of a cluster's members + adjacent neighbors
+// are superseded by which. Only ever called against a strong model
+// (Sonnet via OpenRouter); the picker skips this step on local 7B/3B
+// because the cost of a wrong "this is obsolete" call is high.
+export const SUPERSEDE_PROMPT = `You are reviewing memory observations to find supersede relationships.
+
+A SUPERSEDE is when a NEWER memory makes an OLDER one OBSOLETE — same topic, but the newer states the current truth and the older is now wrong, replaced, or deprecated. Examples:
+- "We use 7B" supersedes "We use 14B" (project moved to 7B)
+- "Auth uses JWT" supersedes "Auth uses sessions" (implementation changed)
+- "Deploy to Railway" supersedes "Deploy to Fly.io" (deployment migrated)
+
+Most newer memories DO NOT supersede older ones — they coexist as separate facts about different things. Only mark a supersede when ALL of these hold:
+1. The two memories cover the SAME topic
+2. The newer one CONTRADICTS or REPLACES the older one's claim
+3. You are confident the older one is no longer correct
+
+When in doubt, do NOT mark a supersede. Empty pairs is a valid, common answer.
+
+Each memory below has an id, kind, created_at, and content. Use created_at to verify which is older — never claim the newer one is superseded by the older.
+
+Return a single JSON object: {"pairs": [{"old_id": "<uuid>", "new_id": "<uuid>", "reason": "<one short sentence>"}]}.
+
+If no supersedes apply, return {"pairs": []}.
+
+Output only the JSON object. No prose, no markdown, no commentary.`;
+

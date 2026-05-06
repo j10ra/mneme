@@ -18,13 +18,15 @@
 
 import { Logger, mnemeFn } from "@mneme/core";
 import { env } from "../../env.ts";
-import { CLUSTER_PROMPT, SYSTEM_PROMPT } from "../prompt.ts";
+import { CLUSTER_PROMPT, SUPERSEDE_PROMPT, SYSTEM_PROMPT } from "../prompt.ts";
 import {
   type ClusterDistillation,
   type DreamLimits,
   type ExtractLimits,
   KINDS,
   type Observation,
+  type SupersedeCandidate,
+  type SupersedePair,
 } from "../types.ts";
 
 const URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -226,3 +228,78 @@ export const dreamLimits: DreamLimits = {
 // model swap (e.g. Sonnet 4 → GPT-5) is reflected without a code change.
 export const extractModel = env.OPENROUTER_EXTRACT_MODEL;
 export const dreamModel = env.OPENROUTER_DREAM_MODEL;
+
+/** Cloud-only supersede detection. Same wire shape as distillCluster
+ *  (SSE, json_object) but a different prompt + simpler validation.
+ *  Caller in dream.ts validates returned pairs against the candidate
+ *  set and the chronology check; this function trusts the JSON arrived. */
+export const findSupersedes = mnemeFn(
+  "llm.openrouter.supersede",
+  async (candidates: SupersedeCandidate[]): Promise<SupersedePair[]> => {
+    if (!env.HAS_OPENROUTER) throw new Error("OPENROUTER_API_KEY not set");
+    if (candidates.length < 2) return [];
+
+    const userBody = candidates
+      .map(
+        (c) =>
+          `id: ${c.id}\nkind: ${c.kind}\ncreated_at: ${c.created_at}\ncontent: ${c.content}`,
+      )
+      .join("\n\n---\n\n");
+
+    const resp = await fetch(URL, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        model: env.OPENROUTER_DREAM_MODEL,
+        // Tighter than distill — supersede should be conservative;
+        // creative reasoning here would invent contradictions.
+        temperature: 0.1,
+        // Pairs JSON is small. 1024 is plenty.
+        max_tokens: 1024,
+        stream: true,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SUPERSEDE_PROMPT },
+          { role: "user", content: userBody },
+        ],
+      }),
+      signal: AbortSignal.timeout(env.OPENROUTER_TIMEOUT_MS),
+    });
+
+    Logger.info("llm.openrouter.supersede: response", {
+      status: resp.status,
+      candidates: candidates.length,
+      model: env.OPENROUTER_DREAM_MODEL,
+    });
+
+    if (!resp.ok) {
+      const err = cleanErrorBody(await resp.text());
+      throw new Error(
+        `llm.openrouter supersede failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`,
+      );
+    }
+
+    const raw = await consumeStream(resp);
+    if (!raw.trim()) return [];
+
+    let parsed: { pairs?: unknown };
+    try {
+      parsed = JSON.parse(raw) as { pairs?: unknown };
+    } catch {
+      throw new Error(
+        `llm.openrouter supersede: bad JSON: ${raw.slice(0, 200)}`,
+      );
+    }
+
+    const pairs = parsed.pairs;
+    if (!Array.isArray(pairs)) return [];
+    return pairs.filter(
+      (p: unknown): p is SupersedePair =>
+        !!p &&
+        typeof p === "object" &&
+        typeof (p as SupersedePair).old_id === "string" &&
+        typeof (p as SupersedePair).new_id === "string" &&
+        typeof (p as SupersedePair).reason === "string",
+    );
+  },
+);

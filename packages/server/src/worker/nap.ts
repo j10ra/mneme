@@ -6,6 +6,10 @@ import {
   NAP_RELATE_DISTANCE,
   NAP_RELATE_MAX_NEIGHBORS,
   NAP_SHADOW_DECAY,
+  SUPERSEDE_RULE_AGE_GAP,
+  SUPERSEDE_RULE_COSINE_MAX,
+  SUPERSEDE_RULE_KEYWORDS,
+  SUPERSEDE_RULE_PER_CYCLE_CAP,
 } from "../config.ts";
 import { sql } from "../db.ts";
 
@@ -22,6 +26,7 @@ export type NapResult = {
   decayed: number;
   shadowed: number;
   related: number;
+  superseded: number;
   resurrected: number;
   killed: number;
 };
@@ -147,7 +152,49 @@ export const runNapOnce = mnemeFn(
           AND m.archived_at IS NULL
       `;
 
-      // 4. Resurrect transient ingest failures (1h grace).
+      // 4. Rule-based supersede pass (conservative). For each non-pinned,
+      //    non-superseded older memory with an embedding, find the closest
+      //    same-repo memory created at least SUPERSEDE_RULE_AGE_GAP later
+      //    whose content contains one of SUPERSEDE_RULE_KEYWORDS (case-
+      //    insensitive). The cosine ceiling (0.05) is intentionally tight —
+      //    we want near-rephrasings, not topical adjacency. The keyword
+      //    filter is what disambiguates "newer rephrasing" from "newer fact
+      //    that happens to be near in embedding space" (the LLM pass in
+      //    dream catches the latter). Per-cycle cap bounds blast radius
+      //    if the keyword list ever bloomes in the corpus.
+      const supersededRows = await tx<{ older_id: string; newer_id: string }[]>`
+        WITH pairs AS (
+          SELECT o.id AS older_id, n.newer_id
+          FROM memories o
+          CROSS JOIN LATERAL (
+            SELECT m.id AS newer_id
+            FROM memories m
+            WHERE m.archived_at IS NULL
+              AND m.embedding IS NOT NULL
+              AND m.repo IS NOT DISTINCT FROM o.repo
+              AND m.id <> o.id
+              AND NOT COALESCE((m.meta->>'pinned')::boolean, false)
+              AND (m.meta->>'superseded_by') IS NULL
+              AND m.created_at > o.created_at + ${SUPERSEDE_RULE_AGE_GAP}::interval
+              AND m.content ILIKE ANY(${SUPERSEDE_RULE_KEYWORDS.map((k) => `%${k}%`)})
+              AND m.embedding <=> o.embedding < ${SUPERSEDE_RULE_COSINE_MAX}
+            ORDER BY m.embedding <=> o.embedding ASC
+            LIMIT 1
+          ) n
+          WHERE o.archived_at IS NULL
+            AND o.embedding IS NOT NULL
+            AND NOT COALESCE((o.meta->>'pinned')::boolean, false)
+            AND (o.meta->>'superseded_by') IS NULL
+          LIMIT ${SUPERSEDE_RULE_PER_CYCLE_CAP}
+        )
+        UPDATE memories m
+        SET meta = m.meta || jsonb_build_object('superseded_by', p.newer_id::text)
+        FROM pairs p
+        WHERE m.id = p.older_id
+        RETURNING p.older_id::text, p.newer_id::text
+      `;
+
+      // 5. Resurrect transient ingest failures (1h grace).
       const resurrected = await tx`
         UPDATE ingest_jobs
         SET state = 'queued',
@@ -162,7 +209,7 @@ export const runNapOnce = mnemeFn(
           AND error ~* ${TRANSIENT_REGEX}
       `;
 
-      // 5. Retire non-transient errors to dead (24h grace).
+      // 6. Retire non-transient errors to dead (24h grace).
       const killed = await tx`
         UPDATE ingest_jobs
         SET state = 'dead'
@@ -176,6 +223,7 @@ export const runNapOnce = mnemeFn(
         decayed: decayed.count,
         shadowed: shadowed.count,
         related: related.count,
+        superseded: supersededRows.length,
         resurrected: resurrected.count,
         killed: killed.count,
       };

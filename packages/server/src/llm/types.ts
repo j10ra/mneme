@@ -46,12 +46,35 @@ export type DreamLimits = {
   temperature: number;
 };
 
+/** Input shape for the supersede LLM pass. Each candidate is a memory the
+ *  model is allowed to mark as either the old or new side of a supersede
+ *  pair. created_at is included so the model can verify chronology. */
+export type SupersedeCandidate = {
+  id: string;
+  kind: Kind;
+  content: string;
+  created_at: string;
+};
+
+export type SupersedePair = {
+  old_id: string;
+  new_id: string;
+  reason: string;
+};
+
 /** All providers must export these functions and constants. The model
  *  fields are recorded on every memory's meta JSONB for provenance —
- *  e.g. so you can later query "memories extracted by Sonnet vs 7B". */
+ *  e.g. so you can later query "memories extracted by Sonnet vs 7B".
+ *
+ *  `findSupersedes` is OPTIONAL: only providers we trust to make this
+ *  judgement implement it (today: openrouter only). The picker checks
+ *  for its presence and skips the supersede pass on local. */
 export type LLMProvider = {
   extractObservations: (captureText: string) => Promise<Observation[]>;
   distillCluster: (memberContents: string) => Promise<ClusterDistillation>;
+  findSupersedes?: (
+    candidates: SupersedeCandidate[],
+  ) => Promise<SupersedePair[]>;
   extractLimits: ExtractLimits;
   dreamLimits: DreamLimits;
   extractModel: string;

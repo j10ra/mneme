@@ -130,13 +130,17 @@ SELECT id, content, kind, repo, importance, created_at
 FROM memories
 WHERE archived_at IS NULL
   AND (meta->>'shadow_of') IS NULL
-  AND (meta->>'superseded_by') IS NULL
 ORDER BY
-  0.6 * (1 - (embedding <=> embed('your query'))) +
-  0.4 * ts_rank(tsv, websearch_to_tsquery('english', 'your query'))
+  (
+    0.6 * (1 - (embedding <=> embed('your query'))) +
+    0.4 * ts_rank(tsv, websearch_to_tsquery('english', 'your query'))
+  )
+  * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
 DESC
 LIMIT 10;
 ```
+
+The `superseded_by` penalty multiplies the score by 0.3 instead of filtering — superseded memories still surface for queries like "what did we used to do?", just rank below the current truth unless overwhelmingly relevant. To see only current memories explicitly, add `AND meta->>'superseded_by' IS NULL`. To find historical context only, flip to `AND meta->>'superseded_by' IS NOT NULL`.
 
 ## Common patterns
 

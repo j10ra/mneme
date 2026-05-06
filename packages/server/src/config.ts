@@ -84,3 +84,49 @@ export const DREAM_MAX_CLUSTER_SIZE = 20;
 /** Per-memory NN cap inside the LATERAL JOIN — keeps union-find bounded
  *  for hub memories in dense graphs. */
 export const DREAM_MAX_NEIGHBORS_PER_MEMORY = 20;
+
+// ── Supersede ─────────────────────────────────────────────────────────
+
+/** Rule-based pass (runs in nap, every 6h). Tight cosine + explicit
+ *  "this replaces that" wording — catches the obvious cases for free
+ *  without an LLM call. Anything subtler is left to the dream pass. */
+export const SUPERSEDE_RULE_COSINE_MAX = 0.05;
+
+/** Newer memory must be at least this much newer than the older one
+ *  before it's eligible to supersede — guards against same-batch
+ *  rephrasings being treated as "the next version". */
+export const SUPERSEDE_RULE_AGE_GAP = "12 hours";
+
+/** Newer memory's content must contain one of these phrases
+ *  (case-insensitive) for the rule pass to fire. */
+export const SUPERSEDE_RULE_KEYWORDS = [
+  "instead of",
+  "no longer",
+  "replaced",
+  "now uses",
+  "previously",
+  "updated to",
+  "deprecated",
+  "swapped",
+];
+
+/** Cap per nap cycle so a one-time keyword bloom doesn't write thousands
+ *  of `superseded_by` flags in a single tick. */
+export const SUPERSEDE_RULE_PER_CYCLE_CAP = 50;
+
+/** LLM pass (runs in dream, daily, cloud-only). Adjacent memories pulled
+ *  in alongside the cluster's members must be within this cosine. */
+export const SUPERSEDE_LLM_ADJACENT_COSINE_MAX = 0.15;
+
+/** Adjacent memories considered for the LLM pass must be no older than
+ *  this. Stops the prompt from ballooning over the entire history. */
+export const SUPERSEDE_LLM_ADJACENT_AGE_WINDOW = "60 days";
+
+/** Cap on cluster-members + adjacent-neighbors fed to one Sonnet call. */
+export const SUPERSEDE_LLM_BATCH_MAX_MEMBERS = 30;
+
+/** Recall ranking penalty applied to memories with `meta.superseded_by`
+ *  set. 0.3 means a superseded memory needs to be ~3.3× more relevant
+ *  than its successor to outrank it. Tunable here; recall query
+ *  templates / using-mneme skill read this. */
+export const SUPERSEDE_RECALL_PENALTY = 0.3;

@@ -4,10 +4,14 @@ import {
   DREAM_MAX_CLUSTER_SIZE,
   DREAM_MAX_NEIGHBORS_PER_MEMORY,
   DREAM_MIN_CLUSTER_SIZE,
+  SUPERSEDE_LLM_ADJACENT_AGE_WINDOW,
+  SUPERSEDE_LLM_ADJACENT_COSINE_MAX,
+  SUPERSEDE_LLM_BATCH_MAX_MEMBERS,
 } from "../config.ts";
 import { sha256Hex, sql } from "../db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
 import { pickDream, reportFailure, reportSuccess } from "../llm/pick.ts";
+import type { Kind, SupersedeCandidate } from "../llm/types.ts";
 
 function clip(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
@@ -20,6 +24,7 @@ export type DreamResult = {
   clusters_written: number;
   clusters_skipped_size: number;
   clusters_failed: number;
+  supersedes_marked: number;
 };
 
 type EdgeRow = {
@@ -34,6 +39,15 @@ type MemberRow = {
   machine_id: string;
   repo: string | null;
   content: string;
+  kind: Kind;
+  created_at: Date;
+};
+
+type AdjacentRow = {
+  id: string;
+  content: string;
+  kind: Kind;
+  created_at: Date;
 };
 
 /** Run one dream cycle. Per-repo cosine-NN clustering + LLM distillation
@@ -86,6 +100,7 @@ export const runDreamOnce = mnemeFn(
         components: 0,
         clusters_written: 0,
         clusters_skipped_size: 0,
+        supersedes_marked: 0,
         clusters_failed: 0,
       };
     }
@@ -125,6 +140,7 @@ export const runDreamOnce = mnemeFn(
     let clustersWritten = 0;
     let clustersSkippedSize = 0;
     let clustersFailed = 0;
+    let supersedesMarked = 0;
 
     for (const memberIds of components.values()) {
       if (
@@ -136,7 +152,7 @@ export const runDreamOnce = mnemeFn(
       }
 
       const members = await sql<MemberRow[]>`
-        SELECT id, capture_id, machine_id, repo, content
+        SELECT id, capture_id, machine_id, repo, content, kind, created_at
         FROM memories
         WHERE id = ANY(${memberIds})
         ORDER BY created_at ASC
@@ -261,6 +277,111 @@ export const runDreamOnce = mnemeFn(
         clustersFailed++;
         Logger.warn("dream: cluster write failed", e);
       }
+
+      // ── Phase 4: supersede pass (cloud-only) ───────────────────────
+      // Skip on local — declaring memories obsolete is too consequential
+      // for the 7B/3B path. Trust gate is the picker; we double-check
+      // findSupersedes is wired since it's optional in the contract.
+      if (providerName !== "openrouter" || !provider.findSupersedes) {
+        continue;
+      }
+
+      // Pull adjacent neighbors (cosine < 0.15, last 60d, not pinned, not
+      // already superseded, not in this cluster). Caps per-member at 5;
+      // total candidates capped at SUPERSEDE_LLM_BATCH_MAX_MEMBERS once
+      // members + adjacents are concatenated.
+      const adjacent = await sql<AdjacentRow[]>`
+        WITH seeds AS (
+          SELECT id, embedding, repo
+          FROM memories
+          WHERE id = ANY(${memberIds})
+            AND embedding IS NOT NULL
+        )
+        SELECT DISTINCT ON (n.id) n.id, n.content, n.kind, n.created_at
+        FROM seeds s
+        CROSS JOIN LATERAL (
+          SELECT m.id, m.content, m.kind, m.created_at
+          FROM memories m
+          WHERE m.archived_at IS NULL
+            AND m.embedding IS NOT NULL
+            AND m.id <> ALL(${memberIds})
+            AND m.kind <> 'cluster'
+            AND m.repo IS NOT DISTINCT FROM s.repo
+            AND m.created_at > now() - ${SUPERSEDE_LLM_ADJACENT_AGE_WINDOW}::interval
+            AND NOT COALESCE((m.meta->>'pinned')::boolean, false)
+            AND (m.meta->>'superseded_by') IS NULL
+            AND m.embedding <=> s.embedding < ${SUPERSEDE_LLM_ADJACENT_COSINE_MAX}
+          ORDER BY m.embedding <=> s.embedding ASC
+          LIMIT 5
+        ) n ON true
+        ORDER BY n.id, n.created_at DESC
+      `;
+
+      const candidates: SupersedeCandidate[] = [
+        ...members.map((m) => ({
+          id: m.id,
+          kind: m.kind,
+          content: m.content,
+          created_at: m.created_at.toISOString(),
+        })),
+        ...adjacent.map((a) => ({
+          id: a.id,
+          kind: a.kind,
+          content: a.content,
+          created_at: a.created_at.toISOString(),
+        })),
+      ].slice(0, SUPERSEDE_LLM_BATCH_MAX_MEMBERS);
+
+      const candidateById = new Map(candidates.map((c) => [c.id, c]));
+
+      let pairs: Awaited<
+        ReturnType<NonNullable<typeof provider.findSupersedes>>
+      >;
+      try {
+        pairs = await provider.findSupersedes(candidates);
+        reportSuccess(providerName);
+      } catch (e) {
+        reportFailure(providerName);
+        Logger.warn("dream: supersede call failed", e, {
+          provider: providerName,
+          candidates: candidates.length,
+        });
+        continue;
+      }
+
+      for (const pair of pairs) {
+        // Validate: both ids must be in the candidate set.
+        const oldMem = candidateById.get(pair.old_id);
+        const newMem = candidateById.get(pair.new_id);
+        if (!oldMem || !newMem) {
+          Logger.warn("dream: supersede pair invalid (id not in candidates)", {
+            pair,
+          });
+          continue;
+        }
+        // Validate: chronology — old must actually be older than new.
+        if (
+          new Date(oldMem.created_at).getTime() >=
+          new Date(newMem.created_at).getTime()
+        ) {
+          Logger.warn("dream: supersede pair invalid (chronology)", { pair });
+          continue;
+        }
+        const written = await sql`
+          UPDATE memories
+          SET meta = meta || jsonb_build_object('superseded_by', ${pair.new_id}::text)
+          WHERE id = ${pair.old_id}
+            AND (meta->>'superseded_by') IS NULL
+        `;
+        if (written.count > 0) {
+          supersedesMarked++;
+          Logger.info("dream: supersede written", {
+            old_id: pair.old_id,
+            new_id: pair.new_id,
+            reason: pair.reason,
+          });
+        }
+      }
     }
 
     const result = {
@@ -270,6 +391,7 @@ export const runDreamOnce = mnemeFn(
       clusters_written: clustersWritten,
       clusters_skipped_size: clustersSkippedSize,
       clusters_failed: clustersFailed,
+      supersedes_marked: supersedesMarked,
     };
     Logger.info("dream: done", result);
     return result;
