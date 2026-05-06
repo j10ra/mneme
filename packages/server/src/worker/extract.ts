@@ -231,6 +231,8 @@ export const runExtractOnce = mnemeFn(
           const meta = {
             source_capture_ids: captureIds,
             extracted_kind: obs.kind,
+            extractor_provider: providerName,
+            extractor_model: provider.extractModel,
           };
 
           const rows = await tx<{ id: string }[]>`

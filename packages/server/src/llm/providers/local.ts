@@ -220,3 +220,11 @@ export const dreamLimits: DreamLimits = {
   maxOutputTokens: 1024,
   temperature: 0.2,
 };
+
+// Logical model name on the wire — for local this is the Ollama Modelfile
+// alias (`mneme-llm`) which resolves to whichever underlying model is
+// installed on the answering VM (7B on inference-vm, 3B on homelab-vm).
+// To distinguish 7B vs 3B at recall time, cross-reference with the
+// X-Mneme-Upstream header logged on each call.
+export const extractModel = MODEL;
+export const dreamModel = MODEL;

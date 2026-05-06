@@ -198,7 +198,12 @@ export const runDreamOnce = mnemeFn(
               'cluster', 0.8,
               ${seed.machine_id}, ${seed.repo}, 'dream', null,
               ${[]}::text[], false,
-              ${sql.json({ cluster_title: result.title, member_ids: memberIds } as never)}
+              ${sql.json({
+                cluster_title: result.title,
+                member_ids: memberIds,
+                distiller_provider: providerName,
+                distiller_model: provider.dreamModel,
+              } as never)}
             )
             ON CONFLICT (chunk_id) DO NOTHING
             RETURNING id

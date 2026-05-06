@@ -46,10 +46,14 @@ export type DreamLimits = {
   temperature: number;
 };
 
-/** All providers must export these functions and limit constants. */
+/** All providers must export these functions and constants. The model
+ *  fields are recorded on every memory's meta JSONB for provenance —
+ *  e.g. so you can later query "memories extracted by Sonnet vs 7B". */
 export type LLMProvider = {
   extractObservations: (captureText: string) => Promise<Observation[]>;
   distillCluster: (memberContents: string) => Promise<ClusterDistillation>;
   extractLimits: ExtractLimits;
   dreamLimits: DreamLimits;
+  extractModel: string;
+  dreamModel: string;
 };

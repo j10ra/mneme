@@ -225,3 +225,9 @@ export const dreamLimits: DreamLimits = {
   maxOutputTokens: 4096,
   temperature: 0.3,
 };
+
+// Recorded into memories.meta.extractor_model / distiller_model so each
+// memory carries the model that wrote it. Picks up env overrides so a
+// model swap (e.g. Sonnet 4 → GPT-5) is reflected without a code change.
+export const extractModel = EXTRACT_MODEL;
+export const dreamModel = DREAM_MODEL;
