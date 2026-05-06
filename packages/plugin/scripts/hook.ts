@@ -14,6 +14,7 @@ import {
 } from "./config.ts";
 import { drainOutbox, writeOutbox } from "./outbox.ts";
 import { baseScope as buildScope, discoverRepos } from "./scope.ts";
+import { scrubData } from "./scrub.ts";
 
 const event = process.argv[2] ?? "unknown";
 
@@ -34,6 +35,9 @@ async function postCapture(
   cfg: MnemeConfig,
   body: Record<string, unknown>,
 ): Promise<boolean> {
+  // Scrub here, not at the call sites, so every event funnels through one
+  // redaction point. Server still scrubs on receipt as defense in depth.
+  const cleaned = scrubData(body) as Record<string, unknown>;
   try {
     const resp = await fetch(serverUrl(cfg, "/api/capture"), {
       method: "POST",
@@ -42,7 +46,7 @@ async function postCapture(
         Authorization: `Bearer ${cfg.auth.key}`,
         "X-Mneme-Source": "hook",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(cleaned),
       signal: AbortSignal.timeout(2500),
     });
     return resp.ok;

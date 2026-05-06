@@ -16,7 +16,7 @@ import { EMBEDDER_MODEL } from "./embedder/index.ts";
 import { env } from "./env.ts";
 import { KINDS, type Kind } from "./llm/index.ts";
 import { handleHttp as handleMcp } from "./mcp.ts";
-import { scrub, scrubData } from "./scrub.ts";
+import { scrub, scrubData } from "@mneme/shared";
 import { buildSurface } from "./surface.ts";
 import { startWorker, stopWorker } from "./worker/index.ts";
 

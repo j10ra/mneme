@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { scrubData } from "./scrub.ts";
 
 const OUTBOX_DIR = join(homedir(), ".mneme", "outbox");
 
@@ -30,8 +31,10 @@ export function writeOutbox(payload: unknown, source: string): void {
   // 0600 — outbox files contain raw capture payloads (prompts, tool inputs,
   // and assistant turns) that haven't been delivered yet. They sit on disk
   // until the next SessionStart drains them; default umask would leave them
-  // group/other-readable. Match the config.json policy.
-  writeFileSync(filename, JSON.stringify(payload), { mode: 0o600 });
+  // group/other-readable. Match the config.json policy. Scrub before write
+  // so no secret ever touches disk plaintext, even briefly.
+  const cleaned = JSON.stringify(scrubData(payload));
+  writeFileSync(filename, cleaned, { mode: 0o600 });
 }
 
 export async function drainOutbox(
@@ -45,14 +48,35 @@ export async function drainOutbox(
     .sort();
   for (const file of files) {
     const path = join(OUTBOX_DIR, file);
+    let raw: string;
+    try {
+      raw = readFileSync(path, "utf8");
+    } catch {
+      failed++;
+      continue;
+    }
     let body: unknown;
     try {
-      body = JSON.parse(readFileSync(path, "utf8"));
+      body = JSON.parse(raw);
     } catch {
       // Corrupt file — drop it so it doesn't block the queue.
       unlinkSync(path);
       failed++;
       continue;
+    }
+    // Self-heal pre-fix files: re-scrub on drain and rewrite if it changed.
+    // After this fix lands, new files are already scrubbed at write time;
+    // this only modifies bytes for files left behind by older versions.
+    // Without it, secrets in legacy outbox files would sit on disk until
+    // the server happened to be reachable for a successful drain.
+    const cleanedJson = JSON.stringify(scrubData(body));
+    if (cleanedJson !== raw) {
+      try {
+        writeFileSync(path, cleanedJson, { mode: 0o600 });
+      } catch {
+        // Best-effort. Send still proceeds with the in-memory scrubbed copy.
+      }
+      body = JSON.parse(cleanedJson);
     }
     try {
       const ok = await send(body);

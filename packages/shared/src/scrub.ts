@@ -1,5 +1,7 @@
 // Edge scrubber: redacts secrets and <private>...</private> blocks before
-// content is hashed, stored, or recorded as span input/output.
+// content is hashed, stored, written to disk, embedded, or recorded as
+// span input/output. Lives in @mneme/shared so both edges (the plugin
+// hook + the server) apply identical rules with one source of truth.
 
 type Pattern = { name: string; re: RegExp };
 

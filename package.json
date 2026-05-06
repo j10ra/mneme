@@ -13,7 +13,8 @@
     "migrate": "bun scripts/migrate.ts",
     "migrate:dry": "bun scripts/migrate.ts --dry-run",
     "test": "bun test",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build:plugin-scrub": "bun build packages/shared/src/scrub.ts --outfile packages/plugin/scripts/scrub.ts --format esm --target bun --banner '// @ts-nocheck'"
   },
   "devDependencies": {
     "@types/bun": "latest",

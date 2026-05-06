@@ -3,6 +3,7 @@
 // notifications/initialized, ping. No SDK dep, no streaming.
 
 import { Logger, mnemeFn } from "@mneme/core";
+import { scrub } from "@mneme/shared";
 import { readerSql } from "./db.ts";
 import { embedBatch } from "./embedder/index.ts";
 
@@ -71,14 +72,19 @@ function injectLimit(sql: string): string {
   return `${sql.trimEnd().replace(/;\s*$/, "")} LIMIT ${DEFAULT_LIMIT}`;
 }
 
-async function substituteEmbeds(sql: string): Promise<string> {
+// Exported for tests. Scrubs each embed argument before handing it to
+// the embedder: today's local embedder is trusted, but the moment any
+// remote embedder gets wired in, an agent could leak secrets by typing
+// `embed('Bearer eyJ…')` into a query.
+export async function substituteEmbeds(sql: string): Promise<string> {
   const matches = Array.from(sql.matchAll(EMBED_RE));
   if (matches.length === 0) return sql;
-  const uniqueTexts = Array.from(
+  const rawTexts = Array.from(
     new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))),
   );
-  const vectors = await embedBatch(uniqueTexts);
-  const embedMap = new Map(uniqueTexts.map((t, i) => [t, vectors[i]!]));
+  const cleanedTexts = rawTexts.map(scrub);
+  const vectors = await embedBatch(cleanedTexts);
+  const embedMap = new Map(rawTexts.map((t, i) => [t, vectors[i]!]));
   return sql.replace(EMBED_RE, (_match, raw: string) => {
     const text = raw.replace(/\\'/g, "'");
     const vec = embedMap.get(text);
