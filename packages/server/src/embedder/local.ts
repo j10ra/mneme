@@ -44,15 +44,18 @@ export const embedBatch = mnemeFn(
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
 
+    const upstream = resp.headers.get("x-mneme-upstream");
     Logger.info("embedder.local.batch: response", {
       status: resp.status,
       n: texts.length,
-      upstream: resp.headers.get("x-mneme-upstream"),
+      upstream,
     });
 
     if (!resp.ok) {
       const err = cleanErrorBody(await resp.text());
-      throw new Error(`embedder.local failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
+      throw new Error(
+        `embedder.local failed: HTTP ${resp.status} (upstream=${upstream ?? "?"})${err ? `: ${err}` : ""}`,
+      );
     }
 
     const vecs = (await resp.json()) as unknown;

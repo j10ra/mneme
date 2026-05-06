@@ -101,14 +101,17 @@ export const extractObservations = mnemeFn(
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
 
+    const upstream = resp.headers.get("x-mneme-upstream");
     Logger.info("llm.local.extract: response", {
       status: resp.status,
-      upstream: resp.headers.get("x-mneme-upstream"),
+      upstream,
     });
 
     if (!resp.ok) {
       const err = cleanErrorBody(await resp.text());
-      throw new Error(`llm.local extract failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
+      throw new Error(
+        `llm.local extract failed: HTTP ${resp.status} (upstream=${upstream ?? "?"})${err ? `: ${err}` : ""}`,
+      );
     }
 
     const raw = await consumeStream(resp);
@@ -168,14 +171,17 @@ export const distillCluster = mnemeFn(
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
 
+    const upstream = resp.headers.get("x-mneme-upstream");
     Logger.info("llm.local.distill: response", {
       status: resp.status,
-      upstream: resp.headers.get("x-mneme-upstream"),
+      upstream,
     });
 
     if (!resp.ok) {
       const err = cleanErrorBody(await resp.text());
-      throw new Error(`llm.local distill failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
+      throw new Error(
+        `llm.local distill failed: HTTP ${resp.status} (upstream=${upstream ?? "?"})${err ? `: ${err}` : ""}`,
+      );
     }
 
     const raw = await consumeStream(resp);
