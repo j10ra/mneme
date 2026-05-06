@@ -4,7 +4,7 @@
 // OpenAI-compat endpoint (vLLM, LiteLLM, llama.cpp server) drops in by just
 // pointing LLM_URL at it.
 
-import { mnemeFn } from "@mneme/core";
+import { Logger, mnemeFn } from "@mneme/core";
 import { CLUSTER_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
 import { KINDS, type ClusterDistillation, type Observation } from "./types.ts";
 
@@ -95,6 +95,11 @@ export const extractObservations = mnemeFn(
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
 
+    Logger.info("llm.local.extract: response", {
+      status: resp.status,
+      upstream: resp.headers.get("x-mneme-upstream"),
+    });
+
     if (!resp.ok) {
       const err = cleanErrorBody(await resp.text());
       throw new Error(`llm.local extract failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
@@ -155,6 +160,11 @@ export const distillCluster = mnemeFn(
         ],
       }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+
+    Logger.info("llm.local.distill: response", {
+      status: resp.status,
+      upstream: resp.headers.get("x-mneme-upstream"),
     });
 
     if (!resp.ok) {

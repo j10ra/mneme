@@ -3,7 +3,7 @@
 // service running BAAI/bge-large-en-v1.5 (1024-dim, drop-in for our pgvector
 // schema). Any TEI-compatible endpoint works by changing EMBEDDER_URL.
 
-import { mnemeFn } from "@mneme/core";
+import { Logger, mnemeFn } from "@mneme/core";
 
 const URL = process.env.EMBEDDER_URL ?? process.env.LLM_URL ?? "";
 const BEARER = process.env.EMBEDDER_BEARER ?? process.env.AUTH_BEARER ?? process.env.LLM_BEARER ?? "";
@@ -42,6 +42,12 @@ export const embedBatch = mnemeFn(
       },
       body: JSON.stringify({ inputs: texts }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+
+    Logger.info("embedder.local.batch: response", {
+      status: resp.status,
+      n: texts.length,
+      upstream: resp.headers.get("x-mneme-upstream"),
     });
 
     if (!resp.ok) {
