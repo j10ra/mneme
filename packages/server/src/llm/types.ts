@@ -28,8 +28,28 @@ export type ClusterDistillation = {
   summary: string;
 };
 
-/** All providers must export these functions. */
+/** Per-pipeline batching/output ceilings the extract worker must respect.
+ *  Each provider declares its own values — local stays conservative under
+ *  the CF Tunnel 100s no-data window; cloud providers can be much more
+ *  generous since prompt-eval is fast and there's no tunnel in the path. */
+export type ExtractLimits = {
+  maxCharsPerCapture: number;
+  maxTotalChars: number;
+  maxSiblings: number;
+  maxOutputTokens: number;
+};
+
+/** Per-cluster ceilings the dream worker must respect. */
+export type DreamLimits = {
+  maxClusterChars: number;
+  maxOutputTokens: number;
+  temperature: number;
+};
+
+/** All providers must export these functions and limit constants. */
 export type LLMProvider = {
   extractObservations: (captureText: string) => Promise<Observation[]>;
   distillCluster: (memberContents: string) => Promise<ClusterDistillation>;
+  extractLimits: ExtractLimits;
+  dreamLimits: DreamLimits;
 };

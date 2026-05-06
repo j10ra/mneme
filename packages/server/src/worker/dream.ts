@@ -1,7 +1,7 @@
 import { Logger, mnemeFn } from "@mneme/core";
 import { sha256Hex, sql } from "../db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
-import { distillCluster } from "../llm/index.ts";
+import { pickDream, reportFailure, reportSuccess } from "../llm/pick.ts";
 
 // Tighter than nap's 0.15: cluster members must be genuinely about the same
 // thing, not just topically adjacent.
@@ -16,6 +16,10 @@ const MAX_CLUSTER_SIZE = 20;
 // Per-memory NN cap inside the LATERAL JOIN. Without it a hub memory in a
 // dense cluster would emit 100+ edges and slow union-find for no benefit.
 const MAX_NEIGHBORS_PER_MEMORY = 20;
+
+function clip(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
 
 export type DreamResult = {
   candidates: number;
@@ -144,16 +148,28 @@ export const runDreamOnce = mnemeFn(
       `;
       if (members.length < MIN_CLUSTER_SIZE) continue;
 
-      const concatenated = members
-        .map((m, i) => `[${i + 1}] ${m.content}`)
-        .join("\n\n---\n\n");
+      // Pick provider per cluster so the breaker can open mid-cycle if a
+      // provider starts failing — the rest of the cycle then runs against
+      // the other one. Each cluster's prompt-size clip respects whichever
+      // provider it ends up calling.
+      const { provider, providerName, limits } = pickDream();
+
+      const concatenated = clip(
+        members.map((m, i) => `[${i + 1}] ${m.content}`).join("\n\n---\n\n"),
+        limits.maxClusterChars,
+      );
 
       let result: { title: string; summary: string };
       try {
-        result = await distillCluster(concatenated);
+        result = await provider.distillCluster(concatenated);
+        reportSuccess(providerName);
       } catch (e) {
+        reportFailure(providerName);
         clustersFailed++;
-        Logger.warn("dream: distill failed", e, { members: members.length });
+        Logger.warn("dream: distill failed", e, {
+          provider: providerName,
+          members: members.length,
+        });
         continue;
       }
 
@@ -235,6 +251,7 @@ export const runDreamOnce = mnemeFn(
           clustersWritten++;
           Logger.info("dream: cluster written", {
             id: clusterId,
+            provider: providerName,
             title: result.title,
             members: members.length,
             repo: seed.repo ?? "-",

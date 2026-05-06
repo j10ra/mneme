@@ -1,22 +1,17 @@
 import { Logger, mnemeFn } from "@mneme/core";
 import { sha256Hex, sql } from "../db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
-import { extractObservations, type Observation } from "../llm/index.ts";
+import { pickExtract, reportFailure, reportSuccess } from "../llm/pick.ts";
+import type { Observation } from "../llm/types.ts";
 
 const COALESCE_WINDOW = "5 minutes";
-// Cap how many session-sibling captures one extract cycle locks together.
-// Without this, a busy session can balloon to 60+ jobs marked 'running' under
-// a single LLM call, multiplying the blast radius of any provider failure.
-const MAX_SIBLINGS = 10;
-// Caps on prompt size — keeps the LLM input within typical context windows
-// regardless of provider and, more importantly, keeps prompt processing
-// time short. On a CPU-only homelab box at ~30-50 tok/s prompt throughput,
-// a 6000-char prompt was 45-75s of silent processing before any SSE chunk
-// flowed; that pushed cycles past the 90s client timeout AND risked CF
-// 524s (no-data window). 3000 chars ≈ ~750 user tokens, processed in
-// ~15-25s on 3B, well inside the streaming budget.
-const MAX_CHARS_PER_CAPTURE = 1500;
-const MAX_TOTAL_CHARS = 3000;
+// Per-provider sibling and prompt-size caps come from the picker — local
+// stays conservative under the CF Tunnel 100s no-data window (3000 chars ≈
+// 750 user tokens, ~25s prompt-eval on 7B, comfortably inside the wall);
+// OpenRouter can be much more generous because there's no tunnel in the
+// path and 72B-class models handle big prompts cheaply. See the per-
+// provider `extractLimits` constants in llm/providers/*.ts for values.
+//
 // A 'running' job older than this is treated as crashed mid-flight and
 // re-eligible. Bounded by the LLM TIMEOUT_MS plus headroom.
 const STALE_RUNNING = "15 minutes";
@@ -65,6 +60,12 @@ export const runExtractOnce = mnemeFn(
     if (now < breakerOpenUntil) {
       return { didWork: false, pauseMs: breakerOpenUntil - now };
     }
+
+    // Pick the provider for this whole cycle. Locking + concat use its
+    // limits; the LLM call uses the same provider; success/failure feeds
+    // its breaker. Calling the picker once keeps decisions consistent
+    // even if breakers flip mid-cycle.
+    const { provider, providerName, limits } = pickExtract();
 
     // ── Phase 1: lock (short tx) ───────────────────────────────────────
     const locked = await sql.begin(async (tx) => {
@@ -124,7 +125,7 @@ export const runExtractOnce = mnemeFn(
               BETWEEN ${seed.captured_at}::timestamptz - interval '${sql.unsafe(COALESCE_WINDOW)}'
                   AND ${seed.captured_at}::timestamptz + interval '${sql.unsafe(COALESCE_WINDOW)}'
         ORDER BY c.captured_at ASC
-        LIMIT ${MAX_SIBLINGS - 1}
+        LIMIT ${limits.maxSiblings - 1}
         FOR UPDATE OF j SKIP LOCKED
       `;
 
@@ -157,12 +158,15 @@ export const runExtractOnce = mnemeFn(
     const captureIds = ordered.map((r) => r.capture_id);
     const jobIds = ordered.map((r) => r.job_id);
     const concatenated = clip(
-      ordered.map((r) => clip(r.content, MAX_CHARS_PER_CAPTURE)).join("\n\n---\n\n"),
-      MAX_TOTAL_CHARS,
+      ordered
+        .map((r) => clip(r.content, limits.maxCharsPerCapture))
+        .join("\n\n---\n\n"),
+      limits.maxTotalChars,
     );
 
     // ── Phase 2: LLM call (NO tx held) ─────────────────────────────────
     Logger.info("extract: calling LLM", {
+      provider: providerName,
       captures: jobIds.length,
       chars: concatenated.length,
       repo: seed.repo ?? "-",
@@ -170,7 +174,8 @@ export const runExtractOnce = mnemeFn(
     const t0 = Date.now();
     let observations: Observation[];
     try {
-      observations = await extractObservations(concatenated);
+      observations = await provider.extractObservations(concatenated);
+      reportSuccess(providerName);
       if (consecutiveFailures > 0) {
         Logger.info("extract: circuit breaker recovered", {
           prior_failures: consecutiveFailures,
@@ -180,7 +185,12 @@ export const runExtractOnce = mnemeFn(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const elapsed_s = Number(((Date.now() - t0) / 1000).toFixed(1));
-      Logger.error("extract: failed", e, { jobs: jobIds.length, elapsed_s });
+      reportFailure(providerName);
+      Logger.error("extract: failed", e, {
+        provider: providerName,
+        jobs: jobIds.length,
+        elapsed_s,
+      });
       await sql`
         UPDATE ingest_jobs
         SET state = 'error',

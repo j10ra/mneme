@@ -1,28 +1,13 @@
-// LLM provider selector. Mneme is provider-agnostic: any implementation that
-// exports `extractObservations` matching the LLMProvider type can be plugged
-// in here. Today only "local" (homelab Ollama via OpenAI-compat) is wired —
-// adding a new provider is one new file under llm/ + one entry below.
+// Barrel for LLM module types. Provider implementations live under
+// ./providers/ and the runtime picker (primary + fallback + breaker)
+// lives in ./pick.ts — call sites import from there directly.
 
-import * as local from "./local.ts";
-import type { LLMProvider } from "./types.ts";
-
-const PROVIDERS = {
-  local,
-} as const satisfies Record<string, LLMProvider>;
-
-type ProviderName = keyof typeof PROVIDERS;
-
-const PROVIDER_NAME = (process.env.LLM_PROVIDER ?? "local") as ProviderName;
-
-if (!(PROVIDER_NAME in PROVIDERS)) {
-  throw new Error(
-    `Unknown LLM_PROVIDER: ${PROVIDER_NAME}. Available: ${Object.keys(PROVIDERS).join(", ")}`,
-  );
-}
-
-const provider = PROVIDERS[PROVIDER_NAME];
-
-export const extractObservations = provider.extractObservations;
-export const distillCluster = provider.distillCluster;
-
-export { KINDS, type ClusterDistillation, type Kind, type Observation } from "./types.ts";
+export {
+  KINDS,
+  type ClusterDistillation,
+  type DreamLimits,
+  type ExtractLimits,
+  type Kind,
+  type LLMProvider,
+  type Observation,
+} from "./types.ts";

@@ -5,8 +5,14 @@
 // pointing LLM_URL at it.
 
 import { Logger, mnemeFn } from "@mneme/core";
-import { CLUSTER_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
-import { KINDS, type ClusterDistillation, type Observation } from "./types.ts";
+import { CLUSTER_PROMPT, SYSTEM_PROMPT } from "../prompt.ts";
+import {
+  type ClusterDistillation,
+  type DreamLimits,
+  type ExtractLimits,
+  KINDS,
+  type Observation,
+} from "../types.ts";
 
 const URL = process.env.LLM_URL ?? "";
 const BEARER = process.env.LLM_BEARER ?? process.env.AUTH_BEARER ?? "";
@@ -190,3 +196,21 @@ export const distillCluster = mnemeFn(
     return { title, summary };
   },
 );
+
+/** Conservative limits for the local path. Constrained primarily by the CF
+ *  Tunnel 100s no-data window — Ollama buffers response headers until
+ *  prompt-eval finishes, so the silent prompt-eval phase has to fit under
+ *  ~100s. On 7B at ~30 tok/s eval rate, 3000 chars (~750 tokens user prompt
+ *  + ~500 tok system) ≈ 42s, comfortably inside the wall. */
+export const extractLimits: ExtractLimits = {
+  maxCharsPerCapture: 1500,
+  maxTotalChars: 3000,
+  maxSiblings: 10,
+  maxOutputTokens: 2048,
+};
+
+export const dreamLimits: DreamLimits = {
+  maxClusterChars: 4000,
+  maxOutputTokens: 1024,
+  temperature: 0.2,
+};
