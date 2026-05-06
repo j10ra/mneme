@@ -14,8 +14,8 @@ Pick the kind that best fits:
 - constraint: a hard limit (rate, performance, compliance, environmental)
 - security_alert: anything risky — leaked secret, vulnerability, missing auth
 - reference: a pointer to where info lives (URL, dashboard, ticket, channel)
-- summary: a session-level wrap-up
-- note: a useful fact that doesn't fit above (use sparingly)
+- summary: a session-level wrap-up or recap; don't shy away when the capture is one
+- note: a useful fact that doesn't fit above; use sparingly, but don't avoid it when nothing stronger fits
 
 importance is your 0-1 score for how worth-remembering across future sessions:
   1.0 = critical, must surface every session (preferences, security, load-bearing decisions)
