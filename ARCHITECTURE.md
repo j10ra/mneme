@@ -236,7 +236,7 @@ erDiagram
 |---|---|
 | Near-dup links | `meta.related_to`: `["<id>", "<id>", ...]` |
 | Cluster membership (on a `kind='cluster'` row) | `meta.member_ids`: `["<id>", ...]` |
-| Bitemporal supersede | `meta.superseded_by`: `"<id>"` on the older memory |
+| Bitemporal supersede | `meta.superseded_by`: `"<id>"` on the older memory. Set by nap (rule-based, conservative keyword + tight cosine match) and dream (LLM-based, cloud-only — never on local 7B/3B). Recall ranks superseded rows down via a `× 0.3` penalty in the score expression rather than hiding them, so historical context is still queryable. Cluster-level supersede (one cluster summary subsuming another) is intentionally out of scope for v1. |
 | Pinned by user | `meta.pinned`: `true` |
 | Source coalescing window | `meta.coalesced_from`: `["<capture_id>", ...]` |
 | Future shape | We add typed columns or a fourth table only when a reader needs them. |
@@ -448,6 +448,7 @@ What it does, in plain language:
 - **Semantic relations:** memories within cosine 0.15 of each other (same repo) record each other in `meta.related_to`. The "seed set" each cycle is recent (last 7 days) OR never-processed memories; for each seed the LATERAL JOIN finds up to 5 nearest same-repo neighbors via the HNSW index on `memories.embedding`. Updates are mutual (a→b implies b→a) and idempotent (DISTINCT merge with the existing array). On the first nap pass, all backlog memories that lack `related_to` get processed; subsequent passes only see new arrivals (~50/day in steady state) so cost stays bounded. First-run cost on 612 memories: 4.6s, ~107 memories linked.
 - **Resurrect transient ingest failures:** error-state jobs older than 1 hour whose error message matches a transient pattern (HTTP 5xx, timeout, tunnel, ECONNRESET) get reset to `queued`. Anything else stays errored.
 - **Retire to dead:** error-state jobs older than 24 hours whose error message does NOT match a transient pattern get marked `state='dead'` (terminal). Operators can manually promote `dead → queued` after a model upgrade or prompt fix.
+- **Rule-based supersede (conservative):** find pairs (older, newer) where `cosine < 0.05` (very tight rephrasing distance), the newer is at least 12 hours newer, the newer's content matches one of `["instead of", "no longer", "replaced", "now uses", "previously", "updated to", "deprecated", "swapped"]`, and neither is pinned or already superseded. Mark older's `meta.superseded_by = newer_id`. Per-cycle write cap keeps the blast radius bounded. Catches the obvious "we now use X" cases for free; nuanced supersedes go to dream.
 
 ```mermaid
 flowchart LR
@@ -491,7 +492,7 @@ What it does:
 - **Distill:** for each cluster of `MIN_CLUSTER_SIZE=3` or more (cap at `MAX_CLUSTER_SIZE=20` so prompts stay bounded), one LLM call returns `{title, summary}` — title = one short phrase, summary = 1-3 sentences synthesising the cluster.
 - **Persist:** insert a new `memories` row with `kind='cluster'`, `content=summary`, `meta.cluster_title`, `meta.member_ids=[…]`, `importance=0.8`. The cluster summary embeds via the normal `embed` worker queue so recall finds it like any other memory.
 - **Mark members:** each member memory gets `meta.in_cluster = <cluster_id>` so they're skipped on the next dream pass.
-- **(Phase 6.1, deferred)** Supersede detection: if a cluster's summary contradicts a prior `decision`/`preference` in the same scope, mark the older row `meta.superseded_by`. Skipped from v1 because "this contradicts that" is fuzzy and needs careful prompt design — ship clustering first and layer this later.
+- **LLM supersede (cloud-only, intra-cluster + adjacent):** after distillation, an additional LLM call asks "among these memories, which (if any) are superseded by which?". The candidate set is the cluster's members **plus** their cosine-near neighbors (`< 0.15`, last 60 days, not pinned, not already superseded) — adjacent inclusion catches cases where wording shifted enough that old + new don't co-cluster. Returns pairs `[{old_id, new_id, reason}]` which Mneme validates (both ids must be in the candidate set; the older must actually be older) before writing `meta.superseded_by`. **The pass is skipped entirely when the picker returns `local`** — declaring memories obsolete is too consequential for the 7B/3B path. Cluster-level supersede (one cluster summary subsuming another) is intentionally not implemented in v1; the rank-down penalty on individual members handles most of what cluster-level would address.
 
 ```mermaid
 flowchart TD
@@ -730,8 +731,12 @@ Every capture and memory carries:
 ### Default rank (the skill's `/recall` template)
 
 ```
-score = 0.6 * vector_similarity + 0.4 * bm25
-        # then in WHERE clause: same-repo first, latest-wins via not-superseded
+score = (0.6 * vector_similarity + 0.4 * bm25)
+        * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
+        # importance multiplier is applied separately when the query asks
+        # for it; superseded penalty is applied always so historical-but-
+        # obsolete memories rank below current ones unless overwhelmingly
+        # relevant
 ```
 
 The skill encourages adding repo filters explicitly:
