@@ -14,6 +14,10 @@ import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { type MnemeConfig, loadConfig, saveConfig, serverUrl } from "./config.ts";
+import {
+  installDaemonService,
+  pickFreePortDeterministic,
+} from "./daemon-install.ts";
 import { baseScope } from "./scope.ts";
 
 async function readStdin(): Promise<string> {
@@ -183,11 +187,17 @@ async function setup(
     }
   }
 
+  const daemonPort = pickFreePortDeterministic(reg.machine_id);
+
   const config: MnemeConfig = {
     server: { url: baseUrl },
     auth: { key: reg.token },
     machine: { id: reg.machine_id, name: reg.machine_name },
     ...(existing.projects ? { projects: existing.projects } : {}),
+    daemon: {
+      port: daemonPort,
+      agent_provider: existing.daemon?.agent_provider ?? "claude",
+    },
   };
 
   if (!existsSync(cfgDir)) mkdirSync(cfgDir, { recursive: true, mode: 0o700 });
@@ -204,6 +214,38 @@ async function setup(
   console.log(`  machine: ${reg.machine_name} (${reg.machine_id})`);
   console.log(`  token:   ${reg.token.slice(0, 22)}…`);
   console.log("✓ wrote ~/.mneme/config.json (mode 600)");
+  console.log(`  daemon port: ${daemonPort}, agent: ${config.daemon!.agent_provider}`);
+
+  // Best-effort daemon install. CLAUDE_PLUGIN_ROOT is the plugin
+  // directory; the mneme repo is two levels up (packages/plugin -> mneme).
+  // This is the Phase 1 "developer install" path: the daemon binary
+  // lives in the user's local mneme checkout. Production binary
+  // distribution lands in a follow-up.
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  if (pluginRoot) {
+    const repoPath = process.env.MNEME_REPO_PATH ?? join(pluginRoot, "../..");
+    const installResult = await installDaemonService({
+      repoPath,
+      daemonPort,
+      bunPath: process.execPath,
+    });
+    if (installResult.ok) {
+      console.log(
+        `✓ daemon service installed (${installResult.platform}, ${installResult.servicePath})`,
+      );
+      console.log(
+        `  daemon listening on 127.0.0.1:${installResult.port}; bge model auto-downloads on first run (~5 min)`,
+      );
+    } else {
+      console.warn(`⚠ daemon install incomplete: ${installResult.error}`);
+      console.warn("  config.json is written; re-run /mneme:install-daemon to retry");
+    }
+  } else {
+    console.warn(
+      "⚠ CLAUDE_PLUGIN_ROOT not set; skipping daemon install (run /mneme:install-daemon manually)",
+    );
+  }
+
   console.log("\n  next step: /reload-plugins");
 }
 

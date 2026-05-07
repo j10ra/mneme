@@ -28,6 +28,15 @@ export type DaemonConfig = {
   agent_provider: string;
 };
 
+// Schema written by the plugin's setup flow (packages/plugin/scripts/
+// config.ts MnemeConfig). The daemon flattens it into the local shape.
+type PluginShapedConfig = {
+  server: { url: string };
+  auth: { key: string };
+  machine: { id: string };
+  daemon?: { port: number; agent_provider: string };
+};
+
 const DEFAULT_TICK_MS = 2_000;
 const DREAM_TICK_MS = 60 * 60 * 1000; // try every hour; lock dedups to one win per 8h window
 const HEARTBEAT_TICK_MS = 60_000;
@@ -35,7 +44,19 @@ const HEARTBEAT_TICK_MS = 60_000;
 async function readConfig(): Promise<DaemonConfig> {
   const path = join(homedir(), ".mneme", "config.json");
   const raw = await readFile(path, "utf8");
-  return JSON.parse(raw) as DaemonConfig;
+  const shaped = JSON.parse(raw) as PluginShapedConfig;
+  if (!shaped.daemon) {
+    throw new Error(
+      "config.json has no `daemon` section; run /mneme:setup to install the daemon service",
+    );
+  }
+  return {
+    server_url: shaped.server.url.replace(/\/$/, ""),
+    machine_id: shaped.machine.id,
+    token: shaped.auth.key,
+    daemon_port: shaped.daemon.port,
+    agent_provider: shaped.daemon.agent_provider,
+  };
 }
 
 function pushBundleViaServer(serverUrl: string, token: string) {

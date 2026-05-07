@@ -9,6 +9,10 @@ export type MnemeConfig = {
   auth: { key: string };
   machine: { id: string; name?: string };
   projects?: ProjectEntry[];
+  /** Daemon block, present once /mneme:setup has installed the daemon
+   *  service. The hook checks for this and, when present, posts captures
+   *  to the daemon at 127.0.0.1:port instead of the cloud server. */
+  daemon?: { port: number; agent_provider: string };
 };
 
 export function configPath(): string {
