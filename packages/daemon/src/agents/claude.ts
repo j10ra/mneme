@@ -50,6 +50,10 @@ export function detectAuthMode(): AuthMode {
   return "subprocess";
 }
 
+// User-message builders. The system prompt is passed separately to the
+// SDK so it replaces Claude Code's default coding-assistant preset
+// (which would otherwise override our JSON-output instructions).
+
 export function buildExtractPrompt(captures: Capture[]): string {
   const blocks = captures
     .map((c, i) => {
@@ -64,12 +68,12 @@ export function buildExtractPrompt(captures: Capture[]): string {
     })
     .join("\n\n---\n\n");
 
-  return `${SYSTEM_PROMPT}\n\nNow extract observations from the following captures.\n\n${blocks}\n\nReturn JSON only.`;
+  return `Extract observations from the following captures.\n\n${blocks}\n\nReturn JSON only.`;
 }
 
 export function buildClusterPrompt(memories: Memory[]): string {
   const lines = memories.map((m, i) => `${i + 1}. (${m.kind}) ${m.content}`);
-  return `${CLUSTER_PROMPT}\n\nMemories in this cluster:\n${lines.join("\n")}\n\nReturn JSON only.`;
+  return `Distill the following cluster of related memories.\n\n${lines.join("\n")}\n\nReturn JSON only.`;
 }
 
 export function buildSupersedePrompt(
@@ -78,7 +82,7 @@ export function buildSupersedePrompt(
   const lines = candidates.map(
     (m) => `id=${m.id} kind=${m.kind} created_at=${m.created_at}: ${m.content}`,
   );
-  return `${SUPERSEDE_PROMPT}\n\nMemories under review:\n${lines.join("\n")}\n\nReturn JSON only.`;
+  return `Review the following memories for supersede relationships.\n\n${lines.join("\n")}\n\nReturn JSON only.`;
 }
 
 export function parseSupersedeResponse(text: string): SupersedePair[] {
@@ -230,11 +234,22 @@ export const DREAM_MODEL = "sonnet";
 // Run a one-shot prompt through the Agent SDK, collect the assistant's
 // final text response. Throws on non-success terminal results so the
 // caller can decide whether to retry / mark failed.
-async function callClaude(prompt: string, model: string): Promise<string> {
+//
+// systemPrompt is passed as a raw string to fully replace Claude Code's
+// default coding-assistant preset. Without this override, our extract /
+// cluster / supersede instructions sit under "you are a coding
+// assistant" and the model responds in coding-help style instead of
+// returning the JSON we asked for.
+async function callClaude(
+  prompt: string,
+  model: string,
+  systemPrompt: string,
+): Promise<string> {
   const messages = query({
     prompt,
     options: {
       model,
+      systemPrompt,
       pathToClaudeCodeExecutable: findClaudeExecutable(),
       disallowedTools: DISALLOWED_TOOLS,
       mcpServers: {},
@@ -307,13 +322,18 @@ export const claudeProvider: AgentProvider = {
   async extract({ captures }): Promise<ExtractedMemory[]> {
     if (captures.length === 0) return [];
     const prompt = buildExtractPrompt(captures);
-    const response = await callClaude(prompt, EXTRACT_MODEL);
+    const response = await callClaude(prompt, EXTRACT_MODEL, SYSTEM_PROMPT);
+    if (process.env.MNEME_DEBUG_LLM === "1") {
+      console.log(
+        `[claude.extract] response (${response.length} chars):\n${response.slice(0, 800)}`,
+      );
+    }
     return parseExtractResponse(response);
   },
 
   async distill(cluster: Memory[]): Promise<DreamOutput> {
     const prompt = buildClusterPrompt(cluster);
-    const response = await callClaude(prompt, DREAM_MODEL);
+    const response = await callClaude(prompt, DREAM_MODEL, CLUSTER_PROMPT);
     const parsed = parseClusterResponse(response);
     if (!parsed) {
       throw new Error("claude.distill: failed to parse cluster response");
@@ -326,7 +346,7 @@ export const claudeProvider: AgentProvider = {
   ): Promise<SupersedePair[]> {
     if (candidates.length < 2) return [];
     const prompt = buildSupersedePrompt(candidates);
-    const response = await callClaude(prompt, DREAM_MODEL);
+    const response = await callClaude(prompt, DREAM_MODEL, SUPERSEDE_PROMPT);
     return parseSupersedeResponse(response);
   },
 
