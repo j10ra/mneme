@@ -142,13 +142,21 @@ export async function startDaemon(): Promise<void> {
     `[mneme-daemon] listening on http://127.0.0.1:${config.daemon_port}`,
   );
 
-  // Worker tick loop. Per-tick errors don't crash the loop; runtime
-  // already logs and leaves files in their last-completed state.
+  // Worker tick loop. The `isTicking` guard prevents concurrent ticks:
+  // setInterval doesn't await, so a long extract / embed (multi-second)
+  // would overlap with the next tick and both would walk the same
+  // outbox files. Idempotent at the server but wasteful and confusing
+  // in logs (duplicate "pushed bundle" lines).
+  let isTicking = false;
   const tick = async () => {
+    if (isTicking) return;
+    isTicking = true;
     try {
       await runtime.runWorkerTick();
     } catch (err) {
       console.error("worker tick crashed:", err);
+    } finally {
+      isTicking = false;
     }
   };
   setInterval(tick, DEFAULT_TICK_MS);

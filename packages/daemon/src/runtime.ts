@@ -185,9 +185,18 @@ export function createRuntime(deps: DaemonDeps) {
         }
       }
 
+      const sessionLabel = seed.capture.session_id ?? "(none)";
+      const repoLabel = seed.capture.repo ?? "(none)";
+      console.log(
+        `[mneme-daemon] extract batch=${batch.length} session=${sessionLabel} repo=${repoLabel}`,
+      );
+
       let memories: ExtractedMemory[];
       try {
         memories = await deps.extract(batch.map((e) => e.capture));
+        console.log(
+          `[mneme-daemon] extract -> ${memories.length} observation(s) from ${batch.length} capture(s)`,
+        );
       } catch (err) {
         if (asPermanent(err)) {
           // Permanent failure: every member of the batch goes to failed/.
