@@ -22,20 +22,31 @@ const SERVER_VERSION = "1.0.0";
 // machines without a running daemon (transition period).
 const EMBED_RE = /\bembed\(\s*'((?:[^'\\]|\\.)*)'\s*\)/gi;
 
+function plog(msg: string): void {
+  // stdout is reserved for JSON-RPC; diagnostics go to stderr.
+  process.stderr.write(`mneme-mcp: ${msg}\n`);
+}
+
 async function substituteEmbedsViaDaemon(
   cfg: MnemeConfig,
   sql: string,
 ): Promise<string | null> {
-  if (!cfg.daemon) return null; // no daemon block: forward as-is, server handles
+  if (!cfg.daemon) {
+    plog("substituteEmbeds: no cfg.daemon, forwarding to server");
+    return null;
+  }
   const matches = Array.from(sql.matchAll(EMBED_RE));
-  if (matches.length === 0) return sql; // nothing to substitute
+  if (matches.length === 0) {
+    return sql; // no embed() in this SQL; nothing to do, but signal "ok, use this sql as-is"
+  }
 
   const rawTexts = Array.from(
     new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))),
   );
-  // Same edge-scrub policy the server applies: an agent typing
-  // `embed('Bearer eyJ...')` should not leak the token to the embedder.
   const cleanedTexts = rawTexts.map((t) => scrubData(t) as string);
+  plog(
+    `substituteEmbeds: calling daemon with ${cleanedTexts.length} text(s)`,
+  );
 
   let vectors: number[][];
   try {
@@ -45,21 +56,33 @@ async function substituteEmbedsViaDaemon(
       body: JSON.stringify({ texts: cleanedTexts }),
       signal: AbortSignal.timeout(15_000),
     });
-    if (!resp.ok) return null; // daemon failed: caller falls back to server
+    if (!resp.ok) {
+      plog(`substituteEmbeds: daemon returned ${resp.status}, falling back to server`);
+      return null;
+    }
     const body = (await resp.json()) as { vectors?: number[][] };
     if (!Array.isArray(body.vectors) || body.vectors.length !== cleanedTexts.length) {
+      plog(
+        `substituteEmbeds: daemon returned ${body.vectors?.length ?? "no"} vectors for ${cleanedTexts.length} texts, falling back`,
+      );
       return null;
     }
     vectors = body.vectors;
-  } catch {
-    return null; // daemon unreachable: caller falls back to server
+    plog(
+      `substituteEmbeds: daemon returned ${vectors.length} vector(s), substituting`,
+    );
+  } catch (err) {
+    plog(
+      `substituteEmbeds: daemon unreachable (${err instanceof Error ? err.message : String(err)}), falling back to server`,
+    );
+    return null;
   }
 
   const embedMap = new Map(rawTexts.map((t, i) => [t, vectors[i]!]));
   return sql.replace(EMBED_RE, (_match, raw: string) => {
     const text = raw.replace(/\\'/g, "'");
     const vec = embedMap.get(text);
-    if (!vec) return _match; // shouldn't happen; preserve original
+    if (!vec) return _match;
     return `'[${vec.join(",")}]'::vector`;
   });
 }
@@ -185,6 +208,8 @@ for await (const rawLine of rl) {
         ? (params.arguments.query as string)
         : null;
     if (sql) {
+      const hadEmbed = /\bembed\(/i.test(sql);
+      plog(`tools/call: mneme.sql ${hadEmbed ? "(has embed())" : "(no embed())"}`);
       const rewritten = await substituteEmbedsViaDaemon(cfg, sql);
       if (rewritten !== null && rewritten !== sql && params) {
         const rewrittenReq = {
@@ -198,6 +223,9 @@ for await (const rawLine of rl) {
           },
         };
         bodyToForward = JSON.stringify(rewrittenReq);
+        plog("tools/call: forwarding sanitized SQL with vector literals");
+      } else if (hadEmbed) {
+        plog("tools/call: embed() present but not substituted, server will handle");
       }
     }
   }

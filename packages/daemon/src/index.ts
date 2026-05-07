@@ -164,7 +164,7 @@ export async function startDaemon(): Promise<void> {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (req.method === "POST" && req.url.includes("/embed")) {
+      if (req.method === "POST" && url.pathname === "/embed") {
         // Embed query texts for the MCP proxy. Plugin's mcp-proxy.ts
         // intercepts embed('...') macros in SQL and routes them here so
         // the server's /mcp can be a pure SQL executor. Same model
@@ -175,20 +175,28 @@ export async function startDaemon(): Promise<void> {
           | { texts?: unknown }
           | null;
         if (!body || !Array.isArray(body.texts)) {
+          Logger.warn("embed: invalid body");
           return new Response(
             JSON.stringify({ error: "texts[] required" }),
             { status: 400, headers: { "Content-Type": "application/json" } },
           );
         }
         const texts = body.texts.filter((t): t is string => typeof t === "string");
+        Logger.info("embed request", { count: texts.length });
         try {
+          const t0 = Date.now();
           const vectors = await embedBatch(texts);
+          Logger.info("embed result", {
+            count: vectors.length,
+            duration_ms: Date.now() - t0,
+          });
           return new Response(JSON.stringify({ vectors }), {
             status: 200,
             headers: { "Content-Type": "application/json" },
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
+          Logger.error("embed failed", err, { count: texts.length });
           return new Response(JSON.stringify({ error: msg }), {
             status: 500,
             headers: { "Content-Type": "application/json" },
