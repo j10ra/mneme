@@ -41,6 +41,16 @@ const DEFAULT_TICK_MS = 2_000;
 const DREAM_TICK_MS = 60 * 60 * 1000; // try every hour; lock dedups to one win per 8h window
 const HEARTBEAT_TICK_MS = 60_000;
 
+// Extract gating: idle-only. Hold pending captures until pending/ has
+// been quiet for EXTRACT_IDLE_MS (no new file written). The point is
+// "let the user finish typing / let the burst of hook events settle"
+// rather than spawning a Claude subprocess for every capture as it
+// lands. batchFull and forceMs are set high/disabled so idle is the
+// only trigger.
+const EXTRACT_BATCH_FULL = Number.MAX_SAFE_INTEGER;
+const EXTRACT_IDLE_MS = 10_000;
+const EXTRACT_FORCE_MS = 0;
+
 async function readConfig(): Promise<DaemonConfig> {
   const path = join(homedir(), ".mneme", "config.json");
   const raw = await readFile(path, "utf8");
@@ -100,6 +110,9 @@ export async function startDaemon(): Promise<void> {
       await realPush(bundle);
       lastProcessedAt = new Date();
     },
+    extractBatchFull: EXTRACT_BATCH_FULL,
+    extractIdleMs: EXTRACT_IDLE_MS,
+    extractForceMs: EXTRACT_FORCE_MS,
   });
 
   console.log(

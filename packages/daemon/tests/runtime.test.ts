@@ -290,6 +290,75 @@ describe("runWorkerTick", () => {
     expect(memoryCounts.filter((n) => n === 0)).toHaveLength(2);
   });
 
+  test("gating: defers extract until idle window or batch-full or force-timeout trips", async () => {
+    const outbox = createOutbox(root);
+    let extractCalls = 0;
+    const mocks = createMocks({
+      extract: async () => {
+        extractCalls++;
+        return [];
+      },
+    });
+    let virtualNow = 1_000_000;
+    const runtime = createRuntime({
+      outbox,
+      extract: mocks.extract,
+      embed: mocks.embed,
+      push: mocks.push,
+      extractBatchFull: 5,
+      extractIdleMs: 30_000,
+      extractForceMs: 5 * 60_000,
+      now: () => virtualNow,
+    });
+
+    // One capture lands. Tick immediately (within idle window, under
+    // batch-full, oldest is fresh): extract should NOT run yet.
+    await runtime.handleCapture(validBody);
+    await runtime.runWorkerTick();
+    expect(extractCalls).toBe(0);
+
+    // Advance time past the idle window. Tick again: now extract runs
+    // because pending/ has been "quiet" since lastPendingWriteAt.
+    virtualNow += 31_000;
+    await runtime.runWorkerTick();
+    expect(extractCalls).toBe(1);
+  });
+
+  test("gating: batch-full forces extract before idle window elapses", async () => {
+    const outbox = createOutbox(root);
+    let extractCalls = 0;
+    const mocks = createMocks({
+      extract: async () => {
+        extractCalls++;
+        return [];
+      },
+    });
+    let virtualNow = 2_000_000;
+    const runtime = createRuntime({
+      outbox,
+      extract: mocks.extract,
+      embed: mocks.embed,
+      push: mocks.push,
+      extractBatchFull: 3,
+      extractIdleMs: 30_000,
+      extractForceMs: 5 * 60_000,
+      now: () => virtualNow,
+    });
+
+    // Drop three captures back-to-back, no time advance. Pending count
+    // hits batchFull, extract runs even though we're nowhere near the
+    // idle window.
+    for (let i = 0; i < 3; i++) {
+      await runtime.handleCapture({
+        ...validBody,
+        content: `capture ${i}`,
+        session_id: `s-${i}`,
+      });
+    }
+    await runtime.runWorkerTick();
+    expect(extractCalls).toBe(3); // three different sessions, three batches
+  });
+
   test("does not coalesce across different session_ids", async () => {
     const outbox = createOutbox(root);
     let extractCalls = 0;

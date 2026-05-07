@@ -65,11 +65,26 @@ export type DaemonDeps = {
    * model. Defaults to the constant from embed.ts.
    */
   embedderModel?: string;
+  /** When pending count reaches this, run extract immediately. */
+  extractBatchFull?: number;
+  /** Wait until pending/ has been quiet for this long before extract. */
+  extractIdleMs?: number;
+  /** Force extract once the oldest pending capture is older than this. */
+  extractForceMs?: number;
+  /** Test seam for `now()`. Defaults to Date.now. */
+  now?: () => number;
 };
 
 const REQUIRED_STRING_FIELDS = ["content", "source", "hostname", "harness"] as const;
 const COALESCE_WINDOW_MS = 5 * 60 * 1000;
 const MAX_BATCH_SIZE = 30;
+
+// Defaults for the extract gating window. Production overrides them in
+// index.ts (idle=30s, force=5min, batchFull=20). Tests keep the
+// aggressive shape so single-capture happy-path assertions still hold.
+const DEFAULT_EXTRACT_BATCH_FULL = 1;
+const DEFAULT_EXTRACT_IDLE_MS = 0;
+const DEFAULT_EXTRACT_FORCE_MS = 0;
 
 export async function sha256Hex(input: string): Promise<string> {
   const buf = new TextEncoder().encode(input);
@@ -105,6 +120,15 @@ function asPermanent(err: unknown): boolean {
 
 export function createRuntime(deps: DaemonDeps) {
   const embedderModel = deps.embedderModel ?? EMBEDDER_MODEL;
+  const batchFull = deps.extractBatchFull ?? DEFAULT_EXTRACT_BATCH_FULL;
+  const idleMs = deps.extractIdleMs ?? DEFAULT_EXTRACT_IDLE_MS;
+  const forceMs = deps.extractForceMs ?? DEFAULT_EXTRACT_FORCE_MS;
+  const now = deps.now ?? (() => Date.now());
+
+  // Initialised to 0 so a daemon that boots with backlog drains it
+  // immediately rather than waiting idleMs after start. handleCapture
+  // resets it to now() on each new pending file.
+  let lastPendingWriteAt = 0;
 
   async function handleCapture(body: CaptureBody): Promise<HandleCaptureResult> {
     for (const field of REQUIRED_STRING_FIELDS) {
@@ -119,6 +143,7 @@ export function createRuntime(deps: DaemonDeps) {
     const id = `${Date.now()}-${hash.slice(0, 8)}`;
 
     await deps.outbox.writeRaw(id, cleaned);
+    lastPendingWriteAt = now();
     return { ok: true, id };
   }
 
@@ -150,6 +175,30 @@ export function createRuntime(deps: DaemonDeps) {
   async function runCoalescedExtract(): Promise<void> {
     const ids = await deps.outbox.list("pending");
     if (ids.length === 0) return;
+
+    // Gate. Only run extract when one of these holds:
+    //   - batch is "full enough" (count >= batchFull)
+    //   - pending/ has been quiet for idleMs (no new write since)
+    //   - oldest pending file is older than forceMs (latency floor)
+    // Production wiring sets batchFull=20, idleMs=30s, forceMs=5min so
+    // extract runs roughly every burst-of-activity instead of every tick.
+    const tickNow = now();
+    const oldestTs = ids
+      .map((id) => {
+        const m = id.match(/^(\d+)-/);
+        return m ? Number(m[1]) : Infinity;
+      })
+      .reduce((a, b) => Math.min(a, b), Infinity);
+
+    const isFull = ids.length >= batchFull;
+    const isIdle = idleMs > 0 && tickNow - lastPendingWriteAt >= idleMs;
+    const isForced =
+      forceMs > 0 && Number.isFinite(oldestTs) && tickNow - oldestTs >= forceMs;
+
+    if (!isFull && !isIdle && !isForced) {
+      // Don't log on every tick to avoid noise. Sentinel return.
+      return;
+    }
 
     const entries: Array<{ id: string; ts: number; capture: CaptureBody }> = [];
     for (const id of ids) {
