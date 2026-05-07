@@ -29,10 +29,18 @@ export type DreamLockResult =
   | { acquired: true; window_key: number }
   | { acquired: false; window_key: number; heldBy: string };
 
+// Stale claims older than this are eligible for auto-reap inside the
+// lock-acquire path. Dream cycles in practice run in well under 5 min;
+// 30 min is generous enough that we don't reap a slow-but-live cycle,
+// and tight enough that a crashed daemon's lock self-heals instead of
+// blocking the window forever.
+const STALE_LOCK_AGE_MS = 30 * 60_000;
+
 export async function acquireDreamLock(
   windowKey: number,
   machineId: string,
 ): Promise<DreamLockResult> {
+  // First-time acquire: simple INSERT ON CONFLICT.
   const inserted = await sql<{ claimed_by_machine_id: string }[]>`
     INSERT INTO _ops.dream_runs (window_key, claimed_by_machine_id)
     VALUES (${windowKey}, ${machineId})
@@ -42,6 +50,33 @@ export async function acquireDreamLock(
   if (inserted.length > 0) {
     return { acquired: true, window_key: windowKey };
   }
+
+  // Conflict path: existing row. If it's a stale crashed claim
+  // (completed_at IS NULL and old enough), reap it and retry the
+  // insert. Otherwise, surface the holder to the caller.
+  const reaped = await sql<{ claimed_by_machine_id: string }[]>`
+    DELETE FROM _ops.dream_runs
+    WHERE window_key = ${windowKey}
+      AND completed_at IS NULL
+      AND claimed_at < now() - (${STALE_LOCK_AGE_MS}::bigint || ' milliseconds')::interval
+    RETURNING claimed_by_machine_id
+  `;
+  if (reaped.length > 0) {
+    Logger.info("dream: reaped stale lock", {
+      window_key: windowKey,
+      previous_holder: reaped[0]?.claimed_by_machine_id,
+    });
+    const retry = await sql<{ claimed_by_machine_id: string }[]>`
+      INSERT INTO _ops.dream_runs (window_key, claimed_by_machine_id)
+      VALUES (${windowKey}, ${machineId})
+      ON CONFLICT (window_key) DO NOTHING
+      RETURNING claimed_by_machine_id
+    `;
+    if (retry.length > 0) {
+      return { acquired: true, window_key: windowKey };
+    }
+  }
+
   const existing = await sql<{ claimed_by_machine_id: string }[]>`
     SELECT claimed_by_machine_id FROM _ops.dream_runs WHERE window_key = ${windowKey}
   `;
@@ -279,7 +314,43 @@ export async function writeClusters(
   return { written, supersedes };
 }
 
+export async function clearStaleDreamLocks(
+  maxAgeSeconds: number,
+): Promise<{ cleared: number; window_keys: number[] }> {
+  const rows = await sql<{ window_key: number }[]>`
+    DELETE FROM _ops.dream_runs
+    WHERE completed_at IS NULL
+      AND claimed_at < now() - (${maxAgeSeconds}::bigint || ' seconds')::interval
+    RETURNING window_key
+  `;
+  return { cleared: rows.length, window_keys: rows.map((r) => Number(r.window_key)) };
+}
+
 export function mountDreamRoutes(app: Hono): void {
+  // Admin: force-clear stale dream locks. Useful when a 30-min auto-reap
+  // hasn't elapsed yet but you know the holder crashed (e.g. you killed
+  // the daemon mid-cycle). Body: { max_age_seconds }, defaults to 60.
+  app.post(
+    "/api/dream/clear-stale",
+    mnemeRoute("api.dream.clear_stale"),
+    requireAuth("admin"),
+    async (c) => {
+      const body = (await c.req.json().catch(() => ({}))) as
+        | { max_age_seconds?: unknown }
+        | undefined;
+      const maxAge =
+        body && typeof body.max_age_seconds === "number" && body.max_age_seconds > 0
+          ? body.max_age_seconds
+          : 60;
+      const result = await clearStaleDreamLocks(maxAge);
+      Logger.info("dream: stale locks cleared", {
+        ...result,
+        max_age_seconds: maxAge,
+      });
+      return c.json(result);
+    },
+  );
+
   app.post(
     "/api/dream/lock",
     mnemeRoute("api.dream.lock"),
