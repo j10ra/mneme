@@ -7,16 +7,16 @@
 //
 // Skipped if DATABASE_URL is unset (fresh clone, CI without a DB).
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 
-describe.skipIf(!HAS_DB)("surface — SQL smoke (requires DATABASE_URL)", () => {
-  afterAll(async () => {
-    const { sql } = await import("../src/db.ts");
-    await sql.end({ timeout: 2 });
-  });
+// Pools (sql, readerSql) are module-level singletons shared with other
+// test files. Calling sql.end() in afterAll would close the pool for
+// any test file that runs after this one. Bun process exit cleans up
+// connections; explicit teardown is unnecessary and harmful here.
 
+describe.skipIf(!HAS_DB)("surface — SQL smoke (requires DATABASE_URL)", () => {
   test("every query runs against an empty-repo path", async () => {
     const { buildSurface } = await import("../src/surface.ts");
     // A repo guaranteed to have no memories. The five base queries plus
