@@ -1381,23 +1381,105 @@ function createRuntime(deps) {
     lastPendingWriteAt = now();
     return { ok: true, id };
   }
-  async function processStage(state, handler) {
-    const ids = await deps.outbox.list(state);
+  const PUSH_CONCURRENCY = 4;
+  const EMBED_BATCH_CAP = 64;
+  async function runBatchedEmbed() {
+    const ids = await deps.outbox.list("extracted");
+    if (ids.length === 0)
+      return;
+    const loaded = [];
     for (const id of ids) {
-      let data;
       try {
-        data = await deps.outbox.read(id, state);
-      } catch {
-        continue;
+        const data = await deps.outbox.read(id, "extracted");
+        loaded.push({ id, capture: data.capture, memories: data.memories });
+      } catch {}
+    }
+    if (loaded.length === 0)
+      return;
+    const flatTexts = [];
+    const origin = [];
+    for (let f = 0;f < loaded.length; f++) {
+      const memories = loaded[f].memories;
+      for (let m = 0;m < memories.length; m++) {
+        flatTexts.push(memories[m].content);
+        origin.push({ fileIdx: f, memIdx: m });
+      }
+    }
+    const allVectors = [];
+    if (flatTexts.length > 0) {
+      for (let i = 0;i < flatTexts.length; i += EMBED_BATCH_CAP) {
+        const chunk = flatTexts.slice(i, i + EMBED_BATCH_CAP);
+        const part = await deps.embed(chunk);
+        allVectors.push(...part);
+      }
+    }
+    for (let f = 0;f < loaded.length; f++) {
+      const file = loaded[f];
+      const enriched = [];
+      for (let m = 0;m < file.memories.length; m++) {
+        const mem = file.memories[m];
+        const flatIdx = origin.findIndex((o) => o.fileIdx === f && o.memIdx === m);
+        const vector = flatIdx >= 0 ? allVectors[flatIdx] : undefined;
+        const contentHash = await sha256Hex(mem.content);
+        const chunkId = await sha256Hex(`${contentHash}:${embedderModel}`);
+        enriched.push({
+          ...mem,
+          content_hash: contentHash,
+          chunk_id: chunkId,
+          embedding: vector,
+          embedding_model: embedderModel,
+          meta: {
+            extractor_provider: "anthropic",
+            extractor_model: "claude-haiku"
+          }
+        });
       }
       try {
-        await handler(id, data);
+        await deps.outbox.transition(file.id, "extracted", "embedded", {
+          capture: file.capture,
+          memories: enriched
+        });
       } catch (err) {
         if (asPermanent(err)) {
           const reason = err instanceof Error ? err.message : String(err);
-          await deps.outbox.markFailed(id, state, reason);
+          await deps.outbox.markFailed(file.id, "extracted", reason);
         }
       }
+    }
+  }
+  async function runParallelPush() {
+    const ids = await deps.outbox.list("embedded");
+    if (ids.length === 0)
+      return;
+    for (let i = 0;i < ids.length; i += PUSH_CONCURRENCY) {
+      const slice = ids.slice(i, i + PUSH_CONCURRENCY);
+      await Promise.all(slice.map(async (id) => {
+        let data;
+        try {
+          data = await deps.outbox.read(id, "embedded");
+        } catch {
+          return;
+        }
+        try {
+          const stage = data;
+          const captureSha = await sha256Hex(stage.capture.content);
+          const bundle = {
+            capture: { ...stage.capture, content_sha256: captureSha },
+            memories: stage.memories
+          };
+          await deps.push(bundle);
+          await deps.outbox.delete(id, "embedded");
+          Logger.info("bundle pushed", {
+            id,
+            memories: stage.memories.length
+          });
+        } catch (err) {
+          if (asPermanent(err)) {
+            const reason = err instanceof Error ? err.message : String(err);
+            await deps.outbox.markFailed(id, "embedded", reason);
+          }
+        }
+      }));
     }
   }
   async function runCoalescedExtract() {
@@ -1491,45 +1573,8 @@ function createRuntime(deps) {
   }
   async function runWorkerTick() {
     await runCoalescedExtract();
-    await processStage("extracted", async (id, data) => {
-      const stage = data;
-      const vectors = stage.memories.length ? await deps.embed(stage.memories.map((m) => m.content)) : [];
-      const enriched = [];
-      for (let i = 0;i < stage.memories.length; i++) {
-        const m = stage.memories[i];
-        const contentHash = await sha256Hex(m.content);
-        const chunkId = await sha256Hex(`${contentHash}:${embedderModel}`);
-        enriched.push({
-          ...m,
-          content_hash: contentHash,
-          chunk_id: chunkId,
-          embedding: vectors[i],
-          embedding_model: embedderModel,
-          meta: {
-            extractor_provider: "anthropic",
-            extractor_model: "claude-haiku"
-          }
-        });
-      }
-      await deps.outbox.transition(id, "extracted", "embedded", {
-        capture: stage.capture,
-        memories: enriched
-      });
-    });
-    await processStage("embedded", async (id, data) => {
-      const stage = data;
-      const captureSha = await sha256Hex(stage.capture.content);
-      const bundle = {
-        capture: { ...stage.capture, content_sha256: captureSha },
-        memories: stage.memories
-      };
-      await deps.push(bundle);
-      await deps.outbox.delete(id, "embedded");
-      Logger.info("bundle pushed", {
-        id,
-        memories: stage.memories.length
-      });
-    });
+    await runBatchedEmbed();
+    await runParallelPush();
   }
   async function flush() {
     lastPendingWriteAt = 0;

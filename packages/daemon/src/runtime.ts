@@ -26,7 +26,7 @@
 import { Logger } from "@mneme/core";
 import { scrub, scrubData } from "@mneme/shared";
 import { EMBEDDER_DIM, EMBEDDER_MODEL } from "./embed.ts";
-import type { Outbox, OutboxState } from "./outbox.ts";
+import type { Outbox } from "./outbox.ts";
 import type {
   Capture,
   ExtractedMemory,
@@ -151,28 +151,134 @@ export function createRuntime(deps: DaemonDeps) {
     return { ok: true, id };
   }
 
-  // Process one stage's worth of work; called once per stage in tick order.
-  async function processStage(
-    state: OutboxState,
-    handler: (id: string, data: unknown) => Promise<void>,
-  ): Promise<void> {
-    const ids = await deps.outbox.list(state);
+  // Maximum captures to push concurrently. Server is happy with parallel
+  // bundles (idempotent insert, separate transactions). 4 is conservative;
+  // can raise once we observe DB / network behavior under burst.
+  const PUSH_CONCURRENCY = 4;
+
+  // Cap on total memory texts handed to bge-large in a single call. The
+  // model accepts arbitrary-length batches in principle, but very large
+  // arrays risk OOM on quantized weights. 64 keeps memory bounded while
+  // still ~5x faster than per-file embed for typical drain bursts.
+  const EMBED_BATCH_CAP = 64;
+
+  async function runBatchedEmbed(): Promise<void> {
+    const ids = await deps.outbox.list("extracted");
+    if (ids.length === 0) return;
+
+    type Loaded = {
+      id: string;
+      capture: CaptureBody;
+      memories: ExtractedMemory[];
+    };
+    const loaded: Loaded[] = [];
     for (const id of ids) {
-      let data: unknown;
       try {
-        data = await deps.outbox.read(id, state);
+        const data = (await deps.outbox.read(id, "extracted")) as {
+          capture: CaptureBody;
+          memories: ExtractedMemory[];
+        };
+        loaded.push({ id, capture: data.capture, memories: data.memories });
       } catch {
-        continue; // file vanished mid-tick; next tick will retry
+        // file vanished mid-tick (e.g. parallel run); skip
+      }
+    }
+    if (loaded.length === 0) return;
+
+    // Flatten texts with origin pointers so we can fan vectors back out.
+    const flatTexts: string[] = [];
+    const origin: { fileIdx: number; memIdx: number }[] = [];
+    for (let f = 0; f < loaded.length; f++) {
+      const memories = loaded[f]!.memories;
+      for (let m = 0; m < memories.length; m++) {
+        flatTexts.push(memories[m]!.content);
+        origin.push({ fileIdx: f, memIdx: m });
+      }
+    }
+
+    // Single embed call (chunked at EMBED_BATCH_CAP for memory bounds).
+    const allVectors: number[][] = [];
+    if (flatTexts.length > 0) {
+      for (let i = 0; i < flatTexts.length; i += EMBED_BATCH_CAP) {
+        const chunk = flatTexts.slice(i, i + EMBED_BATCH_CAP);
+        const part = await deps.embed(chunk);
+        allVectors.push(...part);
+      }
+    }
+
+    // Distribute vectors back per-file and transition each.
+    for (let f = 0; f < loaded.length; f++) {
+      const file = loaded[f]!;
+      const enriched: Memory[] = [];
+      for (let m = 0; m < file.memories.length; m++) {
+        const mem = file.memories[m]!;
+        const flatIdx = origin.findIndex(
+          (o) => o.fileIdx === f && o.memIdx === m,
+        );
+        const vector = flatIdx >= 0 ? allVectors[flatIdx] : undefined;
+        const contentHash = await sha256Hex(mem.content);
+        const chunkId = await sha256Hex(`${contentHash}:${embedderModel}`);
+        enriched.push({
+          ...mem,
+          content_hash: contentHash,
+          chunk_id: chunkId,
+          embedding: vector,
+          embedding_model: embedderModel,
+          meta: {
+            extractor_provider: "anthropic",
+            extractor_model: "claude-haiku",
+          },
+        });
       }
       try {
-        await handler(id, data);
+        await deps.outbox.transition(file.id, "extracted", "embedded", {
+          capture: file.capture,
+          memories: enriched,
+        });
       } catch (err) {
         if (asPermanent(err)) {
           const reason = err instanceof Error ? err.message : String(err);
-          await deps.outbox.markFailed(id, state, reason);
+          await deps.outbox.markFailed(file.id, "extracted", reason);
         }
-        // Transient error: leave file in current state for the next tick.
       }
+    }
+  }
+
+  async function runParallelPush(): Promise<void> {
+    const ids = await deps.outbox.list("embedded");
+    if (ids.length === 0) return;
+
+    for (let i = 0; i < ids.length; i += PUSH_CONCURRENCY) {
+      const slice = ids.slice(i, i + PUSH_CONCURRENCY);
+      await Promise.all(
+        slice.map(async (id) => {
+          let data: unknown;
+          try {
+            data = await deps.outbox.read(id, "embedded");
+          } catch {
+            return; // vanished mid-tick
+          }
+          try {
+            const stage = data as { capture: CaptureBody; memories: Memory[] };
+            const captureSha = await sha256Hex(stage.capture.content);
+            const bundle: Bundle = {
+              capture: { ...stage.capture, content_sha256: captureSha },
+              memories: stage.memories,
+            };
+            await deps.push(bundle);
+            await deps.outbox.delete(id, "embedded");
+            Logger.info("bundle pushed", {
+              id,
+              memories: stage.memories.length,
+            });
+          } catch (err) {
+            if (asPermanent(err)) {
+              const reason = err instanceof Error ? err.message : String(err);
+              await deps.outbox.markFailed(id, "embedded", reason);
+            }
+          }
+        }),
+      );
     }
   }
 
@@ -292,51 +398,16 @@ export function createRuntime(deps: DaemonDeps) {
     await runCoalescedExtract();
 
     // Stage 2: extracted -> embedded
-    await processStage("extracted", async (id, data) => {
-      const stage = data as { capture: CaptureBody; memories: ExtractedMemory[] };
-      const vectors = stage.memories.length
-        ? await deps.embed(stage.memories.map((m) => m.content))
-        : [];
-
-      const enriched: Memory[] = [];
-      for (let i = 0; i < stage.memories.length; i++) {
-        const m = stage.memories[i]!;
-        const contentHash = await sha256Hex(m.content);
-        const chunkId = await sha256Hex(`${contentHash}:${embedderModel}`);
-        enriched.push({
-          ...m,
-          content_hash: contentHash,
-          chunk_id: chunkId,
-          embedding: vectors[i],
-          embedding_model: embedderModel,
-          meta: {
-            extractor_provider: "anthropic",
-            extractor_model: "claude-haiku",
-          },
-        });
-      }
-
-      await deps.outbox.transition(id, "extracted", "embedded", {
-        capture: stage.capture,
-        memories: enriched,
-      });
-    });
+    // Batch embed across files: one ONNX call covers all memories in the
+    // current extracted/ snapshot, distributed back per-file. bge-large
+    // vectorizes large batches efficiently; serial per-file embed wastes
+    // ~5x the wall-clock when there are many files queued.
+    await runBatchedEmbed();
 
     // Stage 3: embedded -> pushed -> deleted
-    await processStage("embedded", async (id, data) => {
-      const stage = data as { capture: CaptureBody; memories: Memory[] };
-      const captureSha = await sha256Hex(stage.capture.content);
-      const bundle: Bundle = {
-        capture: { ...stage.capture, content_sha256: captureSha },
-        memories: stage.memories,
-      };
-      await deps.push(bundle);
-      await deps.outbox.delete(id, "embedded");
-      Logger.info("bundle pushed", {
-        id,
-        memories: stage.memories.length,
-      });
-    });
+    // Parallel pushes (bounded). Each is independent HTTP; server dedupes
+    // by (content_sha256, machine_id) so no contention.
+    await runParallelPush();
   }
 
   // Force an immediate extract pass regardless of gating, then run the
