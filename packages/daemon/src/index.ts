@@ -1,25 +1,32 @@
-// Daemon entry point. Wires Bun.serve, the outbox at ~/.mneme/outbox/,
-// the configured agent provider, and the in-process embedder around the
-// pure pipeline in runtime.ts.
+// Daemon entry point. Wires:
+//   - Hono app on 127.0.0.1:<daemon_port> (route handlers in routes/)
+//   - The outbox at ~/.mneme/outbox/
+//   - The configured agent provider (Claude via SDK with pathToClaude
+//     CodeExecutable for OAuth inheritance)
+//   - The in-process embedder around the runtime pipeline
+//   - The local scheduler for time-driven jobs (dream, heartbeat,
+//     embedder reap), persisted to ~/.mneme/schedule.json
 //
 // Configuration lives in ~/.mneme/config.json (written by the plugin
-// install flow): server_url, machine_id, token, daemon_port,
-// agent_provider. The daemon polls config mtime each tick and reloads
-// changes (no restart needed when the user runs `mneme agent set <name>`).
-//
-// Worker tick runs every 2 seconds while idle; an fs.watch on
-// outbox/pending/ kicks an immediate tick whenever the hook drops a new
-// file so capture-to-extract latency stays sub-second.
+// install flow). The queue-driven worker tick (extract/embed/push of
+// outbox files) stays as a tight setInterval since it's polling
+// filesystem state, not a cron-shape job.
 
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Logger, configureLogger } from "@mneme/core";
+import { Hono } from "hono";
 import { pickAgent } from "./agents/index.ts";
 import { runDreamCycle } from "./dream.ts";
 import { disposeIfIdle, embedBatch } from "./embed.ts";
 import { createOutbox } from "./outbox.ts";
+import { mountCaptureRoute } from "./routes/capture.ts";
+import { mountDreamRoute } from "./routes/dream.ts";
+import { mountEmbedRoute } from "./routes/embed.ts";
+import { mountOpsRoutes } from "./routes/ops.ts";
 import { type Bundle, createRuntime } from "./runtime.ts";
+import { register, startScheduler } from "./scheduler.ts";
 
 export type DaemonConfig = {
   server_url: string;
@@ -38,9 +45,9 @@ type PluginShapedConfig = {
   daemon?: { port: number; agent_provider: string };
 };
 
-const DEFAULT_TICK_MS = 2_000;
-const DREAM_TICK_MS = 60 * 60 * 1000; // try every hour; lock dedups to one win per 8h window
-const HEARTBEAT_TICK_MS = 60_000;
+// Worker tick is queue-driven (polls outbox files), so it stays as a
+// plain setInterval rather than going through the scheduler.
+const WORKER_TICK_MS = 2_000;
 
 // Extract gating. Idle is the safety net; the hook pings /flush on
 // natural session boundaries (Stop, PreCompact, SessionEnd) for a
@@ -50,9 +57,10 @@ const EXTRACT_BATCH_FULL = Number.MAX_SAFE_INTEGER;
 const EXTRACT_IDLE_MS = 3 * 60_000;
 const EXTRACT_FORCE_MS = 0;
 
-// How often to consider releasing the embedder pipeline if idle. Cheap
-// check; runs once a minute alongside the worker tick.
-const EMBEDDER_REAP_TICK_MS = 60_000;
+// Scheduler intervals for time-driven jobs.
+const DREAM_SCHEDULE_MS = 8 * 3600_000;
+const HEARTBEAT_SCHEDULE_MS = 60_000;
+const EMBEDDER_REAP_SCHEDULE_MS = 60_000;
 
 async function readConfig(): Promise<DaemonConfig> {
   const path = join(homedir(), ".mneme", "config.json");
@@ -126,134 +134,45 @@ export async function startDaemon(): Promise<void> {
     server: config.server_url,
   });
 
-  // HTTP listener: hook posts captures here.
+  // ── HTTP listener ────────────────────────────────────────────────────
+  // Single closure that the dream route + scheduler both call so the
+  // manual /dream/run and the scheduled "dream" job share exactly the
+  // same code path.
+  const runDream = () =>
+    runDreamCycle({
+      serverUrl: config.server_url,
+      token: config.token,
+      machineId: config.machine_id,
+      fetch: (u, init) => fetch(u, init),
+      distill: (memories) => {
+        if (!agent.distill) {
+          throw new Error(
+            `agent ${agent.name} does not support dream (no distill())`,
+          );
+        }
+        return agent.distill(memories);
+      },
+      findSupersedes: agent.findSupersedes
+        ? (candidates) => agent.findSupersedes!(candidates)
+        : undefined,
+    });
+
+  const app = new Hono();
+  mountOpsRoutes(app, runtime);
+  mountCaptureRoute(app, runtime);
+  mountEmbedRoute(app);
+  mountDreamRoute(app, runDream);
+
   Bun.serve({
     port: config.daemon_port,
     hostname: "127.0.0.1",
-    async fetch(req) {
-      const url = new URL(req.url);
-      if (req.method === "POST" && url.pathname === "/capture") {
-        const body = await req.json().catch(() => null);
-        if (!body) return new Response("invalid json", { status: 400 });
-        const result = await runtime.handleCapture(body as never);
-        if (!result.ok) {
-          return new Response(JSON.stringify({ error: result.error }), {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return new Response(JSON.stringify({ id: result.id }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      if (req.method === "GET" && url.pathname === "/health") {
-        return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      if (req.method === "POST" && url.pathname === "/dream/run") {
-        // Manual dream trigger. Same path as the hourly cron tick: tries
-        // to acquire the leader lock, fetches candidates, distills via
-        // Sonnet, posts clusters. Returns synchronously with the result
-        // so curl shows what happened. Useful for validation and ad-hoc
-        // operator runs.
-        try {
-          const result = await runDreamCycle({
-            serverUrl: config.server_url,
-            token: config.token,
-            machineId: config.machine_id,
-            fetch: (u, init) => fetch(u, init),
-            distill: (memories) => {
-              if (!agent.distill) {
-                throw new Error(
-                  `agent ${agent.name} does not support dream (no distill())`,
-                );
-              }
-              return agent.distill(memories);
-            },
-            findSupersedes: agent.findSupersedes
-              ? (candidates) => agent.findSupersedes!(candidates)
-              : undefined,
-          });
-          Logger.info("dream cycle (manual)", result);
-          return new Response(JSON.stringify(result), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        } catch (err) {
-          Logger.error("dream cycle (manual) failed", err);
-          return new Response(
-            JSON.stringify({
-              error: err instanceof Error ? err.message : String(err),
-            }),
-            { status: 500, headers: { "Content-Type": "application/json" } },
-          );
-        }
-      }
-      if (req.method === "POST" && url.pathname === "/flush") {
-        // Fire-and-forget: don't block the hook on extract latency.
-        // The hook's flush ping is a hint, not a synchronous request.
-        void runtime.flush().catch((err) => {
-          console.error("flush failed:", err);
-        });
-        return new Response(JSON.stringify({ ok: true, accepted: true }), {
-          status: 202,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      if (req.method === "POST" && url.pathname === "/embed") {
-        // Embed query texts for the MCP proxy. Plugin's mcp-proxy.ts
-        // intercepts embed('...') macros in SQL and routes them here so
-        // the server's /mcp can be a pure SQL executor. Same model
-        // (bge-large-en-v1.5) and dimensions as the daemon's internal
-        // pipeline, so vectors are compatible with memories embedded
-        // either path.
-        const body = (await req.json().catch(() => null)) as
-          | { texts?: unknown }
-          | null;
-        if (!body || !Array.isArray(body.texts)) {
-          Logger.warn("embed: invalid body");
-          return new Response(
-            JSON.stringify({ error: "texts[] required" }),
-            { status: 400, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        const texts = body.texts.filter((t): t is string => typeof t === "string");
-        Logger.info("embed request", { count: texts.length });
-        try {
-          const t0 = Date.now();
-          const vectors = await embedBatch(texts);
-          Logger.info("embed result", {
-            count: vectors.length,
-            duration_ms: Date.now() - t0,
-          });
-          return new Response(JSON.stringify({ vectors }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          Logger.error("embed failed", err, { count: texts.length });
-          return new Response(JSON.stringify({ error: msg }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-      }
-      return new Response("not found", { status: 404 });
-    },
+    fetch: app.fetch,
   });
   Logger.info("daemon listening", {
     url: `http://127.0.0.1:${config.daemon_port}`,
   });
 
-  // Worker tick loop. The `isTicking` guard prevents concurrent ticks:
-  // setInterval doesn't await, so a long extract / embed (multi-second)
-  // would overlap with the next tick and both would walk the same
-  // outbox files. Idempotent at the server but wasteful and confusing
-  // in logs (duplicate "pushed bundle" lines).
+  // ── Worker tick (queue-driven; outbox file scanner) ──────────────────
   let isTicking = false;
   const tick = async () => {
     if (isTicking) return;
@@ -266,94 +185,53 @@ export async function startDaemon(): Promise<void> {
       isTicking = false;
     }
   };
-  setInterval(tick, DEFAULT_TICK_MS);
-  // Kick once on boot so any backlog from before daemon start drains
-  // immediately rather than waiting up to DEFAULT_TICK_MS.
-  void tick();
+  setInterval(tick, WORKER_TICK_MS);
+  void tick(); // drain any backlog from before boot immediately
 
-  // Embedder reaper: drops the loaded ONNX pipeline after PIPELINE_IDLE_MS
-  // with no embed calls. Frees the bge-large model's RAM (~500MB) when
-  // the laptop is idle between coding sessions; reloads transparently
-  // on the next embed.
-  setInterval(() => {
-    void disposeIfIdle();
-  }, EMBEDDER_REAP_TICK_MS);
-
-  // Dream loop: hourly attempt, the server-side advisory-claim ledger
-  // ensures only one daemon per 8h window actually runs. A cron offset
-  // derived from machine_id staggers attempts so all daemons don't pile
-  // on the lock at the same minute.
-  const dreamTick = async () => {
-    try {
-      const result = await runDreamCycle({
-        serverUrl: config.server_url,
-        token: config.token,
-        machineId: config.machine_id,
-        fetch: (url, init) => fetch(url, init),
-        distill: (memories) => {
-          if (!agent.distill) {
-            throw new Error(
-              `agent ${agent.name} does not support dream (no distill())`,
-            );
-          }
-          return agent.distill(memories);
-        },
-        findSupersedes: agent.findSupersedes
-          ? (candidates) => agent.findSupersedes!(candidates)
-          : undefined,
-      });
-      if (!result.skipped) {
-        Logger.info("dream cycle complete", {
-          clusters_written: result.clustersWritten ?? 0,
-        });
-      }
-    } catch (err) {
-      Logger.error("dream cycle crashed", err);
+  // ── Time-driven jobs (scheduler-managed; ~/.mneme/schedule.json) ─────
+  // Heartbeat: outbox depth + last-processed-at posted to the server.
+  const postHeartbeat = async (): Promise<void> => {
+    const [pending, extracted, embedded, failed] = await Promise.all([
+      outbox.list("pending"),
+      outbox.list("extracted"),
+      outbox.list("embedded"),
+      outbox.list("failed"),
+    ]);
+    const response = await fetch(`${config.server_url}/api/heartbeat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.token}`,
+      },
+      body: JSON.stringify({
+        outbox_pending: pending.length,
+        outbox_extracted: extracted.length,
+        outbox_embedded: embedded.length,
+        outbox_failed: failed.length,
+        last_processed_at: lastProcessedAt?.toISOString() ?? null,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`heartbeat ${response.status}`);
     }
   };
-  setInterval(dreamTick, DREAM_TICK_MS);
-  // Don't auto-fire on boot; the first scheduled tick gives the daemon
-  // a chance to drain any pending captures before competing for the
-  // dream lock.
 
-  // Heartbeat: post outbox depth + last-processed-at every 60s. The
-  // server upserts to _ops.daemon_heartbeats so /api/auth/machines can
-  // surface "is this daemon alive and processing?" at a glance.
-  const heartbeatTick = async () => {
-    try {
-      const [pending, extracted, embedded, failed] = await Promise.all([
-        outbox.list("pending"),
-        outbox.list("extracted"),
-        outbox.list("embedded"),
-        outbox.list("failed"),
-      ]);
-      const response = await fetch(`${config.server_url}/api/heartbeat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.token}`,
-        },
-        body: JSON.stringify({
-          outbox_pending: pending.length,
-          outbox_extracted: extracted.length,
-          outbox_embedded: embedded.length,
-          outbox_failed: failed.length,
-          last_processed_at: lastProcessedAt?.toISOString() ?? null,
-        }),
-      });
-      if (!response.ok) {
-        Logger.warn("heartbeat non-ok", { status: response.status });
-      }
-    } catch (err) {
-      Logger.warn(
-        `heartbeat failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  };
-  setInterval(heartbeatTick, HEARTBEAT_TICK_MS);
-  // Fire one heartbeat on boot so the server immediately sees the
-  // daemon is alive without waiting a full minute.
-  void heartbeatTick();
+  register({
+    name: "dream",
+    scheduleMs: DREAM_SCHEDULE_MS,
+    run: runDream,
+  });
+  register({
+    name: "heartbeat",
+    scheduleMs: HEARTBEAT_SCHEDULE_MS,
+    run: postHeartbeat,
+  });
+  register({
+    name: "embedder-reap",
+    scheduleMs: EMBEDDER_REAP_SCHEDULE_MS,
+    run: () => disposeIfIdle().then(() => undefined),
+  });
+  await startScheduler();
 }
 
 // When invoked directly (`bun run src/index.ts`), start the daemon.

@@ -14,7 +14,7 @@
       "name": "@mneme/core",
       "version": "0.0.0",
       "dependencies": {
-        "hono": "^4.6.0",
+        "hono": "4.12.18",
         "postgres": "^3.4.5",
       },
     },
@@ -26,6 +26,7 @@
         "@mneme/core": "workspace:*",
         "@mneme/shared": "workspace:*",
         "@xenova/transformers": "^2.17.2",
+        "hono": "4.12.18",
       },
     },
     "packages/plugin": {
@@ -38,7 +39,7 @@
       "dependencies": {
         "@mneme/core": "workspace:*",
         "@mneme/shared": "workspace:*",
-        "hono": "^4.6.0",
+        "hono": "4.12.18",
         "postgres": "^3.4.5",
         "zod": "^3.23.8",
       },
@@ -245,7 +246,7 @@
 
     "hasown": ["hasown@2.0.3", "", { "dependencies": { "function-bind": "^1.1.2" } }, "sha512-ej4AhfhfL2Q2zpMmLo7U1Uv9+PyhIZpgQLGT1F9miIGmiCJIoCgSmczFdrc97mWT4kVY72KA+WnnhJ5pghSvSg=="],
 
-    "hono": ["hono@4.12.15", "", {}, "sha512-qM0jDhFEaCBb4TxoW7f53Qrpv9RBiayUHo0S52JudprkhvpjIrGoU1mnnr29Fvd1U335ZFPZQY1wlkqgfGXyLg=="],
+    "hono": ["hono@4.12.18", "", {}, "sha512-RWzP96k/yv0PQfyXnWjs6zot20TqfpfsNXhOnev8d1InAxubW93L11/oNUc3tQqn2G0bSdAOBpX+2uDFHV7kdQ=="],
 
     "http-errors": ["http-errors@2.0.1", "", { "dependencies": { "depd": "~2.0.0", "inherits": "~2.0.4", "setprototypeof": "~1.2.0", "statuses": "~2.0.2", "toidentifier": "~1.0.1" } }, "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ=="],
 
