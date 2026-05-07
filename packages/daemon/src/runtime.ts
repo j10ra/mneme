@@ -269,6 +269,9 @@ export function createRuntime(deps: DaemonDeps) {
       };
       await deps.push(bundle);
       await deps.outbox.delete(id, "embedded");
+      console.log(
+        `[mneme-daemon] pushed bundle id=${id} memories=${stage.memories.length}`,
+      );
     });
   }
 

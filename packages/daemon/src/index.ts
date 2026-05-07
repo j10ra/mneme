@@ -102,6 +102,12 @@ export async function startDaemon(): Promise<void> {
     },
   });
 
+  console.log(
+    `[mneme-daemon] starting (machine=${config.machine_id}, agent=${config.agent_provider})`,
+  );
+  console.log(`[mneme-daemon] outbox=${outboxRoot}`);
+  console.log(`[mneme-daemon] server=${config.server_url}`);
+
   // HTTP listener: hook posts captures here.
   Bun.serve({
     port: config.daemon_port,
@@ -132,6 +138,9 @@ export async function startDaemon(): Promise<void> {
       return new Response("not found", { status: 404 });
     },
   });
+  console.log(
+    `[mneme-daemon] listening on http://127.0.0.1:${config.daemon_port}`,
+  );
 
   // Worker tick loop. Per-tick errors don't crash the loop; runtime
   // already logs and leaves files in their last-completed state.
