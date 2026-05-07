@@ -4,6 +4,7 @@
 // capture (or fetches the surface for SessionStart) to the Mneme server.
 // Fail-open: errors never block the harness.
 
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -13,8 +14,9 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { homedir, platform } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   type MnemeConfig,
   isBlacklistedPath,
@@ -38,6 +40,58 @@ async function readStdin(): Promise<Record<string, unknown>> {
     return JSON.parse(buf) as Record<string, unknown>;
   } catch {
     return { raw: buf };
+  }
+}
+
+// Self-heal the launchd plist (or systemd unit / scheduled task) when
+// /plugin update lands a new version. The plist hardcodes the cache
+// dir of whatever plugin version was active at install time. After
+// `/plugin update mneme`, the new code lands in a NEW cache dir, but
+// the plist still points at the old one — so the launchd-managed
+// daemon keeps running stale code until something rewrites it.
+//
+// On every SessionStart, derive the current plugin root from this
+// script's own location (works because every CC instance loads hooks
+// from the active plugin cache version). If the plist's daemon path
+// no longer matches, spawn a detached refresh that re-runs the
+// install scaffolding. Detached so SessionStart doesn't pay the
+// 5-30s cost of `bun install --production` on plugin update day.
+//
+// `darwin` only for now: linux systemd and win32 Task Scheduler hold
+// their target paths the same way, but their refresh story can be
+// added once a second machine reports the same friction.
+function refreshDaemonIfStale(): void {
+  if (platform() !== "darwin") return;
+  const plistPath = join(
+    homedir(),
+    "Library/LaunchAgents/dev.mneme.daemon.plist",
+  );
+  if (!existsSync(plistPath)) return;
+  const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const expectedTarget = `${pluginRoot}/daemon.js`;
+  let plistContent: string;
+  try {
+    plistContent = readFileSync(plistPath, "utf8");
+  } catch {
+    return;
+  }
+  if (plistContent.includes(`<string>${expectedTarget}</string>`)) {
+    return; // already up-to-date — fast path
+  }
+  // Stale plist. Spawn detached refresh; don't block SessionStart.
+  process.stderr.write(
+    `mneme: plist points at stale plugin cache, refreshing daemon to ${pluginRoot}\n`,
+  );
+  try {
+    const refreshScript = join(pluginRoot, "scripts/refresh-daemon.ts");
+    if (!existsSync(refreshScript)) return;
+    const child = spawn(process.execPath, [refreshScript], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  } catch {
+    // best-effort; if spawn fails the operator can still run /mneme:setup
   }
 }
 
@@ -352,6 +406,9 @@ async function main(): Promise<void> {
 
   switch (event) {
     case "SessionStart": {
+      // Self-heal launchd target after /plugin update. Detached spawn,
+      // doesn't block surface fetch.
+      refreshDaemonIfStale();
       // Outbox draining used to live here for the legacy plugin/ fallback
       // queue. Now the hook writes directly into outbox/capture/pending/
       // when the daemon is briefly unreachable, and the daemon's worker
