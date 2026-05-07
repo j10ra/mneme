@@ -10,7 +10,6 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -76,8 +75,11 @@ async function sha256Hex(input: string): Promise<string> {
 // transcript = 500 captures, of which 400 are dupes).
 //
 // Track seen content_sha256 in `~/.mneme/shas/<session_id>.txt`,
-// one sha per line. File is deleted on SessionEnd; orphans (CC crashed
-// without firing SessionEnd) are tiny and self-cap at session length.
+// one sha per line. File persists across SessionEnd so resumed
+// sessions (`claude --resume <id>`) keep their dedup state — the
+// transcript-replay flood on resume is exactly what we set out to
+// prevent. Files are tiny (~65B per unique capture) and orphans
+// from never-resumed sessions are negligible disk.
 function sessionShaFile(sessionId: string): string {
   return join(homedir(), ".mneme", "shas", `${sessionId}.txt`);
 }
@@ -108,13 +110,6 @@ function recordSha(sessionId: string, sha: string): void {
   }
 }
 
-function clearSessionShas(sessionId: string): void {
-  try {
-    rmSync(sessionShaFile(sessionId), { force: true });
-  } catch {
-    // not fatal
-  }
-}
 
 // Write directly into the daemon's pending queue. Used when the daemon
 // HTTP listener is briefly unreachable (restart gap, crash). The daemon
@@ -461,13 +456,14 @@ async function main(): Promise<void> {
       if (isSessionBoundary) {
         await pingDaemonFlush(cfg);
       }
-      // SessionEnd is the terminal event for this session_id; the
-      // dedup set is now useless. Delete it. (PreCompact is mid-session,
-      // we keep the set so subsequent transcript replays in the same
-      // session still dedup correctly.)
-      if (event === "SessionEnd" && sessionId) {
-        clearSessionShas(sessionId);
-      }
+      // Don't clear the dedup set on SessionEnd. Resuming a session
+      // (`claude --resume <id>`) reuses the same session_id and fires
+      // Stop again, which replays the FULL transcript from disk. With
+      // the dedup file gone, every transcript entry looks "new" and we
+      // refire ~hundreds of redundant captures — the exact "explodes
+      // on resume" symptom we set out to fix. Keep the file. It's
+      // ~65 bytes per unique capture, self-caps at session length, and
+      // the orphans (sessions never resumed) are tiny noise on disk.
       return;
     }
 
