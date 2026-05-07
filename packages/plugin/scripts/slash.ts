@@ -209,16 +209,23 @@ async function setup(
 
   const daemonPort = pickFreePortDeterministic(reg.machine_id);
 
-  // Write the config WITHOUT the daemon block first. The hook reads
-  // daemon presence to decide whether to probe localhost; an unwritten
-  // daemon block means the hook goes straight to /api/capture on the
-  // server. We add the daemon block only after installDaemonService
-  // returns ok so a failed install never leaves the hook paying 2.5s
-  // probe latency on every capture.
+  // Write the daemon block up-front — the daemon's readConfig() throws
+  // if it's missing, and installDaemonService below loads the plist
+  // immediately (RunAtLoad=true) which races with this write. Older
+  // versions deferred the daemon block until install succeeded, but
+  // that left the daemon in a KeepAlive crash loop the first time it
+  // was loaded. The hook is daemon-only now (no server fallback), so
+  // a leftover daemon block from a failed install is harmless: the
+  // daemon writes captures into outbox/capture/pending/ on disk and
+  // the next successful daemon launch picks them up.
   const config: MnemeConfig = {
     server: { url: baseUrl },
     auth: { key: reg.token },
     machine: { id: reg.machine_id, name: reg.machine_name },
+    daemon: {
+      port: daemonPort,
+      agent_provider: existing.daemon?.agent_provider ?? "claude",
+    },
     ...(existing.projects ? { projects: existing.projects } : {}),
   };
 
@@ -258,18 +265,6 @@ async function setup(
       bunPath: process.execPath,
     });
     if (installResult.ok) {
-      // Add the daemon block only when install actually worked. The
-      // hook reads this to decide whether to probe localhost.
-      const configWithDaemon: MnemeConfig = {
-        ...config,
-        daemon: {
-          port: daemonPort,
-          agent_provider: existing.daemon?.agent_provider ?? "claude",
-        },
-      };
-      writeFileSync(cfgPath, `${JSON.stringify(configWithDaemon, null, 2)}\n`, {
-        mode: 0o600,
-      });
       console.log(
         `✓ daemon service installed (${installResult.platform}, ${installResult.servicePath})`,
       );
