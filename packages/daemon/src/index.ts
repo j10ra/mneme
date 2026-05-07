@@ -167,6 +167,12 @@ export async function startDaemon(): Promise<void> {
     port: config.daemon_port,
     hostname: "127.0.0.1",
     fetch: app.fetch,
+    // Manual /dream/run can take minutes (one Sonnet call per cluster
+    // plus the optional supersede pass). Bun's default 10s idleTimeout
+    // would close the connection long before runDream returns. 0 =
+    // no timeout, since this listener is bound to 127.0.0.1 and only
+    // serves trusted local callers.
+    idleTimeout: 0,
   });
   Logger.info("daemon listening", {
     url: `http://127.0.0.1:${config.daemon_port}`,

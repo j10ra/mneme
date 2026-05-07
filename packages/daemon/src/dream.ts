@@ -177,16 +177,32 @@ async function submitClusters(
 
 export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> {
   const windowKey = deps.windowKey ?? computeWindowKey();
+  Logger.info("dream: attempting lock", { window_key: windowKey });
 
   const lock = await lockWindow(deps, windowKey);
   if (!lock.acquired) {
+    Logger.info("dream: skipped (lock held)", {
+      window_key: windowKey,
+      held_by: lock.heldBy ?? "unknown",
+    });
     return { skipped: true, reason: `held by ${lock.heldBy ?? "unknown"}` };
   }
+  Logger.info("dream: lock acquired", { window_key: windowKey });
 
   const candidates = await fetchCandidates(deps, windowKey);
+  const repoCount = Object.keys(candidates.repos).length;
+  const seedCount = Object.values(candidates.repos).reduce(
+    (sum, r) => sum + r.seeds.length,
+    0,
+  );
+  Logger.info("dream: candidates fetched", {
+    repos: repoCount,
+    seeds: seedCount,
+  });
+
   const submissions: ClusterSubmission[] = [];
 
-  for (const repoData of Object.values(candidates.repos)) {
+  for (const [repo, repoData] of Object.entries(candidates.repos)) {
     const seedById = new Map<string, DreamSeed>();
     for (const s of repoData.seeds) seedById.set(s.id, s);
 
@@ -194,6 +210,16 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
       [...seedById.keys()],
       repoData.edges,
     );
+    const eligible = components.filter(
+      (c) => c.length >= MIN_CLUSTER_SIZE && c.length <= MAX_CLUSTER_SIZE,
+    );
+    if (eligible.length > 0) {
+      Logger.info("dream: clusters found in repo", {
+        repo,
+        components: components.length,
+        eligible: eligible.length,
+      });
+    }
 
     for (const memberIds of components) {
       if (
@@ -214,8 +240,15 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
           meta: {},
         };
       });
+      Logger.info("dream: distilling cluster", { size: memberIds.length });
+      const tDistill = Date.now();
       try {
         const distilled = await deps.distill(memberMemories);
+        Logger.info("dream: distilled", {
+          size: memberIds.length,
+          title: distilled.title,
+          ms: Date.now() - tDistill,
+        });
 
         // Optional supersede pass over cluster members. Adjacent-
         // neighbor inclusion (the original architecture's pattern) would
@@ -257,7 +290,13 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     }
   }
 
+  Logger.info("dream: submitting clusters", { count: submissions.length });
   const result = await submitClusters(deps, windowKey, submissions);
+  Logger.info("dream: clusters written", {
+    submitted: submissions.length,
+    written: result.written,
+    supersedes: result.supersedes,
+  });
   return {
     skipped: false,
     clustersSubmitted: submissions.length,
