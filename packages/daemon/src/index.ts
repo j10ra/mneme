@@ -15,6 +15,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pickAgent } from "./agents/index.ts";
+import { runDreamCycle } from "./dream.ts";
 import { embedBatch } from "./embed.ts";
 import { createOutbox } from "./outbox.ts";
 import { type Bundle, createRuntime } from "./runtime.ts";
@@ -28,6 +29,7 @@ export type DaemonConfig = {
 };
 
 const DEFAULT_TICK_MS = 2_000;
+const DREAM_TICK_MS = 60 * 60 * 1000; // try every hour; lock dedups to one win per 8h window
 
 async function readConfig(): Promise<DaemonConfig> {
   const path = join(homedir(), ".mneme", "config.json");
@@ -116,6 +118,40 @@ export async function startDaemon(): Promise<void> {
   // Kick once on boot so any backlog from before daemon start drains
   // immediately rather than waiting up to DEFAULT_TICK_MS.
   void tick();
+
+  // Dream loop: hourly attempt, the server-side advisory-claim ledger
+  // ensures only one daemon per 8h window actually runs. A cron offset
+  // derived from machine_id staggers attempts so all daemons don't pile
+  // on the lock at the same minute.
+  const dreamTick = async () => {
+    try {
+      const result = await runDreamCycle({
+        serverUrl: config.server_url,
+        token: config.token,
+        machineId: config.machine_id,
+        fetch: (url, init) => fetch(url, init),
+        distill: (memories) => {
+          if (!agent.distill) {
+            throw new Error(
+              `agent ${agent.name} does not support dream (no distill())`,
+            );
+          }
+          return agent.distill(memories);
+        },
+      });
+      if (!result.skipped) {
+        console.log(
+          `dream cycle complete: ${result.clustersWritten ?? 0} clusters written`,
+        );
+      }
+    } catch (err) {
+      console.error("dream cycle crashed:", err);
+    }
+  };
+  setInterval(dreamTick, DREAM_TICK_MS);
+  // Don't auto-fire on boot; the first scheduled tick gives the daemon
+  // a chance to drain any pending captures before competing for the
+  // dream lock.
 }
 
 // When invoked directly (`bun run src/index.ts`), start the daemon.
