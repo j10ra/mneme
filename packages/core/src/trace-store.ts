@@ -24,6 +24,19 @@ export type Scrubber = (data: unknown) => unknown;
 
 const identity: Scrubber = (data) => data;
 
+// Structural contract that mnemeRoute / mnemeFn rely on. The server
+// runs a TraceStore (writes to _ops directly); the daemon runs a
+// TraceForwarder (POSTs to /api/ingest/spans). configureTraceStore
+// accepts either.
+export interface TraceSink {
+  start(): void;
+  stop(): Promise<void>;
+  pushTrace(t: TraceRecord): void;
+  pushSpan(s: SpanRecord): void;
+  pushLog(l: LogRecord): void;
+  flush(): Promise<void>;
+}
+
 const MAX_BODY_BYTES = 256 * 1024;
 
 // Bound the in-flight buffers so a runaway producer (or a trace whose root
@@ -290,14 +303,14 @@ export class TraceStore {
   }
 }
 
-let _store: TraceStore | undefined;
+let _store: TraceSink | undefined;
 
-export function configureTraceStore(store: TraceStore): void {
+export function configureTraceStore(store: TraceSink): void {
   _store = store;
   store.start();
 }
 
-export function getTraceStore(): TraceStore | undefined {
+export function getTraceStore(): TraceSink | undefined {
   return _store;
 }
 

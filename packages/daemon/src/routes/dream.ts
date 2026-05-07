@@ -6,14 +6,14 @@
 // debugging, and ad-hoc cycles after a prompt or model tweak.
 
 import type { Hono } from "hono";
-import { Logger } from "@mneme/core";
+import { Logger, mnemeRoute } from "@mneme/core";
 import type { DreamCycleResult } from "../dream.ts";
 
 export function mountDreamRoute(
   app: Hono,
   runDream: () => Promise<DreamCycleResult>,
 ): void {
-  app.post("/dream/run", async (c) => {
+  app.post("/dream/run", mnemeRoute("daemon.dream_run"), async (c) => {
     try {
       const result = await runDream();
       Logger.info("dream cycle (manual)", result);

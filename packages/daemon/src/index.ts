@@ -16,7 +16,13 @@ import { mkdir, readFile, readdir, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Logger, configureLogger } from "@mneme/core";
+import {
+  Logger,
+  configureLogger,
+  configureTraceStore,
+  getTraceStore,
+  mnemeFn,
+} from "@mneme/core";
 import { Hono } from "hono";
 import { pickAgent } from "./agents/index.ts";
 import { resumeDreamCycles, runDreamCycle } from "./dream.ts";
@@ -29,6 +35,8 @@ import { mountEmbedRoute } from "./routes/embed.ts";
 import { mountOpsRoutes } from "./routes/ops.ts";
 import { type Bundle, createRuntime } from "./runtime.ts";
 import { register, startScheduler } from "./scheduler.ts";
+import { TraceForwarder } from "./trace-forwarder.ts";
+import { withRootTrace } from "./tracing.ts";
 
 export type DaemonConfig = {
   server_url: string;
@@ -179,17 +187,42 @@ export async function startDaemon(): Promise<void> {
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
   const agent = pickAgent(config.agent_provider);
 
+  // Wire span forwarding to the server's /api/ingest/spans before any
+  // mnemeFn / mnemeRoute fires, otherwise the first ticks lose their
+  // traces.
+  configureTraceStore(
+    new TraceForwarder({
+      serverUrl: config.server_url,
+      token: config.token,
+    }),
+  );
+
   let lastProcessedAt: Date | null = null;
   const realPush = pushBundleViaServer(config.server_url, config.token);
 
+  // Wrap external IO with mnemeFn so each call shows up as a child span
+  // under whatever stage tick (or HTTP request) drove it. Useful for
+  // queries like "extract latency over the last hour by machine" and
+  // "push p95 to /api/bundle from each daemon".
+  const tracedExtract = mnemeFn(
+    "daemon.extract",
+    async (captures: Parameters<typeof agent.extract>[0]["captures"]) =>
+      agent.extract({ captures }),
+  );
+  const tracedEmbed = mnemeFn(
+    "daemon.embed",
+    async (texts: string[]) => embedBatch(texts),
+  );
+  const tracedPush = mnemeFn("daemon.push", async (bundle: Bundle) => {
+    await realPush(bundle);
+    lastProcessedAt = new Date();
+  });
+
   const runtime = createRuntime({
     outbox,
-    extract: (captures) => agent.extract({ captures }),
-    embed: embedBatch,
-    push: async (bundle) => {
-      await realPush(bundle);
-      lastProcessedAt = new Date();
-    },
+    extract: tracedExtract,
+    embed: tracedEmbed,
+    push: tracedPush,
     extractBatchFull: EXTRACT_BATCH_FULL,
     extractIdleMs: EXTRACT_IDLE_MS,
     extractForceMs: EXTRACT_FORCE_MS,
@@ -285,11 +318,12 @@ export async function startDaemon(): Promise<void> {
   // beyond the atomic POSIX renames the outbox already does.
   function makeTick(name: string, fn: () => Promise<void>): () => Promise<void> {
     let isTicking = false;
+    const traceName = `daemon.${name}_tick`;
     return async () => {
       if (isTicking) return;
       isTicking = true;
       try {
-        await fn();
+        await withRootTrace(traceName, "daemon", fn);
       } catch (err) {
         Logger.error(`${name} tick crashed`, err);
       } finally {
@@ -348,12 +382,12 @@ export async function startDaemon(): Promise<void> {
   register({
     name: "dream",
     scheduleMs: DREAM_SCHEDULE_MS,
-    run: runDream,
+    run: () => withRootTrace("daemon.dream", "daemon", runDream).then(() => undefined),
   });
   register({
     name: "heartbeat",
     scheduleMs: HEARTBEAT_SCHEDULE_MS,
-    run: postHeartbeat,
+    run: () => withRootTrace("daemon.heartbeat", "daemon", postHeartbeat),
   });
   register({
     name: "embedder-reap",
@@ -361,6 +395,20 @@ export async function startDaemon(): Promise<void> {
     run: () => disposeIfIdle().then(() => undefined),
   });
   await startScheduler();
+
+  // Flush in-flight spans on shutdown so the operator sees the trail
+  // when launchctl yanks the daemon. Best-effort; failures don't block.
+  const shutdown = async (signal: string): Promise<void> => {
+    Logger.info(`daemon ${signal} — flushing traces`);
+    try {
+      await getTraceStore()?.stop();
+    } catch (err) {
+      Logger.warn("trace flush on shutdown failed", err);
+    }
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
 // When invoked directly (`bun run src/index.ts`), start the daemon.

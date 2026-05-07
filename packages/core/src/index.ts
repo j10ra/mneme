@@ -10,6 +10,7 @@ export {
   type SpanRecord,
   type LogRecord,
   type Scrubber,
+  type TraceSink,
 } from "./trace-store.ts";
 export { requireAuth, configureAuth, hashKey } from "./auth.ts";
 export {

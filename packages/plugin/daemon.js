@@ -10,6 +10,9 @@ import { join as join5 } from "path";
 // packages/core/src/context.ts
 import { AsyncLocalStorage } from "async_hooks";
 var storage = new AsyncLocalStorage;
+function newId() {
+  return crypto.randomUUID();
+}
 
 // packages/core/src/trace-store.ts
 var identity = (data) => data;
@@ -209,9 +212,28 @@ class TraceStore {
   }
 }
 var _store;
+function configureTraceStore(store) {
+  _store = store;
+  store.start();
+}
 function getTraceStore() {
   return _store;
 }
+function summarizeIO(data) {
+  if (data === undefined || data === null)
+    return { value: null, size: 0 };
+  try {
+    const json = JSON.stringify(data);
+    const size = json.length;
+    if (size > MAX_BODY_BYTES) {
+      return { value: { _truncated: true, size }, size };
+    }
+    return { value: data, size };
+  } catch {
+    return { value: { _unserializable: true }, size: 0 };
+  }
+}
+var MAX_BODY_BYTES_EXPORT = MAX_BODY_BYTES;
 
 // packages/core/src/logger.ts
 var LEVEL_RANK = {
@@ -286,6 +308,126 @@ var Logger = {
   warn: (msg, err, meta) => emit("warn", msg, err, meta),
   error: (msg, err, meta) => emit("error", msg, err, meta)
 };
+// packages/core/src/mneme-route.ts
+function mnemeRoute(name) {
+  return async (c, next) => {
+    const traceId = newId();
+    const spanId = newId();
+    const startedAtMs = Date.now();
+    const source = c.req.header("x-mneme-source") ?? "http";
+    let inputObj;
+    let inputSize;
+    const method = c.req.method;
+    if (method === "POST" || method === "PUT" || method === "PATCH") {
+      const ct = c.req.header("content-type") ?? "";
+      if (ct.includes("application/json")) {
+        try {
+          const cloned = c.req.raw.clone();
+          const text = await cloned.text();
+          inputSize = text.length;
+          if (inputSize <= MAX_BODY_BYTES_EXPORT) {
+            inputObj = JSON.parse(text);
+          } else {
+            inputObj = { _truncated: true, size: inputSize };
+          }
+        } catch {
+          inputObj = { _unparseable: true };
+        }
+      }
+    }
+    const rootSpan = {
+      spanId,
+      name,
+      startedAtMs,
+      input: inputObj,
+      inputSize
+    };
+    const ctx = {
+      traceId,
+      source,
+      spanStack: [rootSpan]
+    };
+    let errorMessage;
+    try {
+      await storage.run(ctx, async () => {
+        await next();
+      });
+    } catch (err) {
+      errorMessage = err instanceof Error ? err.message : String(err);
+      throw err;
+    } finally {
+      let outputObj;
+      let outputSize;
+      try {
+        const respCt = c.res.headers.get("content-type") ?? "";
+        if (respCt.includes("application/json")) {
+          const cloned = c.res.clone();
+          const text = await cloned.text();
+          const summary = summarizeIO(text ? JSON.parse(text) : null);
+          outputObj = summary.value;
+          outputSize = summary.size;
+        }
+      } catch {
+        outputObj = { _unparseable_response: true };
+      }
+      const endedAtMs = Date.now();
+      const durationMs = endedAtMs - startedAtMs;
+      rootSpan.durationMs = durationMs;
+      rootSpan.errorMessage = errorMessage;
+      rootSpan.output = outputObj;
+      rootSpan.outputSize = outputSize;
+      const store = getTraceStore();
+      if (store) {
+        store.pushSpan({ ...rootSpan, traceId });
+        store.pushTrace({
+          traceId,
+          rootSpanName: name,
+          source,
+          startedAtMs,
+          endedAtMs,
+          durationMs
+        });
+      }
+    }
+  };
+}
+// packages/core/src/mneme-fn.ts
+function mnemeFn(name, fn) {
+  return async (...args) => {
+    const ctx = storage.getStore();
+    if (!ctx)
+      return fn(...args);
+    const span = {
+      spanId: newId(),
+      parentSpanId: ctx.spanStack.at(-1)?.spanId,
+      name,
+      startedAtMs: Date.now()
+    };
+    const inputSummary = summarizeIO(args);
+    span.input = inputSummary.value;
+    span.inputSize = inputSummary.size;
+    ctx.spanStack.push(span);
+    let errorMessage;
+    try {
+      const result = await fn(...args);
+      const summary = summarizeIO(result);
+      span.output = summary.value;
+      span.outputSize = summary.size;
+      return result;
+    } catch (err) {
+      errorMessage = err instanceof Error ? err.message : String(err);
+      throw err;
+    } finally {
+      span.durationMs = Date.now() - span.startedAtMs;
+      span.errorMessage = errorMessage;
+      ctx.spanStack.pop();
+      const store = getTraceStore();
+      if (store) {
+        store.pushSpan({ ...span, traceId: ctx.traceId });
+      }
+    }
+  };
+}
 // packages/daemon/src/index.ts
 import { Hono } from "hono";
 
@@ -1467,7 +1609,7 @@ function createOutbox(rootPath) {
 
 // packages/daemon/src/routes/capture.ts
 function mountCaptureRoute(app, runtime) {
-  app.post("/capture", async (c) => {
+  app.post("/capture", mnemeRoute("daemon.capture"), async (c) => {
     const body = await c.req.json().catch(() => null);
     if (!body)
       return c.json({ error: "invalid_json" }, 400);
@@ -1480,7 +1622,7 @@ function mountCaptureRoute(app, runtime) {
 
 // packages/daemon/src/routes/dream.ts
 function mountDreamRoute(app, runDream) {
-  app.post("/dream/run", async (c) => {
+  app.post("/dream/run", mnemeRoute("daemon.dream_run"), async (c) => {
     try {
       const result = await runDream();
       Logger.info("dream cycle (manual)", result);
@@ -1495,7 +1637,7 @@ function mountDreamRoute(app, runDream) {
 
 // packages/daemon/src/routes/embed.ts
 function mountEmbedRoute(app) {
-  app.post("/embed", async (c) => {
+  app.post("/embed", mnemeRoute("daemon.embed_route"), async (c) => {
     const body = await c.req.json().catch(() => null);
     if (!body || !Array.isArray(body.texts)) {
       Logger.warn("embed: invalid body");
@@ -1522,7 +1664,7 @@ function mountEmbedRoute(app) {
 // packages/daemon/src/routes/ops.ts
 function mountOpsRoutes(app, runtime) {
   app.get("/health", (c) => c.json({ ok: true }));
-  app.post("/flush", (c) => {
+  app.post("/flush", mnemeRoute("daemon.flush"), (c) => {
     runtime.flush().catch((err) => {
       Logger.error("flush failed", err);
     });
@@ -2117,6 +2259,205 @@ async function startScheduler() {
   }, TICK_MS);
 }
 
+// packages/daemon/src/trace-forwarder.ts
+var MAX_PENDING_SPANS_PER_TRACE2 = 1000;
+var MAX_PENDING_TRACES2 = 200;
+var RECENT_TRACE_LRU_SIZE2 = 1024;
+
+class TraceForwarder {
+  serverUrl;
+  token;
+  flushIntervalMs;
+  maxBatchSize;
+  fetchImpl;
+  timer = null;
+  traceBuffer = [];
+  spanBuffer = [];
+  logBuffer = [];
+  pendingSpans = new Map;
+  pendingLogs = new Map;
+  recentlyFinalized = new Map;
+  constructor(opts) {
+    this.serverUrl = opts.serverUrl.replace(/\/$/, "");
+    this.token = opts.token;
+    this.flushIntervalMs = opts.flushIntervalMs ?? 5000;
+    this.maxBatchSize = opts.maxBatchSize ?? 100;
+    this.fetchImpl = opts.fetch ?? globalThis.fetch;
+  }
+  start() {
+    if (this.timer)
+      return;
+    this.timer = setInterval(() => {
+      this.flush();
+    }, this.flushIntervalMs);
+    this.timer.unref?.();
+  }
+  async stop() {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    this.pendingSpans.clear();
+    this.pendingLogs.clear();
+    await this.flush();
+  }
+  pushTrace(t) {
+    const spans = this.pendingSpans.get(t.traceId);
+    if (spans) {
+      this.spanBuffer.push(...spans);
+      this.pendingSpans.delete(t.traceId);
+    }
+    const logs = this.pendingLogs.get(t.traceId);
+    if (logs) {
+      this.logBuffer.push(...logs);
+      this.pendingLogs.delete(t.traceId);
+    }
+    this.traceBuffer.push(t);
+    this.markFinalized(t.traceId);
+    this.maybeFlushOverflow();
+  }
+  pushSpan(s) {
+    if (this.recentlyFinalized.has(s.traceId)) {
+      this.spanBuffer.push(s);
+      this.maybeFlushOverflow();
+      return;
+    }
+    let bucket = this.pendingSpans.get(s.traceId);
+    if (!bucket) {
+      if (this.pendingSpans.size >= MAX_PENDING_TRACES2) {
+        const firstKey = this.pendingSpans.keys().next().value;
+        if (firstKey !== undefined)
+          this.pendingSpans.delete(firstKey);
+      }
+      bucket = [];
+      this.pendingSpans.set(s.traceId, bucket);
+    }
+    if (bucket.length >= MAX_PENDING_SPANS_PER_TRACE2)
+      bucket.shift();
+    bucket.push(s);
+    this.maybeFlushOverflow();
+  }
+  pushLog(l) {
+    if (!l.traceId) {
+      this.logBuffer.push(l);
+      this.maybeFlushOverflow();
+      return;
+    }
+    if (this.recentlyFinalized.has(l.traceId)) {
+      this.logBuffer.push(l);
+      this.maybeFlushOverflow();
+      return;
+    }
+    let bucket = this.pendingLogs.get(l.traceId);
+    if (!bucket) {
+      if (this.pendingLogs.size >= MAX_PENDING_TRACES2) {
+        const firstKey = this.pendingLogs.keys().next().value;
+        if (firstKey !== undefined)
+          this.pendingLogs.delete(firstKey);
+      }
+      bucket = [];
+      this.pendingLogs.set(l.traceId, bucket);
+    }
+    if (bucket.length >= MAX_PENDING_SPANS_PER_TRACE2)
+      bucket.shift();
+    bucket.push(l);
+    this.maybeFlushOverflow();
+  }
+  markFinalized(traceId) {
+    if (this.recentlyFinalized.has(traceId)) {
+      this.recentlyFinalized.delete(traceId);
+    }
+    this.recentlyFinalized.set(traceId, true);
+    if (this.recentlyFinalized.size > RECENT_TRACE_LRU_SIZE2) {
+      const oldest = this.recentlyFinalized.keys().next().value;
+      if (oldest !== undefined)
+        this.recentlyFinalized.delete(oldest);
+    }
+  }
+  maybeFlushOverflow() {
+    const total = this.traceBuffer.length + this.spanBuffer.length + this.logBuffer.length;
+    if (total >= this.maxBatchSize)
+      this.flush();
+  }
+  async flush() {
+    const traces = this.traceBuffer.splice(0);
+    const spans = this.spanBuffer.splice(0);
+    const logs = this.logBuffer.splice(0);
+    if (traces.length === 0 && spans.length === 0 && logs.length === 0)
+      return;
+    const body = JSON.stringify({ traces, spans, logs });
+    try {
+      const response = await this.fetchImpl(`${this.serverUrl}/api/ingest/spans`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.token}`
+        },
+        body
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        Logger.warn("trace-forwarder: server rejected batch", {
+          status: response.status,
+          detail: text.slice(0, 200),
+          traces: traces.length,
+          spans: spans.length,
+          logs: logs.length
+        });
+      }
+    } catch (err) {
+      Logger.warn("trace-forwarder: flush failed", {
+        error: err instanceof Error ? err.message : String(err),
+        traces: traces.length,
+        spans: spans.length,
+        logs: logs.length
+      });
+    }
+  }
+}
+
+// packages/daemon/src/tracing.ts
+async function withRootTrace(name, source, fn) {
+  const traceId = newId();
+  const spanId = newId();
+  const startedAtMs = Date.now();
+  const rootSpan = { spanId, name, startedAtMs };
+  const ctx = {
+    traceId,
+    source,
+    spanStack: [rootSpan]
+  };
+  let errorMessage;
+  let result;
+  try {
+    result = await storage.run(ctx, fn);
+    return result;
+  } catch (err) {
+    errorMessage = err instanceof Error ? err.message : String(err);
+    throw err;
+  } finally {
+    const endedAtMs = Date.now();
+    const durationMs = endedAtMs - startedAtMs;
+    rootSpan.durationMs = durationMs;
+    rootSpan.errorMessage = errorMessage;
+    const store = getTraceStore();
+    if (store) {
+      store.pushSpan({ ...rootSpan, traceId });
+      store.pushTrace({
+        traceId,
+        rootSpanName: name,
+        source,
+        startedAtMs,
+        endedAtMs,
+        durationMs
+      });
+    }
+    if (errorMessage) {
+      Logger.warn(`${name} failed`, { error: errorMessage, durationMs });
+    }
+  }
+}
+
 // packages/daemon/src/index.ts
 var WORKER_TICK_MS = 2000;
 var EXTRACT_BATCH_FULL = 50;
@@ -2212,16 +2553,23 @@ async function startDaemon() {
   const outbox = createOutbox(captureOutboxRoot);
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
   const agent = pickAgent(config.agent_provider);
+  configureTraceStore(new TraceForwarder({
+    serverUrl: config.server_url,
+    token: config.token
+  }));
   let lastProcessedAt = null;
   const realPush = pushBundleViaServer(config.server_url, config.token);
+  const tracedExtract = mnemeFn("daemon.extract", async (captures) => agent.extract({ captures }));
+  const tracedEmbed = mnemeFn("daemon.embed", async (texts) => embedBatch(texts));
+  const tracedPush = mnemeFn("daemon.push", async (bundle) => {
+    await realPush(bundle);
+    lastProcessedAt = new Date;
+  });
   const runtime = createRuntime({
     outbox,
-    extract: (captures) => agent.extract({ captures }),
-    embed: embedBatch,
-    push: async (bundle) => {
-      await realPush(bundle);
-      lastProcessedAt = new Date;
-    },
+    extract: tracedExtract,
+    embed: tracedEmbed,
+    push: tracedPush,
     extractBatchFull: EXTRACT_BATCH_FULL,
     extractIdleMs: EXTRACT_IDLE_MS,
     extractForceMs: EXTRACT_FORCE_MS
@@ -2280,12 +2628,13 @@ async function startDaemon() {
   });
   function makeTick(name, fn) {
     let isTicking = false;
+    const traceName = `daemon.${name}_tick`;
     return async () => {
       if (isTicking)
         return;
       isTicking = true;
       try {
-        await fn();
+        await withRootTrace(traceName, "daemon", fn);
       } catch (err) {
         Logger.error(`${name} tick crashed`, err);
       } finally {
@@ -2332,12 +2681,14 @@ async function startDaemon() {
   register({
     name: "dream",
     scheduleMs: DREAM_SCHEDULE_MS,
-    run: runDream
+    run: () => withRootTrace("daemon.dream", "daemon", runDream).then(() => {
+      return;
+    })
   });
   register({
     name: "heartbeat",
     scheduleMs: HEARTBEAT_SCHEDULE_MS,
-    run: postHeartbeat
+    run: () => withRootTrace("daemon.heartbeat", "daemon", postHeartbeat)
   });
   register({
     name: "embedder-reap",
@@ -2347,6 +2698,17 @@ async function startDaemon() {
     })
   });
   await startScheduler();
+  const shutdown = async (signal) => {
+    Logger.info(`daemon ${signal} \u2014 flushing traces`);
+    try {
+      await getTraceStore()?.stop();
+    } catch (err) {
+      Logger.warn("trace flush on shutdown failed", err);
+    }
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 if (import.meta.main) {
   await startDaemon();

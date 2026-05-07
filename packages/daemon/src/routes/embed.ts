@@ -8,11 +8,11 @@
 // canonical source for query vectors too (not just stored ones).
 
 import type { Hono } from "hono";
-import { Logger } from "@mneme/core";
+import { Logger, mnemeRoute } from "@mneme/core";
 import { embedBatch } from "../embed.ts";
 
 export function mountEmbedRoute(app: Hono): void {
-  app.post("/embed", async (c) => {
+  app.post("/embed", mnemeRoute("daemon.embed_route"), async (c) => {
     const body = (await c.req.json().catch(() => null)) as
       | { texts?: unknown }
       | null;

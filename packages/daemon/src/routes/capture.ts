@@ -6,12 +6,13 @@
 // push) happens later from the worker tick.
 
 import type { Hono } from "hono";
+import { mnemeRoute } from "@mneme/core";
 import type { createRuntime } from "../runtime.ts";
 
 type Runtime = ReturnType<typeof createRuntime>;
 
 export function mountCaptureRoute(app: Hono, runtime: Runtime): void {
-  app.post("/capture", async (c) => {
+  app.post("/capture", mnemeRoute("daemon.capture"), async (c) => {
     const body = await c.req.json().catch(() => null);
     if (!body) return c.json({ error: "invalid_json" }, 400);
     const result = await runtime.handleCapture(body as never);

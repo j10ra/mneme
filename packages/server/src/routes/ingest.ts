@@ -16,6 +16,44 @@ import { sql, sha256Hex } from "../infra/db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
 import { KINDS, type Kind } from "../llm/index.ts";
 
+// Cap a single forwarded batch so a runaway daemon can't OOM the
+// server's tx. Realistic daemon batches sit at ~10 traces / 50 spans
+// per flush; this is a 100x ceiling.
+const MAX_BATCH_TRACES = 1000;
+const MAX_BATCH_SPANS = 10_000;
+const MAX_BATCH_LOGS = 10_000;
+
+type IngestSpansBody = {
+  traces?: Array<{
+    traceId: string;
+    rootSpanName: string;
+    source: string;
+    startedAtMs: number;
+    endedAtMs: number;
+    durationMs: number;
+  }>;
+  spans?: Array<{
+    spanId: string;
+    traceId: string;
+    parentSpanId?: string | null;
+    name: string;
+    startedAtMs: number;
+    durationMs?: number | null;
+    errorMessage?: string | null;
+    inputSize?: number | null;
+    outputSize?: number | null;
+    input?: unknown;
+    output?: unknown;
+  }>;
+  logs?: Array<{
+    traceId?: string | null;
+    spanId?: string | null;
+    level: "debug" | "info" | "warn" | "error";
+    message: string;
+    ts: number;
+  }>;
+};
+
 type CaptureBody = {
   content: string;
   source: string;
@@ -280,6 +318,126 @@ export function mountIngestRoutes(app: Hono): void {
         chars: cleaned.length,
       });
       return c.json({ id: result.id, created: result.created, pinned });
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // POST /api/ingest/spans — write, scope=capture
+  // Daemons forward locally-emitted traces / spans / logs here. The
+  // _ops.traces row is stamped with the caller's machine_id so per-machine
+  // queries don't need to join through captures. Spans + logs FK to traces
+  // (trace row inserted first within the same tx). Whole batch silently
+  // skipped if any row would violate a FK; this is a best-effort firehose,
+  // not a transactional contract.
+  // ---------------------------------------------------------------------------
+  app.post(
+    "/api/ingest/spans",
+    mnemeRoute("api.ingest.spans"),
+    requireAuth("capture"),
+    async (c) => {
+      const auth = currentAuth();
+      if (!auth?.machineId) {
+        return c.json(
+          { error: "ingest/spans requires per-machine token" },
+          400,
+        );
+      }
+      const body = (await c.req.json().catch(() => null)) as
+        | IngestSpansBody
+        | null;
+      if (!body) return c.json({ error: "invalid_json" }, 400);
+
+      const traces = Array.isArray(body.traces) ? body.traces : [];
+      const spans = Array.isArray(body.spans) ? body.spans : [];
+      const logs = Array.isArray(body.logs) ? body.logs : [];
+
+      if (
+        traces.length > MAX_BATCH_TRACES ||
+        spans.length > MAX_BATCH_SPANS ||
+        logs.length > MAX_BATCH_LOGS
+      ) {
+        return c.json({ error: "batch too large" }, 413);
+      }
+
+      if (traces.length === 0 && spans.length === 0 && logs.length === 0) {
+        return c.json({ ok: true, traces: 0, spans: 0, logs: 0 });
+      }
+
+      try {
+        await sql.begin(async (tx) => {
+          if (traces.length > 0) {
+            await tx`
+              INSERT INTO _ops.traces ${tx(
+                traces.map((t) => ({
+                  trace_id: t.traceId,
+                  root_span_name: t.rootSpanName,
+                  source: t.source,
+                  started_at: new Date(t.startedAtMs),
+                  ended_at: new Date(t.endedAtMs),
+                  duration_ms: t.durationMs,
+                  machine_id: auth.machineId,
+                })),
+              )}
+              ON CONFLICT (trace_id) DO NOTHING
+            `;
+          }
+          if (spans.length > 0) {
+            await tx`
+              INSERT INTO _ops.spans ${tx(
+                spans.map((s) => {
+                  const inputCol =
+                    s.input === undefined || s.input === null
+                      ? null
+                      : tx.json(scrubData(s.input) as never);
+                  const outputCol =
+                    s.output === undefined || s.output === null
+                      ? null
+                      : tx.json(scrubData(s.output) as never);
+                  return {
+                    span_id: s.spanId,
+                    trace_id: s.traceId,
+                    parent_span_id: s.parentSpanId ?? null,
+                    name: s.name,
+                    started_at: new Date(s.startedAtMs),
+                    duration_ms: s.durationMs ?? null,
+                    error_message: s.errorMessage ?? null,
+                    input_size: s.inputSize ?? null,
+                    output_size: s.outputSize ?? null,
+                    input: inputCol,
+                    output: outputCol,
+                  };
+                }),
+              )}
+              ON CONFLICT (span_id) DO NOTHING
+            `;
+          }
+          if (logs.length > 0) {
+            await tx`
+              INSERT INTO _ops.logs ${tx(
+                logs.map((l) => ({
+                  trace_id: l.traceId ?? null,
+                  span_id: l.spanId ?? null,
+                  level: l.level,
+                  message: scrub(l.message),
+                  ts: new Date(l.ts),
+                })),
+              )}
+            `;
+          }
+        });
+      } catch (err) {
+        Logger.warn(
+          `ingest/spans failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return c.json({ error: "ingest_failed" }, 500);
+      }
+
+      return c.json({
+        ok: true,
+        traces: traces.length,
+        spans: spans.length,
+        logs: logs.length,
+      });
     },
   );
 }
