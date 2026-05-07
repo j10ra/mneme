@@ -78,7 +78,10 @@ export type DaemonDeps = {
 
 const REQUIRED_STRING_FIELDS = ["content", "source", "hostname", "harness"] as const;
 const COALESCE_WINDOW_MS = 5 * 60 * 1000;
-const MAX_BATCH_SIZE = 30;
+// Max captures per Haiku call. 20 keeps each extract focused enough
+// that observation quality stays high; sessions larger than this
+// chunk into multiple back-to-back calls (each ~10s).
+const MAX_BATCH_SIZE = 20;
 
 // Defaults for the extract gating window. Production overrides them in
 // index.ts (idle=30s, force=5min, batchFull=20). Tests keep the

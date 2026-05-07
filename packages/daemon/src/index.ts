@@ -51,11 +51,14 @@ type PluginShapedConfig = {
 // plain setInterval rather than going through the scheduler.
 const WORKER_TICK_MS = 2_000;
 
-// Extract gating. Idle is the safety net; the hook pings /flush on
-// natural session boundaries (Stop, PreCompact, SessionEnd) for a
-// faster response. 3 min matches claude-mem's IDLE_TIMEOUT_MS, which
-// is empirically a sensible "session is dead" floor.
-const EXTRACT_BATCH_FULL = Number.MAX_SAFE_INTEGER;
+// Extract gating. Triggers in priority:
+//   1. /flush ping  - PreCompact, SessionEnd (natural session boundaries)
+//   2. group hits EXTRACT_BATCH_FULL - runaway protection on long sessions
+//      with no real pauses
+//   3. group idle EXTRACT_IDLE_MS - "user took a break" detector
+// Per-turn Stop events no longer flush, so captures from many turns
+// coalesce into one Haiku call with richer cross-turn context.
+const EXTRACT_BATCH_FULL = 100;
 const EXTRACT_IDLE_MS = 3 * 60_000;
 const EXTRACT_FORCE_MS = 0;
 

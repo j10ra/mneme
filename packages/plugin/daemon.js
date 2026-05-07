@@ -1330,7 +1330,7 @@ function scrubData(data) {
 // packages/daemon/src/runtime.ts
 var REQUIRED_STRING_FIELDS = ["content", "source", "hostname", "harness"];
 var COALESCE_WINDOW_MS = 5 * 60 * 1000;
-var MAX_BATCH_SIZE = 30;
+var MAX_BATCH_SIZE = 20;
 var DEFAULT_EXTRACT_BATCH_FULL = 1;
 var DEFAULT_EXTRACT_IDLE_MS = 0;
 var DEFAULT_EXTRACT_FORCE_MS = 0;
@@ -1685,7 +1685,7 @@ async function startScheduler() {
 
 // packages/daemon/src/index.ts
 var WORKER_TICK_MS = 2000;
-var EXTRACT_BATCH_FULL = Number.MAX_SAFE_INTEGER;
+var EXTRACT_BATCH_FULL = 100;
 var EXTRACT_IDLE_MS = 3 * 60000;
 var EXTRACT_FORCE_MS = 0;
 var DREAM_SCHEDULE_MS = 8 * 3600000;

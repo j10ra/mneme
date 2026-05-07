@@ -315,6 +315,13 @@ async function main(): Promise<void> {
     case "Stop":
     case "PreCompact":
     case "SessionEnd": {
+      // Per-turn Stop events let captures keep building so the daemon
+      // can extract a coherent multi-turn batch later. PreCompact and
+      // SessionEnd are real session boundaries — they still ping
+      // /flush below to drain pending captures immediately. The
+      // boundary distinction is made there, not here, since the
+      // capture-write path is identical for all three.
+      const isSessionBoundary = event === "PreCompact" || event === "SessionEnd";
       // 1) Audit/metadata capture (session_id, transcript_path, cwd, etc).
       //    Small payload — Claude Code doesn't include conversation text here.
       const body = {
@@ -374,9 +381,13 @@ async function main(): Promise<void> {
           );
         }
       }
-      // Natural session boundary: tell the daemon to flush whatever's
-      // pending instead of waiting for the idle window.
-      await pingDaemonFlush(cfg);
+      // Only PreCompact/SessionEnd flush. Stop is per-turn — letting
+      // captures buffer across turns means the next extract sees
+      // multi-turn context, which produces better observations than
+      // per-turn fragments.
+      if (isSessionBoundary) {
+        await pingDaemonFlush(cfg);
+      }
       return;
     }
 
