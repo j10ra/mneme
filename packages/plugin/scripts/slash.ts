@@ -11,7 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
   type MnemeConfig,
@@ -253,11 +254,17 @@ async function setup(
   }
   console.log("✓ wrote ~/.mneme/config.json (mode 600)");
 
-  // Daemon install. CLAUDE_PLUGIN_ROOT is the plugin's root inside CC's
-  // plugin cache (or a developer checkout's packages/plugin/). Both
-  // shapes have the same layout: daemon.js at the root, package.json
-  // alongside, node_modules created by bun install at install time.
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  // Daemon install. Plugin root is the parent of this script's
+  // directory: slash.ts lives at <pluginRoot>/scripts/slash.ts, so
+  // pluginRoot = dirname(dirname(script-path)). We derive it from
+  // import.meta.url instead of process.env.CLAUDE_PLUGIN_ROOT because
+  // Claude Code's slash command machinery substitutes
+  // ${CLAUDE_PLUGIN_ROOT} into the command string but does NOT set
+  // it as an environment variable for the spawned process — so
+  // reading the env was making the whole install path skip silently.
+  const pluginRoot =
+    process.env.CLAUDE_PLUGIN_ROOT ??
+    dirname(dirname(fileURLToPath(import.meta.url)));
   if (pluginRoot) {
     const installResult = await installDaemonService({
       pluginRoot,
