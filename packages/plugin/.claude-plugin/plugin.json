@@ -1,6 +1,6 @@
 {
   "name": "mneme",
-  "version": "1.0.48",
+  "version": "1.0.49",
   "description": "Cross-machine, cross-harness, cross-AI memory for Claude Code. Captures, recalls, and surfaces context via Mneme's MCP server.",
   "author": {
     "name": "j10ra"

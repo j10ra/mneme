@@ -4,7 +4,15 @@
 // capture (or fetches the surface for SessionStart) to the Mneme server.
 // Fail-open: errors never block the harness.
 
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -59,6 +67,55 @@ async function sha256Hex(input: string): Promise<string> {
   return hex;
 }
 
+// Per-session content-hash dedup. The transcript-replay loop in
+// Stop/PreCompact/SessionEnd reads the assistant transcript JSONL and
+// emits one capture per assistant entry — but the transcript grows
+// over the session, so each subsequent replay re-emits everything
+// seen so far. Without this check the daemon paid Haiku tokens on
+// O(N²) duplicates across a session (5 firings of a 100-entry
+// transcript = 500 captures, of which 400 are dupes).
+//
+// Track seen content_sha256 in `~/.mneme/shas/<session_id>.txt`,
+// one sha per line. File is deleted on SessionEnd; orphans (CC crashed
+// without firing SessionEnd) are tiny and self-cap at session length.
+function sessionShaFile(sessionId: string): string {
+  return join(homedir(), ".mneme", "shas", `${sessionId}.txt`);
+}
+
+function hasSeenSha(sessionId: string, sha: string): boolean {
+  try {
+    const file = sessionShaFile(sessionId);
+    if (!existsSync(file)) return false;
+    const content = readFileSync(file, "utf8");
+    // Anchor each sha with newlines on both sides so a partial-match
+    // can't false-positive (sha1 is a substring of sha2 etc).
+    return content.includes(`${sha}\n`);
+  } catch {
+    return false;
+  }
+}
+
+function recordSha(sessionId: string, sha: string): void {
+  try {
+    const file = sessionShaFile(sessionId);
+    const dir = join(homedir(), ".mneme", "shas");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    appendFileSync(file, `${sha}\n`, { mode: 0o600 });
+  } catch {
+    // best-effort. If we can't record, the worst case is we let a
+    // dupe through later — the server still drops it via the
+    // (content_sha256, machine_id) constraint.
+  }
+}
+
+function clearSessionShas(sessionId: string): void {
+  try {
+    rmSync(sessionShaFile(sessionId), { force: true });
+  } catch {
+    // not fatal
+  }
+}
+
 // Write directly into the daemon's pending queue. Used when the daemon
 // HTTP listener is briefly unreachable (restart gap, crash). The daemon
 // picks up files from outbox/capture/pending/ on its very next tick or
@@ -93,6 +150,22 @@ async function postCapture(
 ): Promise<boolean> {
   // Scrub here so every event funnels through one redaction point.
   const cleaned = scrubData(body) as Record<string, unknown>;
+
+  // Per-session content dedup BEFORE any daemon work. See sessionShaFile
+  // comment for the transcript-replay backstory. We treat already-seen
+  // content as success (return true) so the harness doesn't see this
+  // as an error per call.
+  const sessionId =
+    typeof cleaned.session_id === "string" ? cleaned.session_id : null;
+  const content =
+    typeof cleaned.content === "string" ? cleaned.content : "";
+  if (sessionId && content) {
+    const sha = await sha256Hex(content);
+    if (hasSeenSha(sessionId, sha)) {
+      return true;
+    }
+    recordSha(sessionId, sha);
+  }
 
   // The machine is the sole authority on captures. The hook only ever
   // talks to the local daemon - never the cloud server directly. If the
@@ -387,6 +460,13 @@ async function main(): Promise<void> {
       // per-turn fragments.
       if (isSessionBoundary) {
         await pingDaemonFlush(cfg);
+      }
+      // SessionEnd is the terminal event for this session_id; the
+      // dedup set is now useless. Delete it. (PreCompact is mid-session,
+      // we keep the set so subsequent transcript replays in the same
+      // session still dedup correctly.)
+      if (event === "SessionEnd" && sessionId) {
+        clearSessionShas(sessionId);
       }
       return;
     }
