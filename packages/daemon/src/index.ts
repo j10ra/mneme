@@ -157,6 +157,37 @@ export async function startDaemon(): Promise<void> {
           headers: { "Content-Type": "application/json" },
         });
       }
+      if (req.method === "POST" && req.url.includes("/embed")) {
+        // Embed query texts for the MCP proxy. Plugin's mcp-proxy.ts
+        // intercepts embed('...') macros in SQL and routes them here so
+        // the server's /mcp can be a pure SQL executor. Same model
+        // (bge-large-en-v1.5) and dimensions as the daemon's internal
+        // pipeline, so vectors are compatible with memories embedded
+        // either path.
+        const body = (await req.json().catch(() => null)) as
+          | { texts?: unknown }
+          | null;
+        if (!body || !Array.isArray(body.texts)) {
+          return new Response(
+            JSON.stringify({ error: "texts[] required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        const texts = body.texts.filter((t): t is string => typeof t === "string");
+        try {
+          const vectors = await embedBatch(texts);
+          return new Response(JSON.stringify({ vectors }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return new Response(JSON.stringify({ error: msg }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      }
       return new Response("not found", { status: 404 });
     },
   });

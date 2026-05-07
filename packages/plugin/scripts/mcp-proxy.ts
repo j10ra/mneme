@@ -9,10 +9,60 @@
 
 import { createInterface } from "node:readline";
 import { type MnemeConfig, configPath, loadConfig, serverUrl } from "./config.ts";
+import { scrubData } from "./scrub.ts";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_NAME = "mneme";
 const SERVER_VERSION = "1.0.0";
+
+// Match server-side substituteEmbeds. The proxy now does the same
+// substitution locally by calling the daemon's /embed endpoint, so the
+// server's /mcp becomes a pure SQL executor for daemon-equipped
+// machines. Server-side embed() handling remains as a fallback for
+// machines without a running daemon (transition period).
+const EMBED_RE = /\bembed\(\s*'((?:[^'\\]|\\.)*)'\s*\)/gi;
+
+async function substituteEmbedsViaDaemon(
+  cfg: MnemeConfig,
+  sql: string,
+): Promise<string | null> {
+  if (!cfg.daemon) return null; // no daemon block: forward as-is, server handles
+  const matches = Array.from(sql.matchAll(EMBED_RE));
+  if (matches.length === 0) return sql; // nothing to substitute
+
+  const rawTexts = Array.from(
+    new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))),
+  );
+  // Same edge-scrub policy the server applies: an agent typing
+  // `embed('Bearer eyJ...')` should not leak the token to the embedder.
+  const cleanedTexts = rawTexts.map((t) => scrubData(t) as string);
+
+  let vectors: number[][];
+  try {
+    const resp = await fetch(`http://127.0.0.1:${cfg.daemon.port}/embed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texts: cleanedTexts }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!resp.ok) return null; // daemon failed: caller falls back to server
+    const body = (await resp.json()) as { vectors?: number[][] };
+    if (!Array.isArray(body.vectors) || body.vectors.length !== cleanedTexts.length) {
+      return null;
+    }
+    vectors = body.vectors;
+  } catch {
+    return null; // daemon unreachable: caller falls back to server
+  }
+
+  const embedMap = new Map(rawTexts.map((t, i) => [t, vectors[i]!]));
+  return sql.replace(EMBED_RE, (_match, raw: string) => {
+    const text = raw.replace(/\\'/g, "'");
+    const vec = embedMap.get(text);
+    if (!vec) return _match; // shouldn't happen; preserve original
+    return `'[${vec.join(",")}]'::vector`;
+  });
+}
 
 const TOOL_DEF = {
   name: "mneme.sql",
@@ -114,6 +164,44 @@ for await (const rawLine of rl) {
     continue;
   }
 
+  // For mneme.sql tool calls, attempt local embed substitution via the
+  // daemon. On success, send the rewritten SQL with vector literals
+  // already substituted; the server's /mcp becomes a pure SQL executor.
+  // On any failure (no daemon block, daemon unreachable, embed error),
+  // fall through to forwarding the original request — the server's
+  // mcp.ts still has its own embed() substitution as backup.
+  let bodyToForward = line;
+  if (
+    cfg &&
+    cfg.daemon &&
+    typeof (req as { method?: unknown }).method === "string" &&
+    (req as { method: string }).method === "tools/call"
+  ) {
+    const params = (req as { params?: unknown }).params as
+      | { name?: unknown; arguments?: { query?: unknown } }
+      | undefined;
+    const sql =
+      params && params.name === "mneme.sql" && typeof params.arguments?.query === "string"
+        ? (params.arguments.query as string)
+        : null;
+    if (sql) {
+      const rewritten = await substituteEmbedsViaDaemon(cfg, sql);
+      if (rewritten !== null && rewritten !== sql && params) {
+        const rewrittenReq = {
+          ...(req as Record<string, unknown>),
+          params: {
+            ...((req as { params?: Record<string, unknown> }).params ?? {}),
+            arguments: {
+              ...((params.arguments as Record<string, unknown>) ?? {}),
+              query: rewritten,
+            },
+          },
+        };
+        bodyToForward = JSON.stringify(rewrittenReq);
+      }
+    }
+  }
+
   try {
     const resp = await fetch(url, {
       method: "POST",
@@ -122,7 +210,7 @@ for await (const rawLine of rl) {
         Authorization: `Bearer ${key}`,
         "X-Mneme-Source": "mcp",
       },
-      body: line,
+      body: bodyToForward,
     });
     if (resp.status === 204) continue; // notification — no response expected
 
