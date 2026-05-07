@@ -66,7 +66,11 @@ describe("Breaker.report", () => {
     expect(b.gate()).toEqual({ open: false });
   });
 
-  test("opens again on next failure burst after cooldown elapses", () => {
+  test("a single failure after cooldown re-opens the breaker (still-broken-upstream semantic)", () => {
+    // The point of the breaker isn't to give a still-failing upstream another
+    // `threshold` requests to repeat the same failure — it's to back off
+    // immediately if the failures resume. Without this, a permanently
+    // rate-limited LLM eats `threshold` extra requests per cooldown cycle.
     const clock = fakeClock();
     const b = new Breaker({ threshold: 2, pauseMs: 1000, clock: clock.read });
     b.report("failure");
@@ -76,7 +80,19 @@ describe("Breaker.report", () => {
     clock.advance(1001);
     expect(b.gate()).toEqual({ open: false });
 
-    // Counter was reset on open; needs a full fresh threshold to re-open.
+    // One more failure — failures was 2 before, now 3 (≥ threshold) → reopen.
+    b.report("failure");
+    expect(b.gate()).toEqual({ open: true, pauseMs: 1000 });
+  });
+
+  test("a success between cooldowns resets the count back to fresh", () => {
+    const clock = fakeClock();
+    const b = new Breaker({ threshold: 2, pauseMs: 1000, clock: clock.read });
+    b.report("failure");
+    b.report("failure");
+    clock.advance(1001);
+    b.report("success");
+    // Now needs the full threshold of failures again.
     b.report("failure");
     expect(b.gate()).toEqual({ open: false });
     b.report("failure");
@@ -88,7 +104,9 @@ describe("Breaker.report", () => {
     const b = new Breaker({ threshold: 2, pauseMs: 1000, clock: clock.read });
     expect(b.report("failure")).toEqual({ priorFailures: 0, openedNow: false });
     expect(b.report("failure")).toEqual({ priorFailures: 1, openedNow: true });
-    expect(b.report("success")).toEqual({ priorFailures: 0, openedNow: false });
+    // priorFailures = 2 because failures keeps counting through cooldown;
+    // success then resets the count.
+    expect(b.report("success")).toEqual({ priorFailures: 2, openedNow: false });
   });
 
   test("priorFailures captures state before the current call", () => {
@@ -109,7 +127,9 @@ describe("Breaker.report", () => {
     // A subsequent success then explicitly clears the state for the next
     // observer that introspects via gate transitions.
     const r = b.report("success");
-    expect(r.priorFailures).toBe(0);
+    // failures was 1 (the failure that opened the breaker; counter not
+    // reset on open under the still-broken-upstream semantic).
+    expect(r.priorFailures).toBe(1);
     expect(b.gate()).toEqual({ open: false });
   });
 });

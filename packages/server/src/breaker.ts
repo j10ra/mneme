@@ -10,8 +10,11 @@
 //
 // State machine:
 //   failures < threshold    → closed
-//   failures >= threshold   → open for pauseMs; failure counter resets so
-//                             the next window starts fresh after cooldown
+//   failures >= threshold   → open for pauseMs; failures keep counting so
+//                             a still-broken upstream re-opens immediately
+//                             on the first failure after cooldown rather
+//                             than burning another `threshold` requests
+//                             before tripping again
 //   any success             → resets both failures and openUntil
 
 export type BreakerGate =
@@ -64,9 +67,13 @@ export class Breaker {
     }
     this.failures += 1;
     if (this.failures >= this.threshold) {
+      const wasOpen = this.openUntil > this.clock();
       this.openUntil = this.clock() + this.pauseMs;
-      this.failures = 0;
-      return { priorFailures, openedNow: true };
+      // openedNow only fires on the closed→open transition. A failure
+      // reported while the breaker is still in cooldown extends the
+      // window but doesn't double-log. (Callers shouldn't hit this — they
+      // gate first — but defending against the misuse keeps logs sane.)
+      return { priorFailures, openedNow: !wasOpen };
     }
     return { priorFailures, openedNow: false };
   }
