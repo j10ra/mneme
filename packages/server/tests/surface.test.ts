@@ -13,12 +13,12 @@ const HAS_DB = Boolean(process.env.DATABASE_URL);
 
 describe.skipIf(!HAS_DB)("surface — SQL smoke (requires DATABASE_URL)", () => {
   afterAll(async () => {
-    const { sql } = await import("./db.ts");
+    const { sql } = await import("../src/db.ts");
     await sql.end({ timeout: 2 });
   });
 
   test("every query runs against an empty-repo path", async () => {
-    const { buildSurface } = await import("./surface.ts");
+    const { buildSurface } = await import("../src/surface.ts");
     // A repo guaranteed to have no memories. The five base queries plus
     // the supersede counter all execute against an empty result set; if
     // any column name is wrong, postgres throws.
@@ -34,7 +34,7 @@ describe.skipIf(!HAS_DB)("surface — SQL smoke (requires DATABASE_URL)", () => 
   });
 
   test("populated-data path runs computeDelta's count queries", async () => {
-    const { sql } = await import("./db.ts");
+    const { sql } = await import("../src/db.ts");
     // Discover any repo with at least one `summary` memory so computeDelta
     // proceeds past its no-summary early-return and actually executes the
     // captures + memories count queries. Without this branch, an
@@ -51,7 +51,7 @@ describe.skipIf(!HAS_DB)("surface — SQL smoke (requires DATABASE_URL)", () => 
       return;
     }
     const repo = rows[0]!.repo;
-    const { buildSurface } = await import("./surface.ts");
+    const { buildSurface } = await import("../src/surface.ts");
     const result = await buildSurface([repo], null);
     expect(result.repos).toEqual([repo]);
     // Delta must be non-null (we just confirmed a summary exists), which

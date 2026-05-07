@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Breaker } from "./breaker.ts";
+import { Breaker } from "../src/breaker.ts";
 
 function fakeClock(start = 1_000_000) {
   let now = start;

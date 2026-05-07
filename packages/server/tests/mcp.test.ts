@@ -4,14 +4,14 @@ import { describe, expect, mock, test } from "bun:test";
 // embedBatch synchronously inside the module — capture every call so we
 // can assert what reached the embedder.
 const calls: string[][] = [];
-mock.module("./embedder/index.ts", () => ({
+mock.module("../src/embedder/index.ts", () => ({
   embedBatch: async (texts: string[]) => {
     calls.push(texts);
     return texts.map(() => Array.from({ length: 4 }, () => 0));
   },
 }));
 
-const { substituteEmbeds } = await import("./mcp.ts");
+const { substituteEmbeds } = await import("../src/mcp.ts");
 
 describe("substituteEmbeds — secrets scrubbed before embedding", () => {
   test("redacts a JWT in embed()", async () => {

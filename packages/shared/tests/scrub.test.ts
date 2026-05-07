@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { scrub, scrubData } from "./scrub.ts";
+import { scrub, scrubData } from "../src/scrub.ts";
 
 describe("scrub - <private> tags", () => {
   test("strips a basic block", () => {
