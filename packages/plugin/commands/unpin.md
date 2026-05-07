@@ -12,7 +12,7 @@ Resolve $ARGUMENTS to a specific memory UUID before invoking the slash.
 
 1. **UUID passthrough.** If $ARGUMENTS matches `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`, pass it straight through.
 
-2. **Description.** Otherwise, search pinned memories matching the description. Use the `mneme.sql` MCP tool:
+2. **Description.** Otherwise, search pinned memories matching the description. Use the `mneme_sql` MCP tool:
 
    ```sql
    SELECT id, content, kind, repo, importance, created_at

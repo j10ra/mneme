@@ -57,7 +57,7 @@ flowchart LR
 
 **Your machines** run a small plugin. Hooks send what you do (prompts, tool calls, session summaries) to the server. A panel of slash commands (`/mneme:memory`, `/mneme:pin`, `/mneme:recall`, …) lets you write or query memory by hand.
 
-**The server** is one Bun process. It receives captures, stores them raw, and runs four background workers that turn them into structured, searchable memories. It exposes a single MCP tool (`mneme.sql`) so any AI agent on any harness can read.
+**The server** is one Bun process. It receives captures, stores them raw, and runs four background workers that turn them into structured, searchable memories. It exposes a single MCP tool (`mneme_sql`) so any AI agent on any harness can read.
 
 **The database** holds everything. Three small tables in plain Postgres. The vector index makes semantic search fast; the text index makes keyword search fast; the rest is JSON.
 

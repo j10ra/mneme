@@ -36,7 +36,7 @@ Mneme takes the best parts of four existing systems.
 | Contradiction | ❌ | ❌ | ❌ | Bitemporal triples (`valid_from` / `valid_to`) | Bitemporal supersede via `meta.superseded_by` (rule-based pass in nap, LLM pass in dream) |
 | Dedup | `UNIQUE(content_hash, session)` | SHA-256 fingerprint | composite chunk_id with model | file-level skip on mining + cosine gating in `add_drawer` | All four, additive |
 | In-session surface | ✅ Per-folder CLAUDE.md regen + SessionStart hook | ❌ pull-only via tool calls | partial (3-layer progressive retrieval) | partial (`wake-up` + hooks) | ✅ SessionStart pointer list — no files written |
-| Tool surface | ~3-4 MCP tools (`search`, `timeline`, `get_observations`) | 4 + 2 ChatGPT aliases | none direct (CLI + Python API + plugins) | ~20 MCP tools | One: `mneme.sql` + skill |
+| Tool surface | ~3-4 MCP tools (`search`, `timeline`, `get_observations`) | 4 + 2 ChatGPT aliases | none direct (CLI + Python API + plugins) | ~20 MCP tools | One: `mneme_sql` + skill |
 | Hook resilience | Always-on Bun daemon | n/a | n/a | n/a | Local outbox + retry on next session |
 | LLM in pipeline | Agent SDK summarisation at session boundaries | Optional metadata at insert | LLM compact via Haiku | Optional refinement | Coalesced 5-min batches per session |
 | Privacy | `<private>` tag stripping | Row-level security | not documented | not documented | Edge scrubber on every string field + `<private>` strip + `private` flag + provider self-host option |
@@ -49,14 +49,14 @@ Mneme takes the best parts of four existing systems.
 - **memsearch:** composite `chunk_id` with embedding model in the hash (safe re-embed migration), compact-as-new-file pattern (cluster summaries flow back as captures), hybrid dense + BM25.
 - **mempalace:** bitemporal pattern (`valid_to` close-out, `superseded_by`), the never-DELETE principle, dedup-as-gating-not-overwrite.
 
-**Where Mneme diverges:** none of the four ship importance/decay (`nap`), none ship LLM-driven clustering of past memories (`dream`), and all of them ship a multi-tool MCP surface where Mneme deliberately ships one (`mneme.sql`) plus a skill. The cross-machine + bitemporal + one-tool combination is what makes Mneme distinct.
+**Where Mneme diverges:** none of the four ship importance/decay (`nap`), none ship LLM-driven clustering of past memories (`dream`), and all of them ship a multi-tool MCP surface where Mneme deliberately ships one (`mneme_sql`) plus a skill. The cross-machine + bitemporal + one-tool combination is what makes Mneme distinct.
 
 ---
 
 ## 2. Design Principles (locked)
 
 1. **Three tables for v1.** Add a fourth only when an actual reader needs it. memsearch / mempalace shape: small surface, lots of derived behavior in functions and crons.
-2. **SQL is the read interface.** One MCP tool: `mneme.sql(query)`. Read-only, with an `embed()` macro for vector search. The skill teaches the agent to write the queries.
+2. **SQL is the read interface.** One MCP tool: `mneme_sql(query)`. Read-only, with an `embed()` macro for vector search. The skill teaches the agent to write the queries.
 3. **Captures are sacred.** Raw `captures` are immutable. All later phases are additive: new memory rows, updated `meta jsonb`, flipped `archived_at`. Bitemporal supersede via flags, never DELETE.
 4. **Progressive disclosure in the skill.** Skill description loaded at session start (~50 tokens). Body loaded when the agent decides Mneme is relevant. No memory bodies ever auto-injected into the system prompt.
 5. **Privacy at the edge.** `<private>` strip + secrets regex on every POST. Paid LLM providers only when extracting (no free tiers that train on prompts).
@@ -108,7 +108,7 @@ flowchart TD
     end
 
     subgraph Read[MCP: one tool]
-        M1[mneme.sql query<br/>read-only, embed macro]
+        M1[mneme_sql query<br/>read-only, embed macro]
     end
 
     subgraph Surface[Per-session surface]
@@ -162,7 +162,7 @@ Mneme is **provider-agnostic for LLM, embeddings, and host**. Concrete implement
 | Extraction LLM | Picker over `openrouter` (cloud, primary; configured `qwen-2.5-72b` for extract / `claude-sonnet-4` for dream) and `local` (fallback, OpenAI-compat at `compute.jalipalo.dev`) | Either tier swappable: drop a new file under `llm/providers/` and register in `pick.ts`. Per-pipeline limits live on each provider (extract chars/siblings; dream cluster chars), so the cloud path can be generous without breaking the local path's tunnel-window safety | Streaming SSE + `response_format: { type: "json_object" }` on both. Per-provider circuit breaker (3 fails → 5 min cooldown) flips the picker between them; cycle-level breaker on top pauses the entire worker if both sides fail. `LLM_PROVIDER_FORCE=local|openrouter` env overrides the picker for debug. Each memory's `meta` records `extractor_provider` + `extractor_model` (clusters: `distiller_*`) for provenance. |
 | Edge | Direct HTTPS or any reverse proxy (Caddy, nginx, Traefik, Cloudflare Tunnel) | Bearer-auth gate happens in the app, not the edge — any TLS-terminating front works. | Bind container ports `127.0.0.1` only when fronting with a tunnel; expose `0.0.0.0` when running behind a managed load balancer. |
 | API + worker host | Single Bun process | Railway, Fly.io, Render, DigitalOcean, a VPS, or a homelab VM — anything that runs Bun and reaches Postgres | Same Bun process serves Hono routes and runs the workers. Worker singleton is pinned to `globalThis` so `bun --hot` reloads don't multiply loops. The scheduler persists `next_run_at` to `_ops.worker_runs` so redeploys don't skip cycles. |
-| Read interface | MCP (one tool) + a skill | — | `mneme.sql` reads via the `mneme_reader` Postgres role. |
+| Read interface | MCP (one tool) + a skill | — | `mneme_sql` reads via the `mneme_reader` Postgres role. |
 
 Cost depends entirely on host + provider choices. See §13 for the three reference scenarios (self-hosted everything → free, mixed cloud → ~$5/mo, BYO API keys → $5/mo + provider charges).
 
@@ -390,10 +390,10 @@ sequenceDiagram
 - `/mneme:pin <text>` — write a pinned memory directly. POSTs to `/api/memory` (a different endpoint that bypasses extract) with `pinned=true`, `kind=note`, `importance=1.0`. Creates a synthetic capture for provenance plus the memory in one transaction; embed worker vectorises it within ~2s. The chunk_id collision path upserts (merges meta, takes max importance) so re-pinning the same fact is idempotent.
 - `/mneme:pin <uuid>` — actuate pin on an existing memory. POSTs to `/api/capture` with `raw_meta.kind='pin', target=<uuid>, value=true`. The endpoint flips `meta.pinned` synchronously.
 - `/mneme:unpin <uuid>` — POSTs to `/api/capture` with `raw_meta.kind='pin', value=false`. Memory and importance value are preserved; the only mechanical effects are (a) it drops out of the surface aggregator's pinned block, (b) on the next nap cycle it loses `PIN_FLOOR=0.5` protection and decays toward `FLOOR=0.05`. **Not deletion** — recall still finds it. For real removal use `archived_at` (no slash for it; manual SQL).
-- `/mneme:unpin <description>` — agent-resolved. Slash command's prompt instructs the agent to query `mneme.sql` for pinned memories matching the description, confirm with the user, then invoke the slash with the resolved uuid.
-- `/mneme:pinned [scope]` — list currently pinned memories. Pure read via `mneme.sql`; renders each row with its full UUID for easy copy into `/mneme:unpin`.
-- `/mneme:recall <query>` — agent-driven hybrid recall against `mneme.sql`. The slash prompt instructs the agent to run the default scoring template (cosine 0.55 + ts_rank 0.35 + recency 0.10) and render the top hits.
-- `/mneme:summarise [<scope>]` — on-demand summary of recent in-scope memories. Read-only synthesis pass via the agent + `mneme.sql`. Persistent cluster summaries are produced by the dream worker (§6.4).
+- `/mneme:unpin <description>` — agent-resolved. Slash command's prompt instructs the agent to query `mneme_sql` for pinned memories matching the description, confirm with the user, then invoke the slash with the resolved uuid.
+- `/mneme:pinned [scope]` — list currently pinned memories. Pure read via `mneme_sql`; renders each row with its full UUID for easy copy into `/mneme:unpin`.
+- `/mneme:recall <query>` — agent-driven hybrid recall against `mneme_sql`. The slash prompt instructs the agent to run the default scoring template (cosine 0.55 + ts_rank 0.35 + recency 0.10) and render the top hits.
+- `/mneme:summarise [<scope>]` — on-demand summary of recent in-scope memories. Read-only synthesis pass via the agent + `mneme_sql`. Persistent cluster summaries are produced by the dream worker (§6.4).
 - `/mneme:setup`, `/mneme:machines`, `/mneme:revoke` — auth surface. See §9.5.
 
 #### 6.1.1 Agent-resolution pattern for slash commands
@@ -408,7 +408,7 @@ Example: user types `/mneme:pin this homelab finding`. The slash command's promp
 5. Show the user the exact sentence and ask "Pin this? (y/n)" before invoking.
 6. Invoke `bun slash.ts pin "<resolved sentence-or-uuid>"`.
 
-This split keeps the slash binary minimal (no LLM logic, no context window, no MCP access required) while letting the agent do what it's already good at — reading context and writing precise prose. The same pattern applies to `unpin <description>` (agent searches `mneme.sql`, confirms, invokes with uuid) and `memory <reference>` (agent synthesises a paragraph from context, invokes with that text).
+This split keeps the slash binary minimal (no LLM logic, no context window, no MCP access required) while letting the agent do what it's already good at — reading context and writing precise prose. The same pattern applies to `unpin <description>` (agent searches `mneme_sql`, confirms, invokes with uuid) and `memory <reference>` (agent synthesises a paragraph from context, invokes with that text).
 
 ### 6.2 Process (extract + embed, async per coalesced batch)
 
@@ -513,9 +513,9 @@ flowchart TD
 
 **Cost per cycle:** ~5-15 clusters per night × ~3k input tokens × ~200 output tokens. Well under any homelab budget. Unlike extract, dream isn't latency-sensitive (it's a 2 AM job), so timeouts can be generous (`LLM_TIMEOUT_MS` is fine at the standard 120s; large clusters might need bigger but capped at MAX_CLUSTER_SIZE keeps prompts predictable).
 
-### 6.5 Recall (read, via `mneme.sql`)
+### 6.5 Recall (read, via `mneme_sql`)
 
-The MCP server exposes one tool, `mneme.sql(query)`. Before executing, the server scans the SQL for `embed('text')` calls, embeds each via the configured embedder provider (batched if multiple appear in one query), and substitutes the vector literal. Then it executes against a read-only Postgres role with a 5s `statement_timeout` and a 1MB result cap.
+The MCP server exposes one tool, `mneme_sql(query)`. Before executing, the server scans the SQL for `embed('text')` calls, embeds each via the configured embedder provider (batched if multiple appear in one query), and substitutes the vector literal. Then it executes against a read-only Postgres role with a 5s `statement_timeout` and a 1MB result cap.
 
 ```mermaid
 sequenceDiagram
@@ -551,7 +551,7 @@ LIMIT 8;
 
 Three-component score: cosine semantic similarity (55%), keyword `ts_rank` (35%), and an exponential recency boost with a 7-day characteristic period (10%). Older strong matches still win on topic, but recent context gets a fair lane against deep history.
 
-No `private` filter in the query: the MCP reader role has an RLS policy of `USING (private = false)`, so `mneme.sql` physically can't return private rows. See §9.5 and [#13](https://github.com/j10ra/mneme/issues/13) for the deferred per-machine-recall fix.
+No `private` filter in the query: the MCP reader role has an RLS policy of `USING (private = false)`, so `mneme_sql` physically can't return private rows. See §9.5 and [#13](https://github.com/j10ra/mneme/issues/13) for the deferred per-machine-recall fix.
 
 **What recall doesn't use yet:**
 - `importance` is computed and decayed by nap but not factored into the recall score directly. Surface (§6.6) uses it heavily; recall doesn't. Adding `+ 0.05 * importance` would tilt scores toward higher-importance memories at retrieval time. Not done — current recall feels topical enough without it; revisit if recall surfaces low-importance noise.
@@ -589,7 +589,7 @@ Non-`SessionStart` events (UserPromptSubmit, PostToolUse, Stop, PreCompact) skip
 
 Hook POSTs `{ machine_id, repos: string[], session_id }` to `/api/session/start`. The aggregator (`packages/server/src/surface.ts`) builds 4 lists by querying `memories` with `repo = ANY(repos)`:
 
-All four queries also gate on `(private = false OR machine_id = $caller_machine_id)`, where `$caller_machine_id` is server-stamped from the bearer token (admin tokens substitute `null`, which only matches public rows). This is the only path through which a machine can recall its own private memories — the MCP `mneme.sql` tool is public-only by RLS (§9.5).
+All four queries also gate on `(private = false OR machine_id = $caller_machine_id)`, where `$caller_machine_id` is server-stamped from the bearer token (admin tokens substitute `null`, which only matches public rows). This is the only path through which a machine can recall its own private memories — the MCP `mneme_sql` tool is public-only by RLS (§9.5).
 
 | List | Filter (privacy gate omitted for brevity) | Cap |
 |---|---|---|
@@ -680,7 +680,7 @@ sequenceDiagram
 `/api/session/start` is harness-agnostic. Any caller posts `repos: string[]` and gets back the structured payload + rendered markdown:
 
 - **Claude Code** — SessionStart hook (this section).
-- **Codex / Cursor / OpenCode** ([#6](https://github.com/j10ra/mneme/issues/6)) — first `mneme.sql` response from MCP prepends `rendered` as a preamble (no SessionStart hook concept in those harnesses).
+- **Codex / Cursor / OpenCode** ([#6](https://github.com/j10ra/mneme/issues/6)) — first `mneme_sql` response from MCP prepends `rendered` as a preamble (no SessionStart hook concept in those harnesses).
 - **CLI** — `mneme surface` (future, prints `rendered` to terminal for manual check).
 - **Any HTTP client** — same payload, returns the same JSON.
 
@@ -749,7 +749,7 @@ The skill encourages adding repo filters explicitly:
 Two paths, two enforcement points:
 
 - **SessionStart surface** (`/api/session/start`, runs as the writer role): server-built queries gate on `(private = false OR machine_id = $caller_machine_id)`, where `$caller_machine_id` is server-stamped from the bearer token. A machine's private rows surface in its own session and nowhere else.
-- **MCP `mneme.sql`** (runs as `mneme_reader`): RLS policy `USING (private = false)` makes private rows physically unreachable. No GUC, no agent-controllable surface — the role itself can't see them. The skill no longer teaches a `WHERE private = ... OR machine_id = ...` filter because the role enforces it. Per-machine private recall via MCP is deferred ([#13](https://github.com/j10ra/mneme/issues/13)); for now, machines can't recall their own private memories through `mneme.sql`.
+- **MCP `mneme_sql`** (runs as `mneme_reader`): RLS policy `USING (private = false)` makes private rows physically unreachable. No GUC, no agent-controllable surface — the role itself can't see them. The skill no longer teaches a `WHERE private = ... OR machine_id = ...` filter because the role enforces it. Per-machine private recall via MCP is deferred ([#13](https://github.com/j10ra/mneme/issues/13)); for now, machines can't recall their own private memories through `mneme_sql`.
 
 ---
 
@@ -793,7 +793,7 @@ Mneme runs as a **single Bun + Hono service** on whatever host is convenient —
 | `/api/capture` | POST | write | Bearer | `capture` | Hooks, slash actuations, CLI, HTTP. Scrub → sha256 dedup → enqueue extract job. |
 | `/api/memory` | POST | write | Bearer | `capture` | Direct-write a memory bypassing extract. Used by `/mneme:pin <text>`. Creates synthetic capture for provenance + memory in one tx; embed runs ~2s later. |
 | `/api/session/start` | POST | read | Bearer | `read` | Pointer-list aggregator (§6.6) |
-| `/mcp` | POST | read | Bearer | `mcp` | MCP JSON-RPC dispatcher for `mneme.sql` (read-only) |
+| `/mcp` | POST | read | Bearer | `mcp` | MCP JSON-RPC dispatcher for `mneme_sql` (read-only) |
 
 Auth + scope details in §9.5.
 
@@ -1093,7 +1093,7 @@ claude-mem's real differentiation isn't "memory in a vector DB." It's a small se
 **What we improve over claude-mem:**
 - **Cross-machine source of truth.** claude-mem stores in `~/.claude-mem/` per laptop; Mneme stores in shared Postgres so a fact written on machine A surfaces on machine B at next SessionStart, no sync step.
 - **Bitemporal supersede via `meta.superseded_by`.** claude-mem doesn't model contradiction. Mneme has both detection (rule-based in nap, LLM-based in dream when on cloud) and recall rank-down (× 0.3 score penalty for superseded rows).
-- **One-tool MCP via SQL.** claude-mem ships ~3-4 specialised tools (`search`, `timeline`, `get_observations`); Mneme ships one read primitive (`mneme.sql`) plus a skill that teaches query shapes. Schema changes update the skill, not the MCP surface.
+- **One-tool MCP via SQL.** claude-mem ships ~3-4 specialised tools (`search`, `timeline`, `get_observations`); Mneme ships one read primitive (`mneme_sql`) plus a skill that teaches query shapes. Schema changes update the skill, not the MCP surface.
 - **Importance / decay.** claude-mem keeps everything at equal weight; Mneme's `nap` worker decays unpinned memories on a 30-day half-life, floors pinned ones at 0.5, and shadows exact dups — so recall surfaces stay clean over months.
 - **Consolidation.** claude-mem's session-boundary summarisation is per-session; Mneme's `dream` worker clusters across sessions, machines, and weeks, distilling cluster summaries that outrank raw captures for broad queries.
 
@@ -1139,7 +1139,7 @@ Phases 0-7 are shipped — the system is fully usable across machines today. The
 
 **Phase 1 — Capture.** `POST /api/capture` with sha256 + machine_id dedup. Edge scrubber: `<private>...</private>` blocks plus 11 secret patterns (AWS keys, GitHub PATs classic + fine, OpenAI / Anthropic keys, generic API keys, Slack tokens, JWT, Bearer headers, SSH private keys, embedded `user:token@host` URLs). Hash computed on cleaned content; `_ops.spans` input/output also scrubbed. Scrubber widened to **every string field** (content, repo, source, hostname, harness, agent, session_id, topics, raw_meta) after a credential leaked through `repo`. `ingest_jobs` enqueued at capture time.
 
-**Phase 2 — Recall.** `mneme_reader` Postgres role (SELECT-only on `public.*`, blocked from `_ops.*`); separate connection pool. `/mcp` JSON-RPC dispatcher (no SDK dep). Single tool `mneme.sql(query)` with five safety layers: comment stripping, single-statement check, SELECT/WITH-only regex (rejects 17+ keywords), `embed('text')` macro substitution (batched), auto-`LIMIT 200`, 5s `statement_timeout`, 1MB result cap. `mneme:using-mneme` skill at `packages/plugin/skills/using-mneme/SKILL.md`.
+**Phase 2 — Recall.** `mneme_reader` Postgres role (SELECT-only on `public.*`, blocked from `_ops.*`); separate connection pool. `/mcp` JSON-RPC dispatcher (no SDK dep). Single tool `mneme_sql(query)` with five safety layers: comment stripping, single-statement check, SELECT/WITH-only regex (rejects 17+ keywords), `embed('text')` macro substitution (batched), auto-`LIMIT 200`, 5s `statement_timeout`, 1MB result cap. `mneme:using-mneme` skill at `packages/plugin/skills/using-mneme/SKILL.md`.
 
 **Phase 3 — Hooks and plugin.** Claude Code plugin (installable via `/plugin marketplace add` + `/plugin install`). Bundled local stdio MCP proxy that translates JSON-RPC → `POST /mcp`, answering handshakes locally so the MCP attaches even when upstream is down. `PostToolUse` + `UserPromptSubmit` → capture. `Stop` + `PreCompact` → session digest + per-turn assistant transcript. `SessionStart` hook drains outbox + calls `/api/session/start` + emits surface markdown. Slash commands: `/setup`, `/memory`, `/recall`, `/summarise`, `/pin`, `/unpin`, `/pinned`, `/machines`, `/revoke`. Local outbox at `~/.mneme/outbox/` for failed captures.
 

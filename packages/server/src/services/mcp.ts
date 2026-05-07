@@ -38,10 +38,15 @@ const ERR_INVALID_PARAMS = -32602;
 const ERR_INTERNAL = -32603;
 
 // ---------------------------------------------------------------------------
-// Tool: mneme.sql
+// Tool: mneme_sql (was mneme.sql before 1.0.58 — the dot tripped Claude
+// Code's tool-name dispatcher in some agent contexts. Server still
+// accepts both names in tools/call so old plugin caches keep working
+// during the rollout window.)
 // ---------------------------------------------------------------------------
+const TOOL_NAME = "mneme_sql";
+const LEGACY_TOOL_NAME = "mneme.sql";
 const TOOL_DEF = {
-  name: "mneme.sql",
+  name: TOOL_NAME,
   description:
     "Execute a read-only SELECT against Mneme's Postgres. " +
     "Use embed('text') macro for semantic search (substituted with a 1024-dim vector before execution). " +
@@ -186,7 +191,7 @@ export async function dispatch(req: JsonRpcRequest): Promise<JsonRpcResponse | n
     case "tools/call": {
       const name = req.params?.name as string | undefined;
       const args = (req.params?.arguments ?? {}) as Record<string, unknown>;
-      if (name !== "mneme.sql") {
+      if (name !== TOOL_NAME && name !== LEGACY_TOOL_NAME) {
         return err(id, ERR_METHOD_NOT_FOUND, `unknown tool: ${name}`);
       }
       const query = args.query;

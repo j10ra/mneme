@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "mneme",
-      "description": "Personal memory across machines, harnesses, and AI providers. SQL-first MCP via mneme.sql, auto-capture hooks, slash commands, in-session pointer surface.",
+      "description": "Personal memory across machines, harnesses, and AI providers. SQL-first MCP via mneme_sql, auto-capture hooks, slash commands, in-session pointer surface.",
       "category": "productivity",
       "source": "./packages/plugin"
     }

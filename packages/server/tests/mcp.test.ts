@@ -78,7 +78,7 @@ describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () =
       id: 1,
       method: "tools/call",
       params: {
-        name: "mneme.sql",
+        name: "mneme_sql",
         arguments: { query: "SELECT 1 AS one" },
       },
     })) as { result: { content: { text: string }[]; isError: boolean } };
@@ -101,7 +101,7 @@ describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () =
       id: 2,
       method: "tools/call",
       params: {
-        name: "mneme.sql",
+        name: "mneme_sql",
         arguments: {
           query:
             "SELECT id, kind, importance, content, repo, machine_id, created_at, archived_at, meta FROM memories WHERE FALSE",
@@ -118,7 +118,7 @@ describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () =
       id: 3,
       method: "tools/call",
       params: {
-        name: "mneme.sql",
+        name: "mneme_sql",
         arguments: { query: "INSERT INTO memories (content) VALUES ('x')" },
       },
     })) as { result: { content: { text: string }[]; isError: boolean } };

@@ -88,7 +88,7 @@ async function substituteEmbedsViaDaemon(
 }
 
 const TOOL_DEF = {
-  name: "mneme.sql",
+  name: "mneme_sql",
   description:
     "Execute a read-only SELECT against Mneme's Postgres. " +
     "Use embed('text') macro for semantic search (substituted with a 1024-dim vector before execution). " +
@@ -204,7 +204,7 @@ for await (const rawLine of rl) {
       | { name?: unknown; arguments?: { query?: unknown } }
       | undefined;
     const sql =
-      params && params.name === "mneme.sql" && typeof params.arguments?.query === "string"
+      params && params.name === "mneme_sql" && typeof params.arguments?.query === "string"
         ? (params.arguments.query as string)
         : null;
     if (sql) {

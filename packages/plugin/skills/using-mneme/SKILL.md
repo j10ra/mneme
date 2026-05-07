@@ -1,11 +1,11 @@
 ---
 name: using-mneme
-description: How to query Mneme — your cross-machine memory store. SQL-first via the mneme.sql tool. Use embed('text') for semantic search, ts_rank for keyword. Three tables (captures, memories, ingest_jobs). The embed() macro is auto-substituted with a 1024-dim vector from the configured embedder before execution. Surface rows show an [8-char id prefix] you can pivot from with `id::text LIKE '<prefix>%'`.
+description: How to query Mneme — your cross-machine memory store. SQL-first via the mneme_sql tool. Use embed('text') for semantic search, ts_rank for keyword. Three tables (captures, memories, ingest_jobs). The embed() macro is auto-substituted with a 1024-dim vector from the configured embedder before execution. Surface rows show an [8-char id prefix] you can pivot from with `id::text LIKE '<prefix>%'`.
 ---
 
 # Mneme: cross-machine memory via SQL
 
-Mneme stores your memories in Postgres + pgvector. The agent talks to it through one tool: `mneme.sql(query)`. Read-only. SELECT only. Auto-`LIMIT 200`. 5s statement timeout. 1MB result cap.
+Mneme stores your memories in Postgres + pgvector. The agent talks to it through one tool: `mneme_sql(query)`. Read-only. SELECT only. Auto-`LIMIT 200`. 5s statement timeout. 1MB result cap.
 
 ## Schema
 
@@ -18,7 +18,7 @@ Mneme stores your memories in Postgres + pgvector. The agent talks to it through
 | `source` | text | `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`, `manual:/memory`, `manual:/api/memory`. (Dream writes directly to `memories`, not through `/api/capture`, so no `dream` source on captures.) |
 | `machine_id`, `hostname`, `repo`, `harness`, `agent`, `session_id` | text | scope |
 | `topics` | text[] | optional tags |
-| `private` | bool | true rows are invisible via `mneme.sql`. The MCP reader role has an RLS policy of `USING (private = false)`, so private rows are physically unreachable from this tool — no `WHERE private = false` is needed and no filter you write can surface them. The SessionStart surface uses a separate server-side path that applies a machine-aware filter. |
+| `private` | bool | true rows are invisible via `mneme_sql`. The MCP reader role has an RLS policy of `USING (private = false)`, so private rows are physically unreachable from this tool — no `WHERE private = false` is needed and no filter you write can surface them. The SessionStart surface uses a separate server-side path that applies a machine-aware filter. |
 | `raw_meta` | jsonb | source-specific extras |
 | `captured_at`, `archived_at` | timestamptz | |
 | `UNIQUE(content_sha256, machine_id)` | | |
@@ -219,7 +219,7 @@ ORDER BY last_active DESC LIMIT 10;
 - `machine_id = '<uuid>'` — same machine only
 - `archived_at IS NULL` — alive memories only (almost always include this)
 
-Privacy is enforced at the role level — `mneme.sql` physically can't return rows with `private = true`. You don't need (and shouldn't add) a `private = false` filter in your queries.
+Privacy is enforced at the role level — `mneme_sql` physically can't return rows with `private = true`. You don't need (and shouldn't add) a `private = false` filter in your queries.
 
 ## What the tool will *not* run
 
@@ -229,4 +229,4 @@ Privacy is enforced at the role level — `mneme.sql` physically can't return ro
 
 ## Writing memories
 
-Don't use `mneme.sql` for writes. Use the slash command `/memory <text>`, which POSTs to `/api/capture` with proper scrubbing, dedup, and job enqueuing. Hooks fire automatically during sessions.
+Don't use `mneme_sql` for writes. Use the slash command `/memory <text>`, which POSTs to `/api/capture` with proper scrubbing, dedup, and job enqueuing. Hooks fire automatically during sessions.

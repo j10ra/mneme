@@ -6,7 +6,7 @@ allowed-tools: mcp__plugin_mneme_mneme__mneme_sql
 
 Show the user what's currently pinned in Mneme. Optional scope hint: $ARGUMENTS
 
-Use the `mneme.sql` MCP tool to fetch all pinned memories. If $ARGUMENTS looks like a repo (contains `/`), filter by `repo`. Otherwise list everything pinned.
+Use the `mneme_sql` MCP tool to fetch all pinned memories. If $ARGUMENTS looks like a repo (contains `/`), filter by `repo`. Otherwise list everything pinned.
 
 ```sql
 SELECT id, content, kind, repo, importance, created_at

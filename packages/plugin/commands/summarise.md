@@ -6,7 +6,7 @@ allowed-tools: mcp__plugin_mneme_mneme__mneme_sql
 
 The user wants a summary of recent Mneme memories. Optional scope hint: $ARGUMENTS
 
-Use the `mneme.sql` MCP tool to fetch recent memories.
+Use the `mneme_sql` MCP tool to fetch recent memories.
 
 If $ARGUMENTS looks like a repo name (contains `/`) or matches a known scope, filter by `repo`. If it looks like a topic word, also try matching against `topics` array or `tsv`. Otherwise just take the most recent.
 

@@ -8,7 +8,7 @@ The user wants to recall Mneme memories about:
 
 $ARGUMENTS
 
-Use the `mneme.sql` MCP tool with the default hybrid recall pattern from the `using-mneme` skill (load the skill body if you haven't already).
+Use the `mneme_sql` MCP tool with the default hybrid recall pattern from the `using-mneme` skill (load the skill body if you haven't already).
 
 Run a query like this (substitute the query text into both `embed(...)` and `websearch_to_tsquery(...)`; escape single quotes by doubling them if needed):
 
