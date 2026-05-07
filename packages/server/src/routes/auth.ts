@@ -18,7 +18,7 @@
 
 import { Hono } from "hono";
 import { currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
-import { sql, sha256Hex } from "./db.ts";
+import { sql, sha256Hex } from "../infra/db.ts";
 
 function generateToken(machineName: string): string {
   const safeName = machineName.replace(/[^a-z0-9-]/gi, "-").toLowerCase().slice(0, 32);

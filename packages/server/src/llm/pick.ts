@@ -26,9 +26,9 @@
 //   - blank / unset                  → auto
 
 import { Logger } from "@mneme/core";
-import { Breaker } from "../breaker.ts";
-import { PICKER_COOLDOWN_MS, PICKER_FAILURE_THRESHOLD } from "../config.ts";
-import { env } from "../env.ts";
+import { Breaker } from "../lib/breaker.ts";
+import { PICKER_COOLDOWN_MS, PICKER_FAILURE_THRESHOLD } from "../infra/config.ts";
+import { env } from "../infra/env.ts";
 import * as local from "./providers/local.ts";
 import * as openrouter from "./providers/openrouter.ts";
 import type {

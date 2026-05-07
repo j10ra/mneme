@@ -5,7 +5,7 @@
 // pointing LLM_URL at it.
 
 import { Logger, mnemeFn } from "@mneme/core";
-import { env } from "../../env.ts";
+import { env } from "../../infra/env.ts";
 import { CLUSTER_PROMPT, SYSTEM_PROMPT } from "../prompt.ts";
 import {
   type ClusterDistillation,

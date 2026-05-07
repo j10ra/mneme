@@ -1,12 +1,12 @@
 import { Logger, mnemeFn } from "@mneme/core";
-import { Breaker } from "../breaker.ts";
+import { Breaker } from "../lib/breaker.ts";
 import {
   EXTRACT_BREAKER_PAUSE_MS,
   EXTRACT_BREAKER_THRESHOLD,
   EXTRACT_COALESCE_WINDOW,
   EXTRACT_STALE_RUNNING,
-} from "../config.ts";
-import { sha256Hex, sql } from "../db.ts";
+} from "../infra/config.ts";
+import { sha256Hex, sql } from "../infra/db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
 import { pickExtract } from "../llm/pick.ts";
 import type { Observation } from "../llm/types.ts";

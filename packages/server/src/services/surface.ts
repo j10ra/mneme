@@ -1,5 +1,5 @@
 import { mnemeFn } from "@mneme/core";
-import { sql } from "./db.ts";
+import { sql } from "../infra/db.ts";
 
 type SurfaceItem = {
   id: string;

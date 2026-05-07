@@ -1,5 +1,5 @@
 import { mnemeFn } from "@mneme/core";
-import { sql } from "../db.ts";
+import { sql } from "../infra/db.ts";
 
 /** Periodic SELECT 1 against Supabase. Free-tier projects pause after long
  *  inactivity windows; this guarantees a heartbeat even if the ingest queue

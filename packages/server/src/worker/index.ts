@@ -1,5 +1,5 @@
 import { Logger } from "@mneme/core";
-import { EMBED_INTERVAL_MS, EXTRACT_INTERVAL_MS } from "../config.ts";
+import { EMBED_INTERVAL_MS, EXTRACT_INTERVAL_MS } from "../infra/config.ts";
 import { runDreamOnce } from "./dream.ts";
 import { runEmbedOnce, type EmbedResult } from "./embed.ts";
 import { runExtractOnce, type ExtractResult } from "./extract.ts";

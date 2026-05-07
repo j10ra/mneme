@@ -1,6 +1,6 @@
 import { Logger, mnemeFn } from "@mneme/core";
-import { EMBED_BATCH_SIZE, EMBED_STALE_RUNNING } from "../config.ts";
-import { sql } from "../db.ts";
+import { EMBED_BATCH_SIZE, EMBED_STALE_RUNNING } from "../infra/config.ts";
+import { sql } from "../infra/db.ts";
 import { embedBatch } from "../embedder/index.ts";
 
 type LockedRow = {

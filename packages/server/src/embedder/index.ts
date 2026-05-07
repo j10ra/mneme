@@ -8,7 +8,7 @@
 // Switching to a different-dim provider requires a `vector(N)` migration on
 // the memories.embedding column AND a re-embed pass for existing rows.
 
-import { env } from "../env.ts";
+import { env } from "../infra/env.ts";
 import * as local from "./local.ts";
 
 const PROVIDERS = {

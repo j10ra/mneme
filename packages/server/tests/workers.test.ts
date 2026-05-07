@@ -24,7 +24,7 @@ const HAS_DB = Boolean(process.env.DATABASE_URL);
 
 describe.skipIf(!HAS_DB)("worker SQL smoke (requires DATABASE_URL)", () => {
   test("runExtractOnce: lock SELECT runs against an empty queue", async () => {
-    const { sql } = await import("../src/db.ts");
+    const { sql } = await import("../src/infra/db.ts");
     // Bail if any extract job is pending — we don't want this test to
     // trigger a real LLM call against Boss's openrouter / local provider.
     // The SELECT itself still validates whenever the queue happens to be
@@ -49,7 +49,7 @@ describe.skipIf(!HAS_DB)("worker SQL smoke (requires DATABASE_URL)", () => {
   });
 
   test("runEmbedOnce: lock SELECT runs against an empty queue", async () => {
-    const { sql } = await import("../src/db.ts");
+    const { sql } = await import("../src/infra/db.ts");
     const rows = await sql<{ n: string }[]>`
       SELECT COUNT(*)::text AS n FROM ingest_jobs
       WHERE phase = 'embed'

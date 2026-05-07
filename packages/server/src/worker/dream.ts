@@ -7,8 +7,8 @@ import {
   SUPERSEDE_LLM_ADJACENT_AGE_WINDOW,
   SUPERSEDE_LLM_ADJACENT_COSINE_MAX,
   SUPERSEDE_LLM_BATCH_MAX_MEMBERS,
-} from "../config.ts";
-import { sha256Hex, sql } from "../db.ts";
+} from "../infra/config.ts";
+import { sha256Hex, sql } from "../infra/db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
 import { pickDream } from "../llm/pick.ts";
 import type { Kind, SupersedeCandidate } from "../llm/types.ts";

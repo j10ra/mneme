@@ -8,7 +8,7 @@
 //   startScheduler()  // single setInterval ticking every 60s
 
 import { Logger } from "@mneme/core";
-import { sql } from "../db.ts";
+import { sql } from "../infra/db.ts";
 
 const TICK_MS = 60_000;
 

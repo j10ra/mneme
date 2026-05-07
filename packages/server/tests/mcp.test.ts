@@ -19,7 +19,7 @@ mock.module("../src/embedder/index.ts", () => ({
   EMBEDDER_DIM: 4,
 }));
 
-const { substituteEmbeds } = await import("../src/mcp.ts");
+const { substituteEmbeds } = await import("../src/services/mcp.ts");
 
 describe("substituteEmbeds — secrets scrubbed before embedding", () => {
   test("redacts a JWT in embed()", async () => {
@@ -72,7 +72,7 @@ const HAS_DB = Boolean(process.env.DATABASE_URL);
 
 describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () => {
   test("benign SELECT executes through the reader pool", async () => {
-    const { handleHttp } = await import("../src/mcp.ts");
+    const { handleHttp } = await import("../src/services/mcp.ts");
     const resp = (await handleHttp({
       jsonrpc: "2.0",
       id: 1,
@@ -95,7 +95,7 @@ describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () =
     // (RLS policy drift, reader role missing SELECT grant on a column)
     // that surface.test.ts doesn't cover because surface uses the writer
     // pool.
-    const { handleHttp } = await import("../src/mcp.ts");
+    const { handleHttp } = await import("../src/services/mcp.ts");
     const resp = (await handleHttp({
       jsonrpc: "2.0",
       id: 2,
@@ -112,7 +112,7 @@ describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () =
   });
 
   test("INSERT is rejected by the FORBIDDEN_RE gate before hitting the DB", async () => {
-    const { handleHttp } = await import("../src/mcp.ts");
+    const { handleHttp } = await import("../src/services/mcp.ts");
     const resp = (await handleHttp({
       jsonrpc: "2.0",
       id: 3,

@@ -4,7 +4,7 @@
 // schema). Any TEI-compatible endpoint works by changing EMBEDDER_URL.
 
 import { Logger, mnemeFn } from "@mneme/core";
-import { env } from "../env.ts";
+import { env } from "../infra/env.ts";
 
 export const EMBEDDER_MODEL = env.EMBEDDER_MODEL;
 export const EMBEDDER_DIM = 1024;

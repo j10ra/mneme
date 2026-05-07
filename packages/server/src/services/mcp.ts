@@ -4,8 +4,8 @@
 
 import { Logger, mnemeFn } from "@mneme/core";
 import { scrub } from "@mneme/shared";
-import { readerSql } from "./db.ts";
-import { embedBatch } from "./embedder/index.ts";
+import { readerSql } from "../infra/db.ts";
+import { embedBatch } from "../embedder/index.ts";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_NAME = "mneme";

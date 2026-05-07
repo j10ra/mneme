@@ -17,7 +17,7 @@
 // per-model differences.
 
 import { Logger, mnemeFn } from "@mneme/core";
-import { env } from "../../env.ts";
+import { env } from "../../infra/env.ts";
 import { CLUSTER_PROMPT, SUPERSEDE_PROMPT, SYSTEM_PROMPT } from "../prompt.ts";
 import {
   type ClusterDistillation,

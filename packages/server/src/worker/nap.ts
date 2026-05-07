@@ -10,8 +10,8 @@ import {
   SUPERSEDE_RULE_COSINE_MAX,
   SUPERSEDE_RULE_KEYWORDS,
   SUPERSEDE_RULE_PER_CYCLE_CAP,
-} from "../config.ts";
-import { sql } from "../db.ts";
+} from "../infra/config.ts";
+import { sql } from "../infra/db.ts";
 
 // Transient error patterns. These match upstream-flake messages worth retrying
 // after a grace window. Anything not matching is treated as content-related
