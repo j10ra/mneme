@@ -316,8 +316,14 @@ export async function writeClusters(
         distiller_model: "claude-sonnet",
       };
 
+      // null + ::vector cast yields NULL with the right type, so we
+      // can always pass the literal and cast unconditionally rather
+      // than nesting sql template fragments.
       const vectorLiteral = cluster.summary_embedding
         ? `[${cluster.summary_embedding.join(",")}]`
+        : null;
+      const embeddingModel = cluster.summary_embedding
+        ? "BAAI/bge-large-en-v1.5"
         : null;
       const [clusterRow] = await tx<{ id: string }[]>`
         INSERT INTO memories (
@@ -332,8 +338,7 @@ export async function writeClusters(
           '{}'::text[], false,
           to_tsvector('english', ${cluster.summary}),
           ${sql.json(meta as never)},
-          ${vectorLiteral === null ? null : sql`${vectorLiteral}::vector`},
-          ${vectorLiteral === null ? null : "BAAI/bge-large-en-v1.5"}
+          ${vectorLiteral}::vector, ${embeddingModel}
         )
         RETURNING id
       `;
