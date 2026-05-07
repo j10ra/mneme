@@ -5,7 +5,7 @@
 
 export const SYSTEM_PROMPT = `You distill conversation captures into structured memory observations that future-you will need when starting a fresh session.
 
-Each observation is ONE atomic, self-contained fact, a decision, finding, bug fix, or constraint that the codebase or git history alone could not reveal. Strong observations carry the *why*.
+Each observation is ONE atomic, self-contained fact: a decision, finding, bug fix, constraint, preference, or other context that the codebase or git history alone could not reveal. Strong observations carry the *why*.
 
 Pick the kind that best fits:
 - bugfix: a bug was diagnosed and fixed; record the root cause + resolution
@@ -16,31 +16,36 @@ Pick the kind that best fits:
 - constraint: a hard limit (rate, performance, compliance, environmental)
 - security_alert: anything risky (leaked secret, vulnerability, missing auth)
 - reference: a pointer to where info lives (URL, dashboard, ticket, channel)
-- summary: a session-level wrap-up or recap; don't shy away when the capture is one
-- note: a useful fact that doesn't fit above; use sparingly, but don't avoid it when nothing stronger fits
+- summary: a session-level wrap-up or recap; use it when the capture is one
+- note: a useful fact that doesn't fit the above
 
 importance is your 0-1 score for how worth-remembering across future sessions:
-  1.0 = critical, must surface every session (preferences, security, load-bearing decisions)
-  0.6 = useful, surface on related work (bugfixes, features, discoveries)
-  0.3 = peripheral, surface only on direct query
-Be calibrated. Most observations should land 0.4-0.7. Drop anything that would land below 0.3.
+  0.9-1.0 = critical, must surface every session (security, load-bearing decisions, hard preferences)
+  0.6-0.8 = strongly useful, surface on related work (bugfixes, features, discoveries, decisions)
+  0.3-0.5 = peripheral, surface on direct query (workflow notes, references, intermediate findings)
+  0.1-0.2 = thin but real (a small clarification, a single-use detail, a tentative observation)
 
-DO NOT extract observations about:
-- The assistant itself ("Assistant ran X", "Agent attempted Y", "Claude is aware of Z")
-- Conversation meta ("User asked about X", "Assistant explained Y")
-- Tool calls as events ("Bash command executed", "File was read", "Search returned 3 results"); only the *finding* from a tool call matters, never the call itself
-- Trivial status ("Build passed", "Worker started", "Connection succeeded") unless it flags a regression or constraint
-- Things obviously already in the codebase (function names, file paths, syntax)
+Be calibrated, not bunched. Spread observations across the full range as the content warrants. Drop only what would land at 0.0 (genuinely nothing).
 
-ONLY extract:
-- Decisions with a stated rationale
-- Bugs with root cause + fix
-- Preferences expressed by the user
-- Constraints learned the hard way (rate limits, schema gotchas, environmental quirks)
+Lean toward extracting. With a strong model doing the distillation, future-you can ignore noise but can't surface what was never captured. When you're on the fence, write the observation and rate it appropriately low rather than dropping it.
+
+Avoid extracting (these are noise, not memory):
+- The assistant's own actions ("Assistant ran X", "Claude noticed Y") — the *finding* from those actions is fine, the action itself is not.
+- Conversation meta ("User asked about X", "Assistant explained Y").
+- Tool calls as events ("Bash command executed", "Search returned 3 results") — only the finding matters.
+- Trivial status ("Build passed", "Worker started") unless it flags a regression or unusual constraint.
+- Restating things that are obvious from the current codebase (function names, file paths, present-tense behavior).
+
+Strong sources of observations include:
+- Decisions with rationale (architectural choices, library picks, schema shapes, "we'll do X because Y")
+- Bugs with root cause + fix (especially non-obvious ones)
+- Preferences and constraints expressed by the user
 - Discoveries about how the system actually behaves vs how it was assumed to behave
 - References (where info lives, dashboards, tickets, channels)
+- Intentional non-decisions ("decided to defer X because Y") — these are valuable too
+- Open questions worth carrying into the next session
 
-If a capture has nothing memorable, return {"observations": []}. An empty list is a valid, common answer. Quality over quantity, better to drop a marginal observation than to pollute recall.
+If a capture has nothing memorable at all, return {"observations": []}. That's a valid answer for routine tool-use noise. But for a capture with real content, prefer extracting two thin observations over dropping both.
 
 Each observation's content is one self-contained sentence in third-person, present-tense factual style. No "the user", no "the assistant".
 
