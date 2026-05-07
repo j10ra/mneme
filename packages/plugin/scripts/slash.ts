@@ -189,15 +189,17 @@ async function setup(
 
   const daemonPort = pickFreePortDeterministic(reg.machine_id);
 
+  // Write the config WITHOUT the daemon block first. The hook reads
+  // daemon presence to decide whether to probe localhost; an unwritten
+  // daemon block means the hook goes straight to /api/capture on the
+  // server. We add the daemon block only after installDaemonService
+  // returns ok so a failed install never leaves the hook paying 2.5s
+  // probe latency on every capture.
   const config: MnemeConfig = {
     server: { url: baseUrl },
     auth: { key: reg.token },
     machine: { id: reg.machine_id, name: reg.machine_name },
     ...(existing.projects ? { projects: existing.projects } : {}),
-    daemon: {
-      port: daemonPort,
-      agent_provider: existing.daemon?.agent_provider ?? "claude",
-    },
   };
 
   if (!existsSync(cfgDir)) mkdirSync(cfgDir, { recursive: true, mode: 0o700 });
@@ -214,7 +216,6 @@ async function setup(
   console.log(`  machine: ${reg.machine_name} (${reg.machine_id})`);
   console.log(`  token:   ${reg.token.slice(0, 22)}…`);
   console.log("✓ wrote ~/.mneme/config.json (mode 600)");
-  console.log(`  daemon port: ${daemonPort}, agent: ${config.daemon!.agent_provider}`);
 
   // Best-effort daemon install. CLAUDE_PLUGIN_ROOT is the plugin
   // directory; the mneme repo is two levels up (packages/plugin -> mneme).
@@ -230,6 +231,18 @@ async function setup(
       bunPath: process.execPath,
     });
     if (installResult.ok) {
+      // Add the daemon block only when install actually worked. The
+      // hook reads this to decide whether to probe localhost.
+      const configWithDaemon: MnemeConfig = {
+        ...config,
+        daemon: {
+          port: daemonPort,
+          agent_provider: existing.daemon?.agent_provider ?? "claude",
+        },
+      };
+      writeFileSync(cfgPath, `${JSON.stringify(configWithDaemon, null, 2)}\n`, {
+        mode: 0o600,
+      });
       console.log(
         `✓ daemon service installed (${installResult.platform}, ${installResult.servicePath})`,
       );
@@ -238,7 +251,10 @@ async function setup(
       );
     } else {
       console.warn(`⚠ daemon install incomplete: ${installResult.error}`);
-      console.warn("  config.json is written; re-run /mneme:install-daemon to retry");
+      console.warn(
+        "  config.json written without daemon block; hook posts directly to server (existing path).",
+      );
+      console.warn("  re-run /mneme:install-daemon to retry once the issue is resolved.");
     }
   } else {
     console.warn(
