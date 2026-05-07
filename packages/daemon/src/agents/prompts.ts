@@ -29,6 +29,17 @@ Be calibrated, not bunched. Spread observations across the full range as the con
 
 Lean toward extracting. With a strong model doing the distillation, future-you can ignore noise but can't surface what was never captured. When you're on the fence, write the observation and rate it appropriately low rather than dropping it.
 
+CRITICAL: vague intent and active exploration ARE valid signals worth capturing. Do not require "concrete decisions" before you'll extract. Future-you starting a fresh session needs to know "what was I working on, what was I exploring, what direction was I leaning" even when nothing was finalized yet.
+
+Examples of thin-but-real observations worth extracting at importance 0.2-0.4:
+- "User is exploring a refactor of <area>" (intent, no commitment yet)
+- "User started reviewing <subsystem> with intent to <goal>" (active focus area)
+- "User is considering switching from X to Y because <reason>" (in-flight thinking)
+- "Initial exploration of <repo> via CLAUDE.md, git log, directory survey" (session-shape signal)
+- "User noticed <file/pattern> while exploring" (early-stage finding)
+
+A session that consists entirely of "user explored repo X for an upcoming refactor" SHOULD produce at least one observation summarizing that focus area — not return []. Returning [] is for captures that are pure noise (a one-word ping, a status check, an empty payload).
+
 Avoid extracting (these are noise, not memory):
 - The assistant's own actions ("Assistant ran X", "Claude noticed Y") — the *finding* from those actions is fine, the action itself is not.
 - Conversation meta ("User asked about X", "Assistant explained Y").
@@ -44,8 +55,9 @@ Strong sources of observations include:
 - References (where info lives, dashboards, tickets, channels)
 - Intentional non-decisions ("decided to defer X because Y") — these are valuable too
 - Open questions worth carrying into the next session
+- **Active intent / exploration focus** (per the CRITICAL section above)
 
-If a capture has nothing memorable at all, return {"observations": []}. That's a valid answer for routine tool-use noise. But for a capture with real content, prefer extracting two thin observations over dropping both.
+Empty observations are valid only for genuinely contentless captures. For any capture that names a goal, area of focus, file being reviewed, or direction of thinking, extract at least one thin observation.
 
 Each observation's content is one self-contained sentence in third-person, present-tense factual style. No "the user", no "the assistant".
 
