@@ -152,7 +152,8 @@ async function lockWindow(
     };
     return { acquired: false, heldBy: body.heldBy };
   }
-  throw new Error(`lock returned ${response.status}`);
+  const detail = await response.text().catch(() => "");
+  throw new Error(`lock returned ${response.status}: ${detail.slice(0, 500)}`);
 }
 
 async function fetchCandidates(
@@ -164,7 +165,12 @@ async function fetchCandidates(
     method: "GET",
     headers: { Authorization: `Bearer ${deps.token}` },
   });
-  if (!response.ok) throw new Error(`candidates returned ${response.status}`);
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `candidates returned ${response.status}: ${detail.slice(0, 500)}`,
+    );
+  }
   return (await response.json()) as DreamCandidatesResponse;
 }
 
@@ -181,7 +187,12 @@ async function submitClusters(
     },
     body: JSON.stringify({ window_key: windowKey, clusters }),
   });
-  if (!response.ok) throw new Error(`clusters returned ${response.status}`);
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `clusters returned ${response.status}: ${detail.slice(0, 500)}`,
+    );
+  }
   return (await response.json()) as { written: number; supersedes: number };
 }
 
