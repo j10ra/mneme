@@ -152,6 +152,7 @@ export async function startDaemon(): Promise<void> {
         }
         return agent.distill(memories);
       },
+      embed: embedBatch,
       findSupersedes: agent.findSupersedes
         ? (candidates) => agent.findSupersedes!(candidates)
         : undefined,

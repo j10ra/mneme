@@ -128,43 +128,47 @@ export async function fetchDreamCandidates(
   windowKey: number,
   machineId: string,
 ): Promise<DreamCandidates> {
-  // Same WHERE clause as today's runDreamOnce, with the privacy filter
-  // relaxed: caller sees public rows + their own private rows. Other
-  // machines' privates stay invisible.
+  // Same WHERE clause applied twice (outer scan + inner LATERAL). We
+  // intentionally do NOT use a CTE here: a materialized CTE would
+  // hide the embedding column from pgvector's HNSW planner, forcing
+  // a full O(N^2) cosine scan that times out at Railway's gateway
+  // for any meaningful candidate set. Inlined predicates let the
+  // LATERAL's `ORDER BY embedding <=> ...` use the HNSW index on
+  // memories.embedding, which is what makes this query tractable
+  // even with thousands of candidates.
+  //
+  // Privacy filter: caller sees public rows + their own private rows.
+  // Other machines' privates stay invisible.
   const rows = await sql<EdgeRow[]>`
-    WITH candidates AS (
-      SELECT id, embedding, repo, content, kind, created_at
-      FROM memories
-      WHERE archived_at IS NULL
-        AND embedding IS NOT NULL
-        AND kind <> 'cluster'
-        AND (private = false OR machine_id = ${machineId})
-        AND NOT COALESCE((meta->>'pinned')::boolean, false)
-        AND (meta->>'shadow_of') IS NULL
-        AND (meta->>'superseded_by') IS NULL
-        AND (meta->>'in_cluster') IS NULL
-    )
-    -- c.embedding is intentionally omitted from the SELECT projection.
-    -- The cosine comparison happens inside the LATERAL JOIN (where the
-    -- embedding IS in scope from the candidates CTE), but we don't ship
-    -- the 1024-dim vector across the wire to the daemon. Each row's
-    -- embedding is ~4KB serialized; with thousands of candidates that
-    -- adds up to a multi-MB payload that times out at Railway's gateway.
-    -- The daemon only needs ids + edges + seed metadata (content, kind,
-    -- created_at) to build clusters and call distill.
     SELECT
       c.id, c.repo, c.content, c.kind, c.created_at,
       n.neighbor_id
-    FROM candidates c
+    FROM memories c
     LEFT JOIN LATERAL (
       SELECT m.id AS neighbor_id
-      FROM candidates m
-      WHERE m.repo IS NOT DISTINCT FROM c.repo
+      FROM memories m
+      WHERE m.archived_at IS NULL
+        AND m.embedding IS NOT NULL
+        AND m.kind <> 'cluster'
+        AND (m.private = false OR m.machine_id = ${machineId})
+        AND NOT COALESCE((m.meta->>'pinned')::boolean, false)
+        AND (m.meta->>'shadow_of') IS NULL
+        AND (m.meta->>'superseded_by') IS NULL
+        AND (m.meta->>'in_cluster') IS NULL
+        AND m.repo IS NOT DISTINCT FROM c.repo
         AND m.id <> c.id
         AND c.embedding <=> m.embedding < ${DREAM_CLUSTER_DISTANCE}
       ORDER BY c.embedding <=> m.embedding
       LIMIT ${DREAM_MAX_NEIGHBORS_PER_MEMORY}
     ) n ON true
+    WHERE c.archived_at IS NULL
+      AND c.embedding IS NOT NULL
+      AND c.kind <> 'cluster'
+      AND (c.private = false OR c.machine_id = ${machineId})
+      AND NOT COALESCE((c.meta->>'pinned')::boolean, false)
+      AND (c.meta->>'shadow_of') IS NULL
+      AND (c.meta->>'superseded_by') IS NULL
+      AND (c.meta->>'in_cluster') IS NULL
   `;
 
   const repos: DreamCandidates["repos"] = {};
@@ -197,6 +201,10 @@ type ClusterSubmission = {
   member_ids: string[];
   title: string;
   summary: string;
+  /** Optional bge-large vector of the summary. When present the cluster
+   *  row gets embedding + embedding_model populated, so semantic recall
+   *  finds it. When absent, the row is keyword-only via tsv. */
+  summary_embedding?: number[];
   supersede_pairs?: Array<{ old_id: string; new_id: string; reason: string }>;
 };
 
@@ -239,6 +247,15 @@ export function validateClustersBody(input: unknown): ClustersValidation {
     if (typeof c.summary !== "string" || !c.summary.trim()) {
       return { ok: false, error: `clusters[${i}].summary required` };
     }
+    if (
+      c.summary_embedding !== undefined &&
+      (!Array.isArray(c.summary_embedding) || c.summary_embedding.length !== 1024)
+    ) {
+      return {
+        ok: false,
+        error: `clusters[${i}].summary_embedding must be a 1024-dim array if present`,
+      };
+    }
   }
   return { ok: true, body: b as ClustersBody };
 }
@@ -275,18 +292,24 @@ export async function writeClusters(
         distiller_model: "claude-sonnet",
       };
 
+      const vectorLiteral = cluster.summary_embedding
+        ? `[${cluster.summary_embedding.join(",")}]`
+        : null;
       const [clusterRow] = await tx<{ id: string }[]>`
         INSERT INTO memories (
           capture_id, content, kind, importance,
           machine_id, repo, harness, agent, topics, private,
-          tsv, meta
+          tsv, meta,
+          embedding, embedding_model
         )
         VALUES (
           ${seed.capture_id}, ${cluster.summary}, 'cluster', 0.8,
           ${seed.machine_id}, ${seed.repo}, ${seed.harness}, ${seed.agent},
           '{}'::text[], false,
           to_tsvector('english', ${cluster.summary}),
-          ${sql.json(meta as never)}
+          ${sql.json(meta as never)},
+          ${vectorLiteral === null ? null : sql`${vectorLiteral}::vector`},
+          ${vectorLiteral === null ? null : "BAAI/bge-large-en-v1.5"}
         )
         RETURNING id
       `;

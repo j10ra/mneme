@@ -98,6 +98,12 @@ export type ClusterSubmission = {
   member_ids: string[];
   title: string;
   summary: string;
+  /** Pre-computed bge-large vector of `summary`, so the server stores
+   *  the cluster row with embedding populated and recall finds it via
+   *  semantic search just like raw memories. Without this the cluster
+   *  is keyword-searchable only (via tsv) and embed('...') queries
+   *  miss it. */
+  summary_embedding?: number[];
   supersede_pairs?: SupersedePair[];
 };
 
@@ -114,6 +120,10 @@ export type DreamDeps = {
   machineId: string;
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   distill: (memories: Memory[]) => Promise<DreamOutput>;
+  /** Embed the cluster summary so the resulting cluster memory is
+   *  semantically searchable. Same in-process bge-large pipeline that
+   *  embeds new memories. Optional only because tests inject a mock. */
+  embed?: (texts: string[]) => Promise<number[][]>;
   /** Optional supersede pass run after each cluster's distill. Skipped
    *  when omitted (e.g. providers that opt out for safety). */
   findSupersedes?: (
@@ -274,10 +284,28 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
           }
         }
 
+        // Embed the summary so the resulting cluster memory is
+        // semantically searchable via embed('...') recall, not just
+        // keyword/tsv. Same in-process bge-large pipeline used for
+        // raw memories - vector dim and model name match, so cluster
+        // rows live in the same vector space as their members.
+        let summary_embedding: number[] | undefined;
+        if (deps.embed) {
+          try {
+            const [vec] = await deps.embed([distilled.summary]);
+            if (vec) summary_embedding = vec;
+          } catch (err) {
+            Logger.warn("dream: cluster summary embed failed", err, {
+              memberIds,
+            });
+          }
+        }
+
         submissions.push({
           member_ids: memberIds,
           title: distilled.title,
           summary: distilled.summary,
+          ...(summary_embedding ? { summary_embedding } : {}),
           ...(supersede_pairs && supersede_pairs.length
             ? { supersede_pairs }
             : {}),
