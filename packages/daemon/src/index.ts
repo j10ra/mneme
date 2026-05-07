@@ -12,13 +12,15 @@
 // outbox files) stays as a tight setInterval since it's polling
 // filesystem state, not a cron-shape job.
 
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Logger, configureLogger } from "@mneme/core";
 import { Hono } from "hono";
 import { pickAgent } from "./agents/index.ts";
-import { runDreamCycle } from "./dream.ts";
+import { resumeDreamCycles, runDreamCycle } from "./dream.ts";
+import { createDreamOutbox } from "./dream-outbox.ts";
 import { disposeIfIdle, embedBatch } from "./embed.ts";
 import { createOutbox } from "./outbox.ts";
 import { mountCaptureRoute } from "./routes/capture.ts";
@@ -104,10 +106,57 @@ function pushBundleViaServer(serverUrl: string, token: string) {
   };
 }
 
+// One-time migration from the pre-restructure layout
+// (~/.mneme/outbox/{pending,extracted,embedded,failed}) to the new
+// layout under outbox/capture/. Runs on every startup but no-ops once
+// the move has been done.
+async function migrateLegacyCaptureOutbox(): Promise<void> {
+  const root = join(homedir(), ".mneme", "outbox");
+  const captureRoot = join(root, "capture");
+  if (existsSync(captureRoot)) return; // already migrated
+
+  const stages = ["pending", "extracted", "embedded", "failed"] as const;
+  const present = stages.filter((s) => existsSync(join(root, s)));
+  if (present.length === 0) return; // fresh daemon, nothing to migrate
+
+  Logger.info("outbox: migrating legacy capture layout", { stages: present });
+  await mkdir(captureRoot, { recursive: true });
+  for (const s of present) {
+    await rename(join(root, s), join(captureRoot, s));
+  }
+}
+
+// Move plugin's fallback files (root-level *.json) under outbox/plugin/
+// so the parent dir holds only sub-namespaces (capture/, dream/, plugin/).
+async function migrateLegacyPluginOutbox(): Promise<void> {
+  const root = join(homedir(), ".mneme", "outbox");
+  if (!existsSync(root)) return;
+  const pluginDir = join(root, "plugin");
+  let entries: string[];
+  try {
+    entries = await readdir(root);
+  } catch {
+    return;
+  }
+  const looseFiles = entries.filter((e) => e.endsWith(".json"));
+  if (looseFiles.length === 0) return;
+  Logger.info("outbox: migrating loose plugin fallback files", {
+    count: looseFiles.length,
+  });
+  await mkdir(pluginDir, { recursive: true });
+  for (const f of looseFiles) {
+    await rename(join(root, f), join(pluginDir, f));
+  }
+}
+
 export async function startDaemon(): Promise<void> {
   const config = await readConfig();
-  const outboxRoot = join(homedir(), ".mneme", "outbox");
-  const outbox = createOutbox(outboxRoot);
+  await migrateLegacyCaptureOutbox();
+  await migrateLegacyPluginOutbox();
+  const captureOutboxRoot = join(homedir(), ".mneme", "outbox", "capture");
+  const dreamOutboxRoot = join(homedir(), ".mneme", "outbox", "dream");
+  const outbox = createOutbox(captureOutboxRoot);
+  const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
   const agent = pickAgent(config.agent_provider);
 
   let lastProcessedAt: Date | null = null;
@@ -130,7 +179,8 @@ export async function startDaemon(): Promise<void> {
   Logger.info("daemon starting", {
     machine_id: config.machine_id,
     agent: config.agent_provider,
-    outbox: outboxRoot,
+    capture_outbox: captureOutboxRoot,
+    dream_outbox: dreamOutboxRoot,
     server: config.server_url,
   });
 
@@ -156,7 +206,28 @@ export async function startDaemon(): Promise<void> {
       findSupersedes: agent.findSupersedes
         ? (candidates) => agent.findSupersedes!(candidates)
         : undefined,
+      outbox: dreamOutbox,
     });
+
+  // Resume any unfinished dream cycles persisted on disk before doing
+  // anything else. A daemon crash mid-cycle leaves Sonnet output in
+  // outbox/dream/<window>/distilled/ or embedded/; resumeDreamCycles
+  // re-embeds + re-submits without re-paying tokens.
+  try {
+    const resumed = await resumeDreamCycles({
+      serverUrl: config.server_url,
+      token: config.token,
+      machineId: config.machine_id,
+      fetch: (u, init) => fetch(u, init),
+      embed: embedBatch,
+      outbox: dreamOutbox,
+    });
+    if (resumed.resumed > 0) {
+      Logger.info("daemon: dream resume complete", resumed);
+    }
+  } catch (err) {
+    Logger.error("daemon: dream resume crashed", err);
+  }
 
   const app = new Hono();
   mountOpsRoutes(app, runtime);

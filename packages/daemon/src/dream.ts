@@ -21,6 +21,11 @@ import type {
   SupersedeCandidate,
   SupersedePair,
 } from "./agents/types.ts";
+import {
+  type DistilledCluster,
+  type DreamOutbox,
+  clusterIdFor,
+} from "./dream-outbox.ts";
 
 const WINDOW_HOURS = 8;
 const WINDOW_SECONDS = WINDOW_HOURS * 3600;
@@ -129,6 +134,11 @@ export type DreamDeps = {
   findSupersedes?: (
     candidates: SupersedeCandidate[],
   ) => Promise<SupersedePair[]>;
+  /** Per-cluster persistence. When provided, distill + supersede output
+   *  is written to outbox/dream/<window>/distilled/<id>.json before any
+   *  submit attempt, so a daemon crash doesn't lose Sonnet output.
+   *  Tests pass undefined to skip persistence. */
+  outbox?: DreamOutbox;
   /** Override the window for tests. Production calls computeWindowKey(). */
   windowKey?: number;
 };
@@ -221,7 +231,11 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     seeds: seedCount,
   });
 
-  const submissions: ClusterSubmission[] = [];
+  // Stage 1: distill (Sonnet) + supersede (Sonnet). Each successful
+  // cluster is persisted to outbox/dream/<window>/distilled/ before we
+  // move on, so a daemon crash here loses at most one in-flight
+  // distill, never the previously-distilled clusters' Sonnet output.
+  const distilledClusters: DistilledCluster[] = [];
 
   for (const [repo, repoData] of Object.entries(candidates.repos)) {
     const seedById = new Map<string, DreamSeed>();
@@ -249,6 +263,29 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
       ) {
         continue;
       }
+      const cluster_id = await clusterIdFor(memberIds);
+
+      // Idempotency: if a prior cycle already distilled this exact
+      // cluster (same member set -> same cluster_id) and crashed before
+      // submit, the file is still on disk. Skip re-paying tokens.
+      if (deps.outbox) {
+        const existsDistilled = (
+          await deps.outbox.list(windowKey, "distilled")
+        ).includes(cluster_id);
+        const existsEmbedded = (
+          await deps.outbox.list(windowKey, "embedded")
+        ).includes(cluster_id);
+        if (existsDistilled || existsEmbedded) {
+          Logger.info("dream: cluster already persisted, skipping distill", {
+            size: memberIds.length,
+            stage: existsEmbedded ? "embedded" : "distilled",
+          });
+          const stage = existsEmbedded ? "embedded" : "distilled";
+          distilledClusters.push(await deps.outbox.read(windowKey, stage, cluster_id));
+          continue;
+        }
+      }
+
       const memberMemories: Memory[] = memberIds.map((id) => {
         const s = seedById.get(id)!;
         return {
@@ -271,12 +308,9 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
           ms: Date.now() - tDistill,
         });
 
-        // Optional supersede pass over cluster members. Adjacent-
-        // neighbor inclusion (the original architecture's pattern) would
-        // require asking the server for cosine-near non-cluster
-        // memories; for Phase 1 we run the pass over members only,
-        // which catches the most common rephrasing-supersedes-prior
-        // case while keeping the daemon's HTTP surface minimal.
+        // Supersede pass over cluster members. Both the distill and
+        // supersede outputs are equally precious; persist them
+        // together in the same distilled/<id>.json record.
         let supersede_pairs: SupersedePair[] | undefined;
         if (deps.findSupersedes && memberIds.length >= 2) {
           try {
@@ -295,39 +329,65 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
           }
         }
 
-        // Embed the summary so the resulting cluster memory is
-        // semantically searchable via embed('...') recall, not just
-        // keyword/tsv. Same in-process bge-large pipeline used for
-        // raw memories - vector dim and model name match, so cluster
-        // rows live in the same vector space as their members.
-        let summary_embedding: number[] | undefined;
-        if (deps.embed) {
-          try {
-            const [vec] = await deps.embed([distilled.summary]);
-            if (vec) summary_embedding = vec;
-          } catch (err) {
-            Logger.warn("dream: cluster summary embed failed", err, {
-              memberIds,
-            });
-          }
-        }
-
-        submissions.push({
+        const cluster: DistilledCluster = {
+          cluster_id,
           member_ids: memberIds,
           title: distilled.title,
           summary: distilled.summary,
-          ...(summary_embedding ? { summary_embedding } : {}),
           ...(supersede_pairs && supersede_pairs.length
             ? { supersede_pairs }
             : {}),
-        });
+        };
+
+        // Persist BEFORE the embed step, so a crash here keeps the
+        // expensive Sonnet output safe (embed is cheap to redo).
+        if (deps.outbox) {
+          await deps.outbox.put(windowKey, "distilled", cluster);
+        }
+        distilledClusters.push(cluster);
       } catch (err) {
-        // Per-cluster failure isolation: one bad LLM call does not
-        // crash the cycle. Other clusters proceed.
         Logger.warn("dream distill failed for cluster", err, { memberIds });
       }
     }
   }
+
+  // Stage 2: embed every distilled cluster's summary, persist to
+  // outbox/dream/<window>/embedded/. Cheap operation (TEI ~50ms each)
+  // but persisting between stages means a crash mid-batch loses at
+  // most one re-embed worth of work.
+  for (const cluster of distilledClusters) {
+    if (cluster.summary_embedding) continue; // resumed from embedded/, already done
+    if (!deps.embed) continue; // tests skip embed
+    try {
+      const [vec] = await deps.embed([cluster.summary]);
+      if (vec) cluster.summary_embedding = vec;
+    } catch (err) {
+      Logger.warn("dream: cluster summary embed failed", err, {
+        cluster_id: cluster.cluster_id,
+      });
+    }
+    if (deps.outbox) {
+      await deps.outbox.transition(
+        windowKey,
+        "distilled",
+        "embedded",
+        cluster,
+      );
+    }
+  }
+
+  // Stage 3: submit batch to server. ON CONFLICT idempotency at the
+  // server side covers retries (re-submitting the same cluster_id is
+  // a no-op).
+  const submissions: ClusterSubmission[] = distilledClusters.map((c) => ({
+    member_ids: c.member_ids,
+    title: c.title,
+    summary: c.summary,
+    ...(c.summary_embedding ? { summary_embedding: c.summary_embedding } : {}),
+    ...(c.supersede_pairs && c.supersede_pairs.length
+      ? { supersede_pairs: c.supersede_pairs }
+      : {}),
+  }));
 
   Logger.info("dream: submitting clusters", { count: submissions.length });
   const result = await submitClusters(deps, windowKey, submissions);
@@ -336,9 +396,114 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     written: result.written,
     supersedes: result.supersedes,
   });
+
+  // Server confirmed write -> we can drop the outbox files. If submit
+  // had failed, files would persist for the next attempt to re-submit
+  // (cheap: just a server POST, no LLM cost).
+  if (deps.outbox) {
+    for (const cluster of distilledClusters) {
+      await deps.outbox.delete(windowKey, "embedded", cluster.cluster_id);
+    }
+    await deps.outbox.cleanupWindow(windowKey);
+  }
+
   return {
     skipped: false,
     clustersSubmitted: submissions.length,
     clustersWritten: result.written,
   };
+}
+
+/** Resume any unfinished dream cycles persisted in
+ *  outbox/dream/<window>/. Called on daemon startup. For each window
+ *  with outbox files: embed any distilled-but-not-yet-embedded
+ *  clusters, then re-submit the embedded set. Skips windows with no
+ *  files. Lock state in the server's _ops.dream_runs is not
+ *  re-acquired - the original claim either still holds (we resume
+ *  inside it) or has been auto-reaped, in which case the submit will
+ *  return an error and the files stay around for human inspection. */
+export async function resumeDreamCycles(
+  deps: Pick<
+    DreamDeps,
+    "serverUrl" | "token" | "machineId" | "fetch" | "embed" | "outbox"
+  >,
+): Promise<{ resumed: number; written: number }> {
+  if (!deps.outbox) return { resumed: 0, written: 0 };
+  const windows = await deps.outbox.listWindows();
+  let resumedClusters = 0;
+  let writtenClusters = 0;
+
+  for (const windowKey of windows) {
+    const distilledIds = await deps.outbox.list(windowKey, "distilled");
+    const embeddedIds = await deps.outbox.list(windowKey, "embedded");
+    const totalQueued = distilledIds.length + embeddedIds.length;
+    if (totalQueued === 0) {
+      await deps.outbox.cleanupWindow(windowKey);
+      continue;
+    }
+
+    Logger.info("dream: resuming window", {
+      window_key: windowKey,
+      distilled: distilledIds.length,
+      embedded: embeddedIds.length,
+    });
+
+    // Walk distilled/ first - embed each, transition to embedded/.
+    for (const id of distilledIds) {
+      const cluster = await deps.outbox.read(windowKey, "distilled", id);
+      if (!cluster.summary_embedding && deps.embed) {
+        try {
+          const [vec] = await deps.embed([cluster.summary]);
+          if (vec) cluster.summary_embedding = vec;
+        } catch (err) {
+          Logger.warn("dream: resume embed failed", err, { cluster_id: id });
+        }
+      }
+      await deps.outbox.transition(windowKey, "distilled", "embedded", cluster);
+    }
+
+    // Now everything's in embedded/. Re-submit as one batch.
+    const allIds = await deps.outbox.list(windowKey, "embedded");
+    const clusters: DistilledCluster[] = [];
+    for (const id of allIds) {
+      clusters.push(await deps.outbox.read(windowKey, "embedded", id));
+    }
+    const submissions: ClusterSubmission[] = clusters.map((c) => ({
+      member_ids: c.member_ids,
+      title: c.title,
+      summary: c.summary,
+      ...(c.summary_embedding
+        ? { summary_embedding: c.summary_embedding }
+        : {}),
+      ...(c.supersede_pairs && c.supersede_pairs.length
+        ? { supersede_pairs: c.supersede_pairs }
+        : {}),
+    }));
+
+    try {
+      const result = await submitClusters(
+        { ...deps, distill: () => Promise.reject(new Error("not used")) } as DreamDeps,
+        windowKey,
+        submissions,
+      );
+      Logger.info("dream: resume submitted", {
+        window_key: windowKey,
+        submitted: submissions.length,
+        written: result.written,
+      });
+      resumedClusters += submissions.length;
+      writtenClusters += result.written;
+      // Success - drop the files.
+      for (const id of allIds) {
+        await deps.outbox.delete(windowKey, "embedded", id);
+      }
+      await deps.outbox.cleanupWindow(windowKey);
+    } catch (err) {
+      Logger.warn("dream: resume submit failed, files retained", err, {
+        window_key: windowKey,
+      });
+    }
+  }
+
+  return { resumed: resumedClusters, written: writtenClusters };
 }

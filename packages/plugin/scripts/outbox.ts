@@ -13,7 +13,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { scrubData } from "./scrub.ts";
 
-const OUTBOX_DIR = join(homedir(), ".mneme", "outbox");
+// Plugin's fallback queue lives under outbox/plugin/ to coexist with
+// the daemon's outbox/capture/ and outbox/dream/ namespaces. The
+// daemon's startup migrates pre-restructure files into this location
+// so older plugin versions just keep working.
+const OUTBOX_DIR = join(homedir(), ".mneme", "outbox", "plugin");
 
 export function outboxDir(): string {
   return OUTBOX_DIR;
