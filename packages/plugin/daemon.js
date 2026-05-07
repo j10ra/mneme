@@ -2,10 +2,10 @@
 var __require = import.meta.require;
 
 // packages/daemon/src/index.ts
-import { mkdir as mkdir4, readFile as readFile4, readdir as readdir3, rename as rename4 } from "fs/promises";
-import { existsSync as existsSync2 } from "fs";
-import { homedir as homedir3 } from "os";
-import { join as join4 } from "path";
+import { mkdir as mkdir5, readFile as readFile4, readdir as readdir3, rename as rename4 } from "fs/promises";
+import { existsSync as existsSync4 } from "fs";
+import { homedir as homedir4 } from "os";
+import { join as join5 } from "path";
 
 // packages/core/src/context.ts
 import { AsyncLocalStorage } from "async_hooks";
@@ -1158,9 +1158,26 @@ async function embedBatch(texts) {
 }
 
 // packages/daemon/src/outbox.ts
-import { mkdir as mkdir2, readFile as readFile2, readdir as readdir2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "fs/promises";
+import { existsSync as existsSync2 } from "fs";
+import {
+  mkdir as mkdir2,
+  readFile as readFile2,
+  readdir as readdir2,
+  rename as rename2,
+  rm as rm2,
+  writeFile as writeFile2
+} from "fs/promises";
 import { join as join2 } from "path";
-var STATES = ["pending", "extracted", "embedded", "failed"];
+var STATES = [
+  "captured",
+  "observations",
+  "embedded",
+  "failed"
+];
+var LEGACY_MOVES = [
+  { from: "pending", to: "captured" },
+  { from: "extracted", to: "observations" }
+];
 function fileFor(root, state, id) {
   return join2(root, state, `${id}.json`);
 }
@@ -1173,9 +1190,27 @@ async function atomicWrite2(path, data) {
 }
 function createOutbox(rootPath) {
   let initialized = false;
+  async function migrateLegacy() {
+    for (const { from, to } of LEGACY_MOVES) {
+      const oldDir = join2(rootPath, from);
+      const newDir = join2(rootPath, to);
+      if (!existsSync2(oldDir))
+        continue;
+      if (!existsSync2(newDir)) {
+        await rename2(oldDir, newDir);
+      } else {
+        const entries = await readdir2(oldDir);
+        for (const f of entries) {
+          await rename2(join2(oldDir, f), join2(newDir, f));
+        }
+        await rm2(oldDir, { recursive: true, force: true });
+      }
+    }
+  }
   async function ensureDirs() {
     if (initialized)
       return;
+    await migrateLegacy();
     for (const state of STATES) {
       await mkdir2(join2(rootPath, state), { recursive: true });
     }
@@ -1185,7 +1220,7 @@ function createOutbox(rootPath) {
     root: rootPath,
     async writeRaw(id, data) {
       await ensureDirs();
-      await atomicWrite2(fileFor(rootPath, "pending", id), data);
+      await atomicWrite2(fileFor(rootPath, "captured", id), data);
     },
     async list(state) {
       await ensureDirs();
@@ -1282,6 +1317,16 @@ function mountOpsRoutes(app, runtime) {
   });
 }
 
+// packages/daemon/src/runtime.ts
+import { existsSync as existsSync3 } from "fs";
+import {
+  appendFile,
+  mkdir as mkdir3,
+  readFile as fsReadFile
+} from "fs/promises";
+import { homedir as homedir2 } from "os";
+import { join as join3 } from "path";
+
 // packages/shared/src/scrub.ts
 var SECRET_PATTERNS = [
   { name: "aws_access_key", re: /AKIA[0-9A-Z]{16}/g },
@@ -1366,7 +1411,7 @@ function createRuntime(deps) {
   const idleMs = deps.extractIdleMs ?? DEFAULT_EXTRACT_IDLE_MS;
   const forceMs = deps.extractForceMs ?? DEFAULT_EXTRACT_FORCE_MS;
   const now = deps.now ?? (() => Date.now());
-  let lastPendingWriteAt = 0;
+  let lastCapturedWriteAt = now();
   async function handleCapture(body) {
     for (const field of REQUIRED_STRING_FIELDS) {
       const v = body[field];
@@ -1378,19 +1423,19 @@ function createRuntime(deps) {
     const hash = await sha256Hex(cleaned.content);
     const id = `${Date.now()}-${hash.slice(0, 8)}`;
     await deps.outbox.writeRaw(id, cleaned);
-    lastPendingWriteAt = now();
+    lastCapturedWriteAt = now();
     return { ok: true, id };
   }
   const PUSH_CONCURRENCY = 4;
   const EMBED_BATCH_CAP = 64;
   async function runBatchedEmbed() {
-    const ids = await deps.outbox.list("extracted");
+    const ids = await deps.outbox.list("observations");
     if (ids.length === 0)
       return;
     const loaded = [];
     for (const id of ids) {
       try {
-        const data = await deps.outbox.read(id, "extracted");
+        const data = await deps.outbox.read(id, "observations");
         loaded.push({ id, capture: data.capture, memories: data.memories });
       } catch {}
     }
@@ -1435,14 +1480,14 @@ function createRuntime(deps) {
         });
       }
       try {
-        await deps.outbox.transition(file.id, "extracted", "embedded", {
+        await deps.outbox.transition(file.id, "observations", "embedded", {
           capture: file.capture,
           memories: enriched
         });
       } catch (err) {
         if (asPermanent(err)) {
           const reason = err instanceof Error ? err.message : String(err);
-          await deps.outbox.markFailed(file.id, "extracted", reason);
+          await deps.outbox.markFailed(file.id, "observations", reason);
         }
       }
     }
@@ -1482,8 +1527,112 @@ function createRuntime(deps) {
       }));
     }
   }
+  const SHAS_DIR = deps.shasDir ?? join3(homedir2(), ".mneme", "shas");
+  function shasFile(sessionId) {
+    return join3(SHAS_DIR, `${sessionId}.txt`);
+  }
+  async function loadSessionLedger(sessionId) {
+    const file = shasFile(sessionId);
+    if (!existsSync3(file))
+      return new Set;
+    try {
+      const buf = await fsReadFile(file, "utf8");
+      return new Set(buf.split(`
+`).filter(Boolean));
+    } catch {
+      return new Set;
+    }
+  }
+  async function appendLedger(sessionId, keys) {
+    if (keys.length === 0)
+      return;
+    try {
+      if (!existsSync3(SHAS_DIR)) {
+        await mkdir3(SHAS_DIR, { recursive: true, mode: 448 });
+      }
+      await appendFile(shasFile(sessionId), `${keys.join(`
+`)}
+`, {
+        mode: 384
+      });
+    } catch {}
+  }
+  async function runDedup() {
+    const ids = await deps.outbox.list("captured");
+    if (ids.length === 0)
+      return { kept: 0, dropped: 0 };
+    const entries = [];
+    for (const id of ids) {
+      try {
+        const capture = await deps.outbox.read(id, "captured");
+        const sessionId = capture.session_id ?? null;
+        const contentSha = await sha256Hex(capture.content);
+        const meta = capture.raw_meta ?? {};
+        const uuid = typeof meta.message_uuid === "string" ? meta.message_uuid : null;
+        entries.push({ id, sessionId, contentSha, uuid });
+      } catch {
+        continue;
+      }
+    }
+    const ledgers = new Map;
+    const seenInTick = new Map;
+    let kept = 0;
+    let dropped = 0;
+    for (const e of entries) {
+      if (!e.sessionId) {
+        kept++;
+        continue;
+      }
+      let ledger = ledgers.get(e.sessionId);
+      if (!ledger) {
+        ledger = await loadSessionLedger(e.sessionId);
+        ledgers.set(e.sessionId, ledger);
+      }
+      let tickSeen = seenInTick.get(e.sessionId);
+      if (!tickSeen) {
+        tickSeen = new Set;
+        seenInTick.set(e.sessionId, tickSeen);
+      }
+      const shaKey = `sha:${e.contentSha}`;
+      const uuidKey = e.uuid ? `uuid:${e.uuid}` : null;
+      const isDup = ledger.has(shaKey) || tickSeen.has(shaKey) || uuidKey !== null && (ledger.has(uuidKey) || tickSeen.has(uuidKey));
+      if (isDup) {
+        try {
+          await deps.outbox.delete(e.id, "captured");
+        } catch {}
+        dropped++;
+        continue;
+      }
+      tickSeen.add(shaKey);
+      if (uuidKey)
+        tickSeen.add(uuidKey);
+      kept++;
+    }
+    if (dropped > 0) {
+      Logger.info("dedup", { kept, dropped });
+    }
+    return { kept, dropped };
+  }
+  async function recordAcceptedKeys(captures) {
+    const bySession = new Map;
+    for (const c of captures) {
+      if (!c.session_id)
+        continue;
+      const sha = await sha256Hex(c.content);
+      const meta = c.raw_meta ?? {};
+      const uuid = typeof meta.message_uuid === "string" ? meta.message_uuid : null;
+      const arr = bySession.get(c.session_id) ?? [];
+      arr.push(`sha:${sha}`);
+      if (uuid)
+        arr.push(`uuid:${uuid}`);
+      bySession.set(c.session_id, arr);
+    }
+    for (const [sessionId, keys] of bySession) {
+      await appendLedger(sessionId, keys);
+    }
+  }
   async function runCoalescedExtract() {
-    const ids = await deps.outbox.list("pending");
+    const ids = await deps.outbox.list("captured");
     if (ids.length === 0)
       return;
     const tickNow = now();
@@ -1492,7 +1641,7 @@ function createRuntime(deps) {
       return m ? Number(m[1]) : Infinity;
     }).reduce((a, b) => Math.min(a, b), Infinity);
     const isFull = ids.length >= batchFull;
-    const isIdle = idleMs > 0 && tickNow - lastPendingWriteAt >= idleMs;
+    const isIdle = idleMs > 0 && tickNow - lastCapturedWriteAt >= idleMs;
     const isForced = forceMs > 0 && Number.isFinite(oldestTs) && tickNow - oldestTs >= forceMs;
     if (!isFull && !isIdle && !isForced) {
       return;
@@ -1500,7 +1649,7 @@ function createRuntime(deps) {
     const entries = [];
     for (const id of ids) {
       try {
-        const capture = await deps.outbox.read(id, "pending");
+        const capture = await deps.outbox.read(id, "captured");
         const tsMatch = id.match(/^(\d+)-/);
         const ts = tsMatch ? Number(tsMatch[1]) : 0;
         entries.push({ id, ts, capture });
@@ -1546,49 +1695,59 @@ function createRuntime(deps) {
           const reason = err instanceof Error ? err.message : String(err);
           for (const entry of batch) {
             try {
-              await deps.outbox.markFailed(entry.id, "pending", reason);
+              await deps.outbox.markFailed(entry.id, "captured", reason);
               processed.add(entry.id);
             } catch {}
           }
         }
         continue;
       }
+      const transitioned = [];
       for (let i = 0;i < batch.length; i++) {
         const entry = batch[i];
         const isSeed = i === 0;
         try {
-          await deps.outbox.transition(entry.id, "pending", "extracted", {
+          await deps.outbox.transition(entry.id, "captured", "observations", {
             capture: entry.capture,
             memories: isSeed ? memories : []
           });
           processed.add(entry.id);
+          transitioned.push(entry);
         } catch (err) {
           if (asPermanent(err)) {
             const reason = err instanceof Error ? err.message : String(err);
-            await deps.outbox.markFailed(entry.id, "pending", reason);
+            await deps.outbox.markFailed(entry.id, "captured", reason);
           }
         }
+      }
+      if (transitioned.length > 0) {
+        await recordAcceptedKeys(transitioned.map((e) => ({
+          session_id: e.capture.session_id ?? null,
+          content: e.capture.content,
+          raw_meta: e.capture.raw_meta ?? {}
+        })));
       }
     }
   }
   async function runWorkerTick() {
+    await runDedup();
     await runCoalescedExtract();
     await runBatchedEmbed();
     await runParallelPush();
   }
   async function flush() {
-    lastPendingWriteAt = 0;
+    lastCapturedWriteAt = 0;
     await runWorkerTick();
   }
   return { handleCapture, runWorkerTick, flush };
 }
 
 // packages/daemon/src/scheduler.ts
-import { mkdir as mkdir3, readFile as readFile3, rename as rename3, writeFile as writeFile3 } from "fs/promises";
-import { homedir as homedir2 } from "os";
-import { dirname, join as join3 } from "path";
+import { mkdir as mkdir4, readFile as readFile3, rename as rename3, writeFile as writeFile3 } from "fs/promises";
+import { homedir as homedir3 } from "os";
+import { dirname, join as join4 } from "path";
 var TICK_MS = 60000;
-var STATE_PATH = join3(homedir2(), ".mneme", "schedule.json");
+var STATE_PATH = join4(homedir3(), ".mneme", "schedule.json");
 var STALE_NEW_JOB_SLACK_MS = 5 * 60000;
 var registry = new Map;
 var state = {};
@@ -1608,7 +1767,7 @@ async function loadState() {
   }
 }
 async function saveState(s) {
-  await mkdir3(dirname(STATE_PATH), { recursive: true });
+  await mkdir4(dirname(STATE_PATH), { recursive: true });
   const tmp = `${STATE_PATH}.tmp`;
   await writeFile3(tmp, JSON.stringify(s, null, 2));
   await rename3(tmp, STATE_PATH);
@@ -1737,7 +1896,7 @@ var DREAM_SCHEDULE_MS = 8 * 3600000;
 var HEARTBEAT_SCHEDULE_MS = 60000;
 var EMBEDDER_REAP_SCHEDULE_MS = 60000;
 async function readConfig() {
-  const path = join4(homedir3(), ".mneme", "config.json");
+  const path = join5(homedir4(), ".mneme", "config.json");
   const raw = await readFile4(path, "utf8");
   const shaped = JSON.parse(raw);
   if (!shaped.daemon) {
@@ -1772,24 +1931,24 @@ function pushBundleViaServer(serverUrl, token) {
   };
 }
 async function migrateLegacyCaptureOutbox() {
-  const root = join4(homedir3(), ".mneme", "outbox");
-  const captureRoot = join4(root, "capture");
-  if (existsSync2(captureRoot))
+  const root = join5(homedir4(), ".mneme", "outbox");
+  const captureRoot = join5(root, "capture");
+  if (existsSync4(captureRoot))
     return;
   const stages = ["pending", "extracted", "embedded", "failed"];
-  const present = stages.filter((s) => existsSync2(join4(root, s)));
+  const present = stages.filter((s) => existsSync4(join5(root, s)));
   if (present.length === 0)
     return;
   Logger.info("outbox: migrating legacy capture layout", { stages: present });
-  await mkdir4(captureRoot, { recursive: true });
+  await mkdir5(captureRoot, { recursive: true });
   for (const s of present) {
-    await rename4(join4(root, s), join4(captureRoot, s));
+    await rename4(join5(root, s), join5(captureRoot, s));
   }
 }
 async function reclaimLegacyPluginOutbox() {
-  const root = join4(homedir3(), ".mneme", "outbox");
-  const pluginDir = join4(root, "plugin");
-  if (!existsSync2(pluginDir))
+  const root = join5(homedir4(), ".mneme", "outbox");
+  const pluginDir = join5(root, "plugin");
+  if (!existsSync4(pluginDir))
     return;
   let entries;
   try {
@@ -1798,11 +1957,11 @@ async function reclaimLegacyPluginOutbox() {
     return;
   }
   const stranded = entries.filter((e) => e.endsWith(".json"));
-  const captureDir = join4(root, "capture", "pending");
-  await mkdir4(captureDir, { recursive: true });
+  const captureDir = join5(root, "capture", "pending");
+  await mkdir5(captureDir, { recursive: true });
   for (const f of stranded) {
     const id = `${Date.now()}-${f.slice(0, 8)}.json`;
-    await rename4(join4(pluginDir, f), join4(captureDir, id));
+    await rename4(join5(pluginDir, f), join5(captureDir, id));
   }
   if (stranded.length > 0) {
     Logger.info("outbox: reclaimed stranded plugin captures into pending/", {
@@ -1818,8 +1977,8 @@ async function startDaemon() {
   const config = await readConfig();
   await migrateLegacyCaptureOutbox();
   await reclaimLegacyPluginOutbox();
-  const captureOutboxRoot = join4(homedir3(), ".mneme", "outbox", "capture");
-  const dreamOutboxRoot = join4(homedir3(), ".mneme", "outbox", "dream");
+  const captureOutboxRoot = join5(homedir4(), ".mneme", "outbox", "capture");
+  const dreamOutboxRoot = join5(homedir4(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
   const agent = pickAgent(config.agent_provider);
@@ -1905,9 +2064,9 @@ async function startDaemon() {
   setInterval(tick2, WORKER_TICK_MS);
   tick2();
   const postHeartbeat = async () => {
-    const [pending, extracted, embedded, failed] = await Promise.all([
-      outbox.list("pending"),
-      outbox.list("extracted"),
+    const [captured, observations, embedded, failed] = await Promise.all([
+      outbox.list("captured"),
+      outbox.list("observations"),
       outbox.list("embedded"),
       outbox.list("failed")
     ]);
@@ -1918,8 +2077,8 @@ async function startDaemon() {
         Authorization: `Bearer ${config.token}`
       },
       body: JSON.stringify({
-        outbox_pending: pending.length,
-        outbox_extracted: extracted.length,
+        outbox_pending: captured.length,
+        outbox_extracted: observations.length,
         outbox_embedded: embedded.length,
         outbox_failed: failed.length,
         last_processed_at: lastProcessedAt?.toISOString() ?? null

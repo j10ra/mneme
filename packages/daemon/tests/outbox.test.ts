@@ -27,7 +27,7 @@ describe("outbox", () => {
     const outbox = createOutbox(root);
     await outbox.writeRaw("abc-001", { content: "hello" });
 
-    const ids = await outbox.list("pending");
+    const ids = await outbox.list("captured");
     expect(ids).toContain("abc-001");
   });
 
@@ -35,7 +35,7 @@ describe("outbox", () => {
     const outbox = createOutbox(root);
     await outbox.writeRaw("abc-002", { content: "hello", n: 42 });
 
-    const data = await outbox.read("abc-002", "pending");
+    const data = await outbox.read("abc-002", "captured");
     expect(data).toEqual({ content: "hello", n: 42 });
   });
 
@@ -43,15 +43,15 @@ describe("outbox", () => {
     const outbox = createOutbox(root);
     await outbox.writeRaw("abc-003", { content: "x" });
 
-    await outbox.transition("abc-003", "pending", "extracted", {
+    await outbox.transition("abc-003", "captured", "observations", {
       content: "x",
       memories: [{ content: "x", kind: "note" }],
     });
 
-    expect(await outbox.list("pending")).not.toContain("abc-003");
-    expect(await outbox.list("extracted")).toContain("abc-003");
+    expect(await outbox.list("captured")).not.toContain("abc-003");
+    expect(await outbox.list("observations")).toContain("abc-003");
 
-    const data = (await outbox.read("abc-003", "extracted")) as {
+    const data = (await outbox.read("abc-003", "observations")) as {
       memories: unknown[];
     };
     expect(data.memories).toHaveLength(1);
@@ -60,18 +60,18 @@ describe("outbox", () => {
   test("delete removes the file from its state", async () => {
     const outbox = createOutbox(root);
     await outbox.writeRaw("abc-004", { content: "x" });
-    await outbox.delete("abc-004", "pending");
+    await outbox.delete("abc-004", "captured");
 
-    expect(await outbox.list("pending")).not.toContain("abc-004");
+    expect(await outbox.list("captured")).not.toContain("abc-004");
   });
 
   test("markFailed moves the file to failed/ and records the reason", async () => {
     const outbox = createOutbox(root);
     await outbox.writeRaw("abc-005", { content: "x" });
 
-    await outbox.markFailed("abc-005", "pending", "extract failed: 5xx loop");
+    await outbox.markFailed("abc-005", "captured", "extract failed: 5xx loop");
 
-    expect(await outbox.list("pending")).not.toContain("abc-005");
+    expect(await outbox.list("captured")).not.toContain("abc-005");
     expect(await outbox.list("failed")).toContain("abc-005");
 
     const failureFiles = await readdir(join(root, "failed"));
@@ -81,7 +81,7 @@ describe("outbox", () => {
   test("transition rejects when source file does not exist", async () => {
     const outbox = createOutbox(root);
     await expect(
-      outbox.transition("does-not-exist", "pending", "extracted", {}),
+      outbox.transition("does-not-exist", "captured", "observations", {}),
     ).rejects.toThrow();
   });
 
@@ -97,9 +97,9 @@ describe("outbox", () => {
     // renaming. list() must ignore dotfiles / .tmp leftovers so a
     // crash mid-transition never produces phantom queue entries.
     const fs = await import("node:fs/promises");
-    await fs.writeFile(join(root, "pending", ".stale.json.tmp"), "{}");
+    await fs.writeFile(join(root, "captured", ".stale.json.tmp"), "{}");
 
-    const ids = await outbox.list("pending");
+    const ids = await outbox.list("captured");
     expect(ids).toEqual(["abc-006"]);
   });
 });

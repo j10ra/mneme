@@ -5,8 +5,8 @@
 // fs.watch around it.
 //
 // Pipeline shape (per capture, single-tick path):
-//   pending/   raw capture body, scrubbed at handleCapture-time
-//   extracted/ { capture, memories[] }   memories carry only the LLM-
+//   captured/   raw capture body, scrubbed at handleCapture-time
+//   observations/ { capture, memories[] }   memories carry only the LLM-
 //                                        derivable fields at this stage
 //   embedded/  { capture, memories[] }   memories now have content_hash,
 //                                        chunk_id, embedding, embedding_
@@ -16,13 +16,21 @@
 //
 // Coalescing rule (matches the original architecture's ±5min session
 // window): captures sharing (session_id, repo, private) within ±5
-// minutes of the seed are extracted in ONE LLM call, capped at
+// minutes of the seed are observations in ONE LLM call, capped at
 // MAX_BATCH_SIZE. The seed's bundle carries the LLM-derived memories;
 // the other captures in the batch each push their own bundle with
 // memories=[] (provenance row only). This matches today's server
 // behavior where coalesced extract jobs link memories to the seed
 // capture_id and other captures stand alone.
 
+import { existsSync } from "node:fs";
+import {
+  appendFile,
+  mkdir,
+  readFile as fsReadFile,
+} from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Logger } from "@mneme/core";
 import { scrub, scrubData } from "@mneme/shared";
 import { EMBEDDER_DIM, EMBEDDER_MODEL } from "./embed.ts";
@@ -66,14 +74,16 @@ export type DaemonDeps = {
    * model. Defaults to the constant from embed.ts.
    */
   embedderModel?: string;
-  /** When pending count reaches this, run extract immediately. */
+  /** When captured count reaches this, run extract immediately. */
   extractBatchFull?: number;
-  /** Wait until pending/ has been quiet for this long before extract. */
+  /** Wait until captured/ has been quiet for this long before extract. */
   extractIdleMs?: number;
-  /** Force extract once the oldest pending capture is older than this. */
+  /** Force extract once the oldest captured capture is older than this. */
   extractForceMs?: number;
   /** Test seam for `now()`. Defaults to Date.now. */
   now?: () => number;
+  /** Override the dedup ledger directory. Defaults to ~/.mneme/shas/. */
+  shasDir?: string;
 };
 
 const REQUIRED_STRING_FIELDS = ["content", "source", "hostname", "harness"] as const;
@@ -131,10 +141,10 @@ export function createRuntime(deps: DaemonDeps) {
   const forceMs = deps.extractForceMs ?? DEFAULT_EXTRACT_FORCE_MS;
   const now = deps.now ?? (() => Date.now());
 
-  // Initialised to 0 so a daemon that boots with backlog drains it
-  // immediately rather than waiting idleMs after start. handleCapture
-  // resets it to now() on each new pending file.
-  let lastPendingWriteAt = 0;
+  // Initialised to now() so the idle gate doesn't trip on the first
+  // tick after startup just because the variable was 0 (epoch). Real
+  // backlogs are caught by the forceMs trigger (oldest-file age) instead.
+  let lastCapturedWriteAt = now();
 
   async function handleCapture(body: CaptureBody): Promise<HandleCaptureResult> {
     for (const field of REQUIRED_STRING_FIELDS) {
@@ -149,7 +159,7 @@ export function createRuntime(deps: DaemonDeps) {
     const id = `${Date.now()}-${hash.slice(0, 8)}`;
 
     await deps.outbox.writeRaw(id, cleaned);
-    lastPendingWriteAt = now();
+    lastCapturedWriteAt = now();
     return { ok: true, id };
   }
 
@@ -165,7 +175,7 @@ export function createRuntime(deps: DaemonDeps) {
   const EMBED_BATCH_CAP = 64;
 
   async function runBatchedEmbed(): Promise<void> {
-    const ids = await deps.outbox.list("extracted");
+    const ids = await deps.outbox.list("observations");
     if (ids.length === 0) return;
 
     type Loaded = {
@@ -176,7 +186,7 @@ export function createRuntime(deps: DaemonDeps) {
     const loaded: Loaded[] = [];
     for (const id of ids) {
       try {
-        const data = (await deps.outbox.read(id, "extracted")) as {
+        const data = (await deps.outbox.read(id, "observations")) as {
           capture: CaptureBody;
           memories: ExtractedMemory[];
         };
@@ -233,14 +243,14 @@ export function createRuntime(deps: DaemonDeps) {
         });
       }
       try {
-        await deps.outbox.transition(file.id, "extracted", "embedded", {
+        await deps.outbox.transition(file.id, "observations", "embedded", {
           capture: file.capture,
           memories: enriched,
         });
       } catch (err) {
         if (asPermanent(err)) {
           const reason = err instanceof Error ? err.message : String(err);
-          await deps.outbox.markFailed(file.id, "extracted", reason);
+          await deps.outbox.markFailed(file.id, "observations", reason);
         }
       }
     }
@@ -284,14 +294,172 @@ export function createRuntime(deps: DaemonDeps) {
     }
   }
 
+  // ── Dedup ledger ────────────────────────────────────────────────────────
+  // Per-session content+uuid index at ~/.mneme/shas/<session_id>.txt.
+  // Each line is either `sha:<hex>` or `uuid:<hex>`. Both keys are recorded
+  // so transcript-replay captures (which have stable message_uuid across
+  // replays but possibly drift in content sha due to timestamp / id
+  // re-rendering) get caught by uuid; UserPromptSubmit / PostToolUse
+  // captures (no uuid) are caught by content sha. Either match => dup.
+  //
+  // Lives daemon-side now (was hook-side in 1.0.49-1.0.54). Hook becomes
+  // dumb: write file, exit. All dedup logic in one place.
+  const SHAS_DIR = deps.shasDir ?? join(homedir(), ".mneme", "shas");
+
+  function shasFile(sessionId: string): string {
+    return join(SHAS_DIR, `${sessionId}.txt`);
+  }
+
+  async function loadSessionLedger(sessionId: string): Promise<Set<string>> {
+    const file = shasFile(sessionId);
+    if (!existsSync(file)) return new Set();
+    try {
+      const buf = await fsReadFile(file, "utf8");
+      return new Set(buf.split("\n").filter(Boolean));
+    } catch {
+      return new Set();
+    }
+  }
+
+  async function appendLedger(
+    sessionId: string,
+    keys: string[],
+  ): Promise<void> {
+    if (keys.length === 0) return;
+    try {
+      if (!existsSync(SHAS_DIR)) {
+        await mkdir(SHAS_DIR, { recursive: true, mode: 0o700 });
+      }
+      await appendFile(shasFile(sessionId), `${keys.join("\n")}\n`, {
+        mode: 0o600,
+      });
+    } catch {
+      // best-effort. Worst case we let a dup through; the server still
+      // dedupes via (content_sha256, machine_id) so the DB stays clean.
+    }
+  }
+
+  /** Drop duplicate captures in captured/. Runs before extract so the
+   *  Haiku subprocess never sees the same logical event twice.
+   *
+   *  Dedup against two sources of truth:
+   *    (a) the persistent per-session ledger (entries from PRIOR ticks
+   *        that have already gone through extract — recorded by
+   *        recordAcceptedKeys() after a successful captured→observations
+   *        transition)
+   *    (b) the within-tick set of shas seen so far (collapses near-
+   *        simultaneous duplicates that landed in captured/ before any
+   *        of them reached the ledger)
+   *
+   *  Files that match either source get deleted. The ledger is NOT
+   *  written here — only by recordAcceptedKeys() once a file moves to
+   *  observations/. That way a file sitting in captured/ across multiple
+   *  ticks (because the gate hasn't tripped yet) won't be self-deleted
+   *  on the next tick when its own sha appears in the ledger.
+   */
+  async function runDedup(): Promise<{ kept: number; dropped: number }> {
+    const ids = await deps.outbox.list("captured");
+    if (ids.length === 0) return { kept: 0, dropped: 0 };
+
+    type Entry = {
+      id: string;
+      sessionId: string | null;
+      contentSha: string;
+      uuid: string | null;
+    };
+    const entries: Entry[] = [];
+    for (const id of ids) {
+      try {
+        const capture = (await deps.outbox.read(id, "captured")) as CaptureBody;
+        const sessionId = capture.session_id ?? null;
+        const contentSha = await sha256Hex(capture.content);
+        const meta = (capture.raw_meta ?? {}) as Record<string, unknown>;
+        const uuid =
+          typeof meta.message_uuid === "string" ? meta.message_uuid : null;
+        entries.push({ id, sessionId, contentSha, uuid });
+      } catch {
+        continue; // vanished mid-tick
+      }
+    }
+
+    const ledgers = new Map<string, Set<string>>();
+    const seenInTick = new Map<string, Set<string>>();
+    let kept = 0;
+    let dropped = 0;
+
+    for (const e of entries) {
+      if (!e.sessionId) {
+        kept++;
+        continue;
+      }
+      let ledger = ledgers.get(e.sessionId);
+      if (!ledger) {
+        ledger = await loadSessionLedger(e.sessionId);
+        ledgers.set(e.sessionId, ledger);
+      }
+      let tickSeen = seenInTick.get(e.sessionId);
+      if (!tickSeen) {
+        tickSeen = new Set();
+        seenInTick.set(e.sessionId, tickSeen);
+      }
+      const shaKey = `sha:${e.contentSha}`;
+      const uuidKey = e.uuid ? `uuid:${e.uuid}` : null;
+      const isDup =
+        ledger.has(shaKey) ||
+        tickSeen.has(shaKey) ||
+        (uuidKey !== null &&
+          (ledger.has(uuidKey) || tickSeen.has(uuidKey)));
+      if (isDup) {
+        try {
+          await deps.outbox.delete(e.id, "captured");
+        } catch {
+          // file vanished; treat as dropped
+        }
+        dropped++;
+        continue;
+      }
+      tickSeen.add(shaKey);
+      if (uuidKey) tickSeen.add(uuidKey);
+      kept++;
+    }
+
+    if (dropped > 0) {
+      Logger.info("dedup", { kept, dropped });
+    }
+    return { kept, dropped };
+  }
+
+  /** Append accepted (extract-completed) shas + uuids to the per-session
+   *  ledger. Called from runCoalescedExtract once a file has been
+   *  successfully transitioned to observations/. */
+  async function recordAcceptedKeys(
+    captures: Array<{ session_id: string | null; content: string; raw_meta: Record<string, unknown> }>,
+  ): Promise<void> {
+    const bySession = new Map<string, string[]>();
+    for (const c of captures) {
+      if (!c.session_id) continue;
+      const sha = await sha256Hex(c.content);
+      const meta = c.raw_meta ?? {};
+      const uuid =
+        typeof meta.message_uuid === "string" ? meta.message_uuid : null;
+      const arr = bySession.get(c.session_id) ?? [];
+      arr.push(`sha:${sha}`);
+      if (uuid) arr.push(`uuid:${uuid}`);
+      bySession.set(c.session_id, arr);
+    }
+    for (const [sessionId, keys] of bySession) {
+      await appendLedger(sessionId, keys);
+    }
+  }
+
   async function runCoalescedExtract(): Promise<void> {
-    const ids = await deps.outbox.list("pending");
+    const ids = await deps.outbox.list("captured");
     if (ids.length === 0) return;
 
     // Gate. Only run extract when one of these holds:
     //   - batch is "full enough" (count >= batchFull)
-    //   - pending/ has been quiet for idleMs (no new write since)
-    //   - oldest pending file is older than forceMs (latency floor)
+    //   - captured/ has been quiet for idleMs (no new write since)
+    //   - oldest captured file is older than forceMs (latency floor)
     // Production wiring sets batchFull=20, idleMs=30s, forceMs=5min so
     // extract runs roughly every burst-of-activity instead of every tick.
     const tickNow = now();
@@ -303,7 +471,7 @@ export function createRuntime(deps: DaemonDeps) {
       .reduce((a, b) => Math.min(a, b), Infinity);
 
     const isFull = ids.length >= batchFull;
-    const isIdle = idleMs > 0 && tickNow - lastPendingWriteAt >= idleMs;
+    const isIdle = idleMs > 0 && tickNow - lastCapturedWriteAt >= idleMs;
     const isForced =
       forceMs > 0 && Number.isFinite(oldestTs) && tickNow - oldestTs >= forceMs;
 
@@ -315,7 +483,7 @@ export function createRuntime(deps: DaemonDeps) {
     const entries: Array<{ id: string; ts: number; capture: CaptureBody }> = [];
     for (const id of ids) {
       try {
-        const capture = (await deps.outbox.read(id, "pending")) as CaptureBody;
+        const capture = (await deps.outbox.read(id, "captured")) as CaptureBody;
         const tsMatch = id.match(/^(\d+)-/);
         const ts = tsMatch ? Number(tsMatch[1]) : 0;
         entries.push({ id, ts, capture });
@@ -365,43 +533,64 @@ export function createRuntime(deps: DaemonDeps) {
           const reason = err instanceof Error ? err.message : String(err);
           for (const entry of batch) {
             try {
-              await deps.outbox.markFailed(entry.id, "pending", reason);
+              await deps.outbox.markFailed(entry.id, "captured", reason);
               processed.add(entry.id);
             } catch {
               // Don't fail the rest of the batch on a single move error.
             }
           }
         }
-        // Transient: leave batch in pending for next tick.
+        // Transient: leave batch in captured for next tick.
         continue;
       }
 
+      const transitioned: typeof entries = [];
       for (let i = 0; i < batch.length; i++) {
         const entry = batch[i]!;
         const isSeed = i === 0;
         try {
-          await deps.outbox.transition(entry.id, "pending", "extracted", {
+          await deps.outbox.transition(entry.id, "captured", "observations", {
             capture: entry.capture,
             memories: isSeed ? memories : [],
           });
           processed.add(entry.id);
+          transitioned.push(entry);
         } catch (err) {
           if (asPermanent(err)) {
             const reason = err instanceof Error ? err.message : String(err);
-            await deps.outbox.markFailed(entry.id, "pending", reason);
+            await deps.outbox.markFailed(entry.id, "captured", reason);
           }
         }
+      }
+      // Now that these captures have made it into observations/, write
+      // their dedup keys to the ledger so future ticks (or future
+      // sessions) drop dupes of the same content/uuid.
+      if (transitioned.length > 0) {
+        await recordAcceptedKeys(
+          transitioned.map((e) => ({
+            session_id: e.capture.session_id ?? null,
+            content: e.capture.content,
+            raw_meta: (e.capture.raw_meta ?? {}) as Record<string, unknown>,
+          })),
+        );
       }
     }
   }
 
   async function runWorkerTick(): Promise<void> {
-    // Stage 1: pending -> extracted (coalesced; one LLM call per session window)
+    // Stage 0: dedup at the captured/ entry. Drops byte-for-byte and
+    // logical-id duplicates BEFORE Haiku ever sees them, so we don't
+    // pay tokens to extract observations from content the server would
+    // reject anyway. Mirrors the server's (content_sha256, machine_id)
+    // intake constraint, but per-session and uuid-aware.
+    await runDedup();
+
+    // Stage 1: captured -> observations (coalesced; one LLM call per session window)
     await runCoalescedExtract();
 
-    // Stage 2: extracted -> embedded
+    // Stage 2: observations -> embedded
     // Batch embed across files: one ONNX call covers all memories in the
-    // current extracted/ snapshot, distributed back per-file. bge-large
+    // current observations/ snapshot, distributed back per-file. bge-large
     // vectorizes large batches efficiently; serial per-file embed wastes
     // ~5x the wall-clock when there are many files queued.
     await runBatchedEmbed();
@@ -418,7 +607,7 @@ export function createRuntime(deps: DaemonDeps) {
   // need to wait for the idle window if the burst has explicitly
   // ended.
   async function flush(): Promise<void> {
-    lastPendingWriteAt = 0; // makes isIdle true on the next gate check
+    lastCapturedWriteAt = 0; // makes isIdle true on the next gate check
     await runWorkerTick();
   }
 

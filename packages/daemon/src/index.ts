@@ -289,12 +289,14 @@ export async function startDaemon(): Promise<void> {
   // ── Time-driven jobs (scheduler-managed; ~/.mneme/schedule.json) ─────
   // Heartbeat: outbox depth + last-processed-at posted to the server.
   const postHeartbeat = async (): Promise<void> => {
-    const [pending, extracted, embedded, failed] = await Promise.all([
-      outbox.list("pending"),
-      outbox.list("extracted"),
+    const [captured, observations, embedded, failed] = await Promise.all([
+      outbox.list("captured"),
+      outbox.list("observations"),
       outbox.list("embedded"),
       outbox.list("failed"),
     ]);
+    // Server's heartbeat API still uses the legacy field names so older
+    // server versions stay compatible. The mapping is just a rename.
     const response = await fetch(`${config.server_url}/api/heartbeat`, {
       method: "POST",
       headers: {
@@ -302,8 +304,8 @@ export async function startDaemon(): Promise<void> {
         Authorization: `Bearer ${config.token}`,
       },
       body: JSON.stringify({
-        outbox_pending: pending.length,
-        outbox_extracted: extracted.length,
+        outbox_pending: captured.length,
+        outbox_extracted: observations.length,
         outbox_embedded: embedded.length,
         outbox_failed: failed.length,
         last_processed_at: lastProcessedAt?.toISOString() ?? null,

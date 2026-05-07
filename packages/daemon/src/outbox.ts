@@ -1,22 +1,51 @@
-// State-directory outbox.
+// State-directory outbox. Stages mirror the server-side ingest pipeline:
 //
-// Each capture is one JSON file. The file's directory IS its state. Files
-// move between states via atomic POSIX rename(). Each transition rewrites
-// the file content (capture only -> capture + memories -> capture +
-// memories + vectors), so a crash leaves the work in its last-completed
-// state for resumption.
+//   captured/      raw event from hook (post-scrub, pre-dedup)
+//   observations/  post-Haiku extract (memories[] populated)
+//   embedded/      post-bge embed (memories[].embedding populated)
+//   failed/        terminal — operator inspection
+//
+// Files move between states via atomic POSIX rename(). Each transition
+// rewrites the file content (raw → +memories → +vectors), so a crash
+// leaves the work in its last-completed state for resumption.
 //
 // Atomic write pattern: write to a sibling `.<name>.tmp` file, fsync, then
 // rename. rename() is atomic on the same filesystem (POSIX guarantee),
 // so list() never observes a half-written queue entry. list() filters
 // dotfiles to be defensive against crashed-mid-write leftovers.
 
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 
-export type OutboxState = "pending" | "extracted" | "embedded" | "failed";
+export type OutboxState =
+  | "captured"
+  | "observations"
+  | "embedded"
+  | "failed";
 
-const STATES: OutboxState[] = ["pending", "extracted", "embedded", "failed"];
+const STATES: OutboxState[] = [
+  "captured",
+  "observations",
+  "embedded",
+  "failed",
+];
+
+// Migration map for the pre-rename layout (pending/ → captured/,
+// extracted/ → observations/). Runs once on first ensureDirs(); no-op
+// thereafter. Atomic mv at the directory level — files keep their
+// content and ids.
+const LEGACY_MOVES: Array<{ from: string; to: OutboxState }> = [
+  { from: "pending", to: "captured" },
+  { from: "extracted", to: "observations" },
+];
 
 export interface Outbox {
   root: string;
@@ -48,8 +77,29 @@ async function atomicWrite(path: string, data: unknown): Promise<void> {
 export function createOutbox(rootPath: string): Outbox {
   let initialized = false;
 
+  async function migrateLegacy(): Promise<void> {
+    for (const { from, to } of LEGACY_MOVES) {
+      const oldDir = join(rootPath, from);
+      const newDir = join(rootPath, to);
+      if (!existsSync(oldDir)) continue;
+      // If the new dir doesn't exist yet, do a directory-level rename —
+      // O(1) regardless of file count. If it exists (mid-migration crash
+      // or already-migrated install), move file-by-file.
+      if (!existsSync(newDir)) {
+        await rename(oldDir, newDir);
+      } else {
+        const entries = await readdir(oldDir);
+        for (const f of entries) {
+          await rename(join(oldDir, f), join(newDir, f));
+        }
+        await rm(oldDir, { recursive: true, force: true });
+      }
+    }
+  }
+
   async function ensureDirs(): Promise<void> {
     if (initialized) return;
+    await migrateLegacy();
     for (const state of STATES) {
       await mkdir(join(rootPath, state), { recursive: true });
     }
@@ -61,7 +111,7 @@ export function createOutbox(rootPath: string): Outbox {
 
     async writeRaw(id, data) {
       await ensureDirs();
-      await atomicWrite(fileFor(rootPath, "pending", id), data);
+      await atomicWrite(fileFor(rootPath, "captured", id), data);
     },
 
     async list(state) {

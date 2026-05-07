@@ -7,7 +7,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -112,72 +111,24 @@ async function pingDaemonFlush(cfg: MnemeConfig): Promise<void> {
   }
 }
 
-// Sync SHA via node:crypto. We previously used `await crypto.subtle.digest`,
-// but Bun's implementation of WebCrypto interacts badly with closed-pipe
-// stdin: when the hook script is spawned with payload piped to stdin
-// (which is exactly how Claude Code invokes hooks), the awaited Promise
-// can fail to resolve because the event loop has nothing else keeping
-// it alive after stdin EOF — the process exits before the digest
-// callback fires. Result: hooks silently no-op for the entire
-// UserPromptSubmit/PostToolUse/Stop family. Using node:crypto's
-// synchronous createHash sidesteps the issue entirely.
+// Sync SHA via node:crypto. Bun's WebCrypto can fail to resolve the
+// awaited Promise when the hook is spawned with payload piped to stdin
+// (CC's standard hook invocation): stdin EOF drains the loop before
+// the digest microtask fires. node:crypto.createHash is synchronous
+// and sidesteps the issue entirely.
 function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
-// Per-session content-hash dedup. The transcript-replay loop in
-// Stop/PreCompact/SessionEnd reads the assistant transcript JSONL and
-// emits one capture per assistant entry — but the transcript grows
-// over the session, so each subsequent replay re-emits everything
-// seen so far. Without this check the daemon paid Haiku tokens on
-// O(N²) duplicates across a session (5 firings of a 100-entry
-// transcript = 500 captures, of which 400 are dupes).
-//
-// Track seen content_sha256 in `~/.mneme/shas/<session_id>.txt`,
-// one sha per line. File persists across SessionEnd so resumed
-// sessions (`claude --resume <id>`) keep their dedup state — the
-// transcript-replay flood on resume is exactly what we set out to
-// prevent. Files are tiny (~65B per unique capture) and orphans
-// from never-resumed sessions are negligible disk.
-function sessionShaFile(sessionId: string): string {
-  return join(homedir(), ".mneme", "shas", `${sessionId}.txt`);
-}
-
-function hasSeenSha(sessionId: string, sha: string): boolean {
-  try {
-    const file = sessionShaFile(sessionId);
-    if (!existsSync(file)) return false;
-    const content = readFileSync(file, "utf8");
-    // Anchor each sha with newlines on both sides so a partial-match
-    // can't false-positive (sha1 is a substring of sha2 etc).
-    return content.includes(`${sha}\n`);
-  } catch {
-    return false;
-  }
-}
-
-function recordSha(sessionId: string, sha: string): void {
-  try {
-    const file = sessionShaFile(sessionId);
-    const dir = join(homedir(), ".mneme", "shas");
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    appendFileSync(file, `${sha}\n`, { mode: 0o600 });
-  } catch {
-    // best-effort. If we can't record, the worst case is we let a
-    // dupe through later — the server still drops it via the
-    // (content_sha256, machine_id) constraint.
-  }
-}
-
-
-// Write directly into the daemon's pending queue. Used when the daemon
+// Write directly into the daemon's captured/ queue. Used when the daemon
 // HTTP listener is briefly unreachable (restart gap, crash). The daemon
-// picks up files from outbox/capture/pending/ on its very next tick or
-// fs.watch event, so brief gaps don't drop captures.
+// picks up files on its very next tick.
 //
-// Uses the same id format the daemon's handleCapture writes:
-// `<ms-timestamp>-<8-char-sha-prefix>`. Atomic-rename pattern matches
-// the daemon's outbox so a half-written file is never visible.
+// Hook is intentionally dumb: no dedup, no ledger checks. The daemon's
+// runDedup() worker drops byte-and-uuid duplicates at the captured/
+// boundary, mirroring the server's intake constraint.
+//
+// Id format matches handleCapture: `<ms-timestamp>-<8-char-sha-prefix>`.
 async function writeToDaemonOutbox(
   cleaned: Record<string, unknown>,
 ): Promise<boolean> {
@@ -186,7 +137,7 @@ async function writeToDaemonOutbox(
       typeof cleaned.content === "string" ? cleaned.content : "";
     const hash = sha256Hex(content);
     const id = `${Date.now()}-${hash.slice(0, 8)}`;
-    const dir = join(homedir(), ".mneme", "outbox", "capture", "pending");
+    const dir = join(homedir(), ".mneme", "outbox", "capture", "captured");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     const tmp = join(dir, `.${id}.json.tmp`);
     const final = join(dir, `${id}.json`);
@@ -205,28 +156,11 @@ async function postCapture(
   // Scrub here so every event funnels through one redaction point.
   const cleaned = scrubData(body) as Record<string, unknown>;
 
-  // Per-session content dedup BEFORE any daemon work. See sessionShaFile
-  // comment for the transcript-replay backstory. We treat already-seen
-  // content as success (return true) so the harness doesn't see this
-  // as an error per call.
-  const sessionId =
-    typeof cleaned.session_id === "string" ? cleaned.session_id : null;
-  const content =
-    typeof cleaned.content === "string" ? cleaned.content : "";
-  if (sessionId && content) {
-    const sha = sha256Hex(content);
-    if (hasSeenSha(sessionId, sha)) {
-      return true;
-    }
-    recordSha(sessionId, sha);
-  }
-
-  // The machine is the sole authority on captures. The hook only ever
-  // talks to the local daemon - never the cloud server directly. If the
-  // daemon HTTP listener is unreachable (briefly, during a restart),
-  // we write the capture file directly into the daemon's pending queue
-  // and the daemon's worker tick or fs.watch picks it up on the very
-  // next event. No cross-machine fallback, no parallel namespace.
+  // Hook is a dumb writer. Dedup happens daemon-side at the captured/
+  // boundary (runDedup()) so all dedup logic lives in one place and
+  // both the HTTP path and filesystem-fallback path go through the
+  // same checks. Server-side (content_sha256, machine_id) is the final
+  // backstop — DB never sees dupes regardless.
   if (!cfg.daemon) {
     // No daemon configured = no place to put captures. Drop and let the
     // operator re-run /mneme:setup. Returning true so the harness

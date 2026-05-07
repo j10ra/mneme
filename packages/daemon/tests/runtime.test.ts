@@ -77,17 +77,17 @@ describe("handleCapture", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
     });
 
     const result = await runtime.handleCapture(validBody);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const ids = await outbox.list("pending");
+    const ids = await outbox.list("captured");
     expect(ids).toContain(result.id);
 
-    const stored = (await outbox.read(result.id, "pending")) as {
+    const stored = (await outbox.read(result.id, "captured")) as {
       content: string;
     };
     expect(stored.content).toBe(validBody.content);
@@ -100,7 +100,7 @@ describe("handleCapture", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
     });
 
     const result = await runtime.handleCapture({
@@ -119,7 +119,7 @@ describe("handleCapture", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
     });
 
     const fakeKey =
@@ -131,7 +131,7 @@ describe("handleCapture", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const stored = (await outbox.read(result.id, "pending")) as {
+    const stored = (await outbox.read(result.id, "captured")) as {
       content: string;
     };
     expect(stored.content).not.toContain(fakeKey);
@@ -147,7 +147,7 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
     });
 
     const { id } = (await runtime.handleCapture(validBody)) as {
@@ -157,8 +157,8 @@ describe("runWorkerTick", () => {
 
     await runtime.runWorkerTick();
 
-    expect(await outbox.list("pending")).not.toContain(id);
-    expect(await outbox.list("extracted")).not.toContain(id);
+    expect(await outbox.list("captured")).not.toContain(id);
+    expect(await outbox.list("observations")).not.toContain(id);
     expect(await outbox.list("embedded")).not.toContain(id);
     expect(mocks.pushed).toHaveLength(1);
 
@@ -183,7 +183,7 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
     });
 
     const { id } = (await runtime.handleCapture(validBody)) as {
@@ -192,7 +192,7 @@ describe("runWorkerTick", () => {
     };
     await runtime.runWorkerTick();
 
-    expect(await outbox.list("pending")).toContain(id);
+    expect(await outbox.list("captured")).toContain(id);
     expect(mocks.pushed).toHaveLength(0);
   });
 
@@ -207,7 +207,7 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
     });
 
     const { id } = (await runtime.handleCapture(validBody)) as {
@@ -226,7 +226,7 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
     });
 
     await runtime.runWorkerTick();
@@ -254,7 +254,7 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
     });
 
     // Three captures sharing session_id "session-coal" land in the
@@ -304,7 +304,7 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
       extractBatchFull: 5,
       extractIdleMs: 30_000,
       extractForceMs: 5 * 60_000,
@@ -338,7 +338,7 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
       extractBatchFull: 3,
       extractIdleMs: 30_000,
       extractForceMs: 5 * 60_000,
@@ -372,7 +372,7 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push,
+      push: mocks.push, shasDir: join(root, "shas"),
     });
 
     await runtime.handleCapture({
