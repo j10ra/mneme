@@ -4,6 +4,7 @@
 // capture (or fetches the surface for SessionStart) to the Mneme server.
 // Fail-open: errors never block the harness.
 
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -57,13 +58,17 @@ async function pingDaemonFlush(cfg: MnemeConfig): Promise<void> {
   }
 }
 
-async function sha256Hex(input: string): Promise<string> {
-  const buf = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-256", buf);
-  const bytes = new Uint8Array(digest);
-  let hex = "";
-  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
-  return hex;
+// Sync SHA via node:crypto. We previously used `await crypto.subtle.digest`,
+// but Bun's implementation of WebCrypto interacts badly with closed-pipe
+// stdin: when the hook script is spawned with payload piped to stdin
+// (which is exactly how Claude Code invokes hooks), the awaited Promise
+// can fail to resolve because the event loop has nothing else keeping
+// it alive after stdin EOF — the process exits before the digest
+// callback fires. Result: hooks silently no-op for the entire
+// UserPromptSubmit/PostToolUse/Stop family. Using node:crypto's
+// synchronous createHash sidesteps the issue entirely.
+function sha256Hex(input: string): string {
+  return createHash("sha256").update(input).digest("hex");
 }
 
 // Per-session content-hash dedup. The transcript-replay loop in
@@ -125,7 +130,7 @@ async function writeToDaemonOutbox(
   try {
     const content =
       typeof cleaned.content === "string" ? cleaned.content : "";
-    const hash = await sha256Hex(content);
+    const hash = sha256Hex(content);
     const id = `${Date.now()}-${hash.slice(0, 8)}`;
     const dir = join(homedir(), ".mneme", "outbox", "capture", "pending");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -155,7 +160,7 @@ async function postCapture(
   const content =
     typeof cleaned.content === "string" ? cleaned.content : "";
   if (sessionId && content) {
-    const sha = await sha256Hex(content);
+    const sha = sha256Hex(content);
     if (hasSeenSha(sessionId, sha)) {
       return true;
     }
