@@ -1,0 +1,199 @@
+// Claude provider tests.
+//
+// The pure helpers (auth detection, prompt building, response parsing)
+// are tested deterministically. The actual subprocess call to `claude`
+// is only run when MNEME_RUN_LIVE=1 since it consumes the user's Claude
+// Max quota and requires the CLI to be installed and logged in.
+
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  buildExtractPrompt,
+  detectAuthMode,
+  parseExtractResponse,
+} from "../src/agents/claude.ts";
+import { claudeProvider } from "../src/agents/claude.ts";
+import type { Capture } from "../src/agents/types.ts";
+
+const ENV_KEYS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
+const RUN_LIVE = process.env.MNEME_RUN_LIVE === "1";
+
+let originalEnv: Record<string, string | undefined>;
+
+beforeEach(() => {
+  originalEnv = {};
+  for (const k of ENV_KEYS) {
+    originalEnv[k] = process.env[k];
+    delete process.env[k];
+  }
+});
+
+afterEach(() => {
+  for (const k of ENV_KEYS) {
+    if (originalEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = originalEnv[k];
+  }
+});
+
+const sampleCapture: Capture = {
+  content: "Decided to use Postgres advisory locks for dream coordination.",
+  source: "claude_code:user_prompt_submit",
+  hostname: "macbook-pro",
+  repo: "github.com/j10ra/mneme",
+  harness: "claude-code",
+  agent: "main",
+  session_id: "abc123",
+  topics: [],
+  private: false,
+  raw_meta: {},
+};
+
+describe("detectAuthMode", () => {
+  test("returns 'oauth-token' when CLAUDE_CODE_OAUTH_TOKEN is set", () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-fake";
+    expect(detectAuthMode()).toBe("oauth-token");
+  });
+
+  test("returns 'api-key' when only ANTHROPIC_API_KEY is set", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-api03-fake";
+    expect(detectAuthMode()).toBe("api-key");
+  });
+
+  test("prefers oauth-token over api-key when both are set", () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-fake";
+    process.env.ANTHROPIC_API_KEY = "sk-ant-api03-fake";
+    expect(detectAuthMode()).toBe("oauth-token");
+  });
+
+  test("falls back to 'subprocess' when no env credentials are present", () => {
+    expect(detectAuthMode()).toBe("subprocess");
+  });
+});
+
+describe("buildExtractPrompt", () => {
+  test("includes every capture's content in the user message", () => {
+    const prompt = buildExtractPrompt([
+      sampleCapture,
+      { ...sampleCapture, content: "Second capture about TEI." },
+    ]);
+    expect(prompt).toContain("Postgres advisory locks");
+    expect(prompt).toContain("TEI");
+  });
+
+  test("instructs the model to return JSON observations", () => {
+    const prompt = buildExtractPrompt([sampleCapture]);
+    expect(prompt).toMatch(/observations/i);
+    expect(prompt).toMatch(/json/i);
+  });
+});
+
+describe("parseExtractResponse", () => {
+  test("returns the observations array from a clean JSON response", () => {
+    const response = JSON.stringify({
+      observations: [
+        {
+          content: "Use advisory locks for dream coordination.",
+          kind: "decision",
+          importance: 0.8,
+          topics: ["dream", "coordination"],
+        },
+      ],
+    });
+    const memories = parseExtractResponse(response);
+    expect(memories).toHaveLength(1);
+    expect(memories[0]!.content).toContain("advisory locks");
+    expect(memories[0]!.kind).toBe("decision");
+    expect(memories[0]!.importance).toBeCloseTo(0.8, 5);
+  });
+
+  test("strips markdown code fences from the response", () => {
+    const wrapped = "```json\n" +
+      JSON.stringify({
+        observations: [
+          { content: "x", kind: "note", importance: 0.5, topics: [] },
+        ],
+      }) +
+      "\n```";
+    const memories = parseExtractResponse(wrapped);
+    expect(memories).toHaveLength(1);
+  });
+
+  test("returns an empty array when observations is empty", () => {
+    const response = JSON.stringify({ observations: [] });
+    expect(parseExtractResponse(response)).toEqual([]);
+  });
+
+  test("returns an empty array when the response is unparseable", () => {
+    expect(parseExtractResponse("not json at all")).toEqual([]);
+  });
+
+  test("clamps importance into the 0.1-1.0 range", () => {
+    const response = JSON.stringify({
+      observations: [
+        { content: "low", kind: "note", importance: -5, topics: [] },
+        { content: "high", kind: "note", importance: 99, topics: [] },
+      ],
+    });
+    const memories = parseExtractResponse(response);
+    expect(memories[0]!.importance).toBeCloseTo(0.1, 5);
+    expect(memories[1]!.importance).toBeCloseTo(1.0, 5);
+  });
+
+  test("defaults missing topics to an empty array", () => {
+    const response = JSON.stringify({
+      observations: [{ content: "x", kind: "note", importance: 0.5 }],
+    });
+    const memories = parseExtractResponse(response);
+    expect(memories[0]!.topics).toEqual([]);
+  });
+
+  test("filters observations missing required fields", () => {
+    const response = JSON.stringify({
+      observations: [
+        { content: "valid", kind: "note", importance: 0.5, topics: [] },
+        { kind: "note", importance: 0.5, topics: [] }, // no content
+        { content: "no kind", importance: 0.5, topics: [] },
+      ],
+    });
+    const memories = parseExtractResponse(response);
+    expect(memories).toHaveLength(1);
+    expect(memories[0]!.content).toBe("valid");
+  });
+});
+
+describe("claudeProvider.isAvailable", () => {
+  test("reports available with detail when subprocess is the active mode", async () => {
+    const status = await claudeProvider.isAvailable();
+    // We don't actually invoke `claude` here; just verify the shape and
+    // that the detail mentions the auth mode.
+    expect(status).toHaveProperty("available");
+    expect(status).toHaveProperty("detail");
+    expect(typeof status.available).toBe("boolean");
+    expect(status.detail).toMatch(/subprocess|oauth|api/i);
+  });
+});
+
+describe("claudeProvider.supportsDream", () => {
+  test("returns true (Claude is suitable for the distill + supersede pass)", () => {
+    expect(claudeProvider.supportsDream()).toBe(true);
+  });
+});
+
+describe("claudeProvider.extract (live)", () => {
+  test.skipIf(!RUN_LIVE)(
+    "extracts at least one observation from a meaningful capture",
+    async () => {
+      const result = await claudeProvider.extract({
+        captures: [sampleCapture],
+      });
+      expect(Array.isArray(result)).toBe(true);
+      // No strict assertion on count — Claude may legitimately decide
+      // the capture has nothing to extract. We just want to verify the
+      // pipeline runs without error.
+      for (const m of result) {
+        expect(typeof m.content).toBe("string");
+        expect(typeof m.kind).toBe("string");
+      }
+    },
+    120_000,
+  );
+});

@@ -19,15 +19,23 @@ export type Capture = {
   raw_meta: Record<string, unknown>;
 };
 
-export type Memory = {
+// What an agent provider returns from extract() — just the LLM-derived
+// fields. content_hash, chunk_id, embedding, embedding_model, and meta
+// are filled in by the daemon's glue (hash + embed + provenance) before
+// the bundle is pushed to the server.
+export type ExtractedMemory = {
   content: string;
+  kind: string;
+  importance: number;
+  topics: string[];
+};
+
+// The full record the daemon pushes to /api/bundle.
+export type Memory = ExtractedMemory & {
   content_hash: string;
   chunk_id: string;
   embedding?: number[];
   embedding_model?: string;
-  kind: string;
-  importance: number;
-  topics: string[];
   meta: Record<string, unknown>;
 };
 
@@ -45,7 +53,7 @@ export type AvailabilityStatus = {
 export interface AgentProvider {
   name: string;
   isAvailable(): Promise<AvailabilityStatus>;
-  extract(input: { captures: Capture[] }): Promise<Memory[]>;
+  extract(input: { captures: Capture[] }): Promise<ExtractedMemory[]>;
   distill?(cluster: Memory[]): Promise<DreamOutput>;
   supportsDream(): boolean;
 }
