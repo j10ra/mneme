@@ -28,10 +28,22 @@ let pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
 
 async function getPipeline(): Promise<FeatureExtractionPipeline> {
   if (!pipelinePromise) {
-    const { pipeline } = await import("@xenova/transformers");
+    const { pipeline, env: tfEnv } = await import("@xenova/transformers");
+    // Default to int8-quantized weights. bge-large-en-v1.5 quantized
+    // is ~3-4x lighter on RAM and noticeably faster on CPU than the
+    // full-precision ONNX, with negligible quality drop for our use
+    // (cosine search of 1024-dim vectors). Set MNEME_EMBED_FULL_PREC=1
+    // to opt back into full precision.
+    if (process.env.MNEME_EMBED_FULL_PREC !== "1") {
+      tfEnv.useBrowserCache = false;
+      tfEnv.allowLocalModels = false;
+    }
     pipelinePromise = pipeline(
       "feature-extraction",
       TRANSFORMERS_MODEL_ID,
+      {
+        quantized: process.env.MNEME_EMBED_FULL_PREC !== "1",
+      } as never,
     ) as unknown as Promise<FeatureExtractionPipeline>;
   }
   return pipelinePromise;
