@@ -88,7 +88,7 @@ export function buildSupersedePrompt(
 export function parseSupersedeResponse(text: string): SupersedePair[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripCodeFences(text));
+    parsed = JSON.parse(extractJsonBlock(text));
   } catch {
     return [];
   }
@@ -116,13 +116,54 @@ export function parseSupersedeResponse(text: string): SupersedePair[] {
   return result;
 }
 
-// Strip ```json ... ``` fences if present. Older models sometimes wrap
-// JSON output despite explicit instructions otherwise.
-function stripCodeFences(text: string): string {
+// Pull a JSON object out of model output that may contain (in any order):
+//   - a ```json ... ``` fenced block
+//   - prose explanation after (or before) the JSON
+//   - just the bare object
+// Strategy: prefer the first fenced block; if no fence, scan for the
+// first balanced { ... } substring. Returns the substring (still string)
+// for JSON.parse to handle.
+function extractJsonBlock(text: string): string {
   const trimmed = text.trim();
-  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/;
-  const match = trimmed.match(fence);
-  return match ? match[1]!.trim() : trimmed;
+
+  // First fenced block (with or without `json` tag). Non-greedy, no
+  // anchors, so trailing prose after the fence is ignored.
+  const fence = /```(?:json)?\s*([\s\S]*?)\s*```/;
+  const fenceMatch = trimmed.match(fence);
+  if (fenceMatch) return fenceMatch[1]!.trim();
+
+  // No fence: find first `{` and walk forward counting braces (respecting
+  // strings / escapes) until balanced. Robust to prose around the object.
+  const start = trimmed.indexOf("{");
+  if (start === -1) return trimmed;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < trimmed.length; i++) {
+    const ch = trimmed[i]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return trimmed.slice(start, i + 1);
+    }
+  }
+
+  // Unbalanced: hand the whole thing to JSON.parse and let it fail.
+  return trimmed;
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -132,7 +173,7 @@ function clamp(n: number, lo: number, hi: number): number {
 export function parseExtractResponse(text: string): ExtractedMemory[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripCodeFences(text));
+    parsed = JSON.parse(extractJsonBlock(text));
   } catch {
     return [];
   }
@@ -170,7 +211,7 @@ export function parseClusterResponse(text: string): {
 } | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripCodeFences(text));
+    parsed = JSON.parse(extractJsonBlock(text));
   } catch {
     return null;
   }

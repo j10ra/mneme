@@ -119,6 +119,42 @@ describe("parseExtractResponse", () => {
     expect(memories).toHaveLength(1);
   });
 
+  test("extracts JSON when the model trails prose after the fenced block", () => {
+    // Real shape Haiku returned in production: fenced JSON followed by
+    // an explanation paragraph. The original strict-anchor regex missed
+    // this and dropped real observations.
+    const wrapped =
+      "```json\n" +
+      JSON.stringify({
+        observations: [
+          {
+            content: "Use Postgres advisory locks for dream coordination.",
+            kind: "decision",
+            importance: 0.7,
+            topics: [],
+          },
+        ],
+      }) +
+      "\n```\n\nThese captures contain enough decisions worth carrying forward.";
+    const memories = parseExtractResponse(wrapped);
+    expect(memories).toHaveLength(1);
+    expect(memories[0]!.content).toContain("advisory locks");
+  });
+
+  test("extracts JSON when there's no fence and prose surrounds the object", () => {
+    const wrapped =
+      "Here are the observations I extracted:\n\n" +
+      JSON.stringify({
+        observations: [
+          { content: "a useful fact", kind: "note", importance: 0.4, topics: [] },
+        ],
+      }) +
+      "\n\nLet me know if you need more.";
+    const memories = parseExtractResponse(wrapped);
+    expect(memories).toHaveLength(1);
+    expect(memories[0]!.content).toBe("a useful fact");
+  });
+
   test("returns an empty array when observations is empty", () => {
     const response = JSON.stringify({ observations: [] });
     expect(parseExtractResponse(response)).toEqual([]);
