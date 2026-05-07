@@ -8,7 +8,7 @@ import {
 } from "../config.ts";
 import { sha256Hex, sql } from "../db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
-import { pickExtract, reportFailure, reportSuccess } from "../llm/pick.ts";
+import { pickExtract } from "../llm/pick.ts";
 import type { Observation } from "../llm/types.ts";
 
 const breaker = new Breaker({
@@ -50,9 +50,10 @@ export const runExtractOnce = mnemeFn(
 
     // Pick the provider for this whole cycle. Locking + concat use its
     // limits; the LLM call uses the same provider; success/failure feeds
-    // its breaker. Calling the picker once keeps decisions consistent
-    // even if breakers flip mid-cycle.
-    const { provider, providerName, limits } = pickExtract();
+    // its breaker through the instance wrapper. Calling the picker once
+    // keeps decisions consistent even if breakers flip mid-cycle.
+    const ext = pickExtract();
+    const limits = ext.limits;
 
     // ── Phase 1: lock (short tx) ───────────────────────────────────────
     const locked = await sql.begin(async (tx) => {
@@ -153,7 +154,7 @@ export const runExtractOnce = mnemeFn(
 
     // ── Phase 2: LLM call (NO tx held) ─────────────────────────────────
     Logger.info("extract: calling LLM", {
-      provider: providerName,
+      provider: ext.name,
       captures: jobIds.length,
       chars: concatenated.length,
       repo: seed.repo ?? "-",
@@ -161,8 +162,8 @@ export const runExtractOnce = mnemeFn(
     const t0 = Date.now();
     let observations: Observation[];
     try {
-      observations = await provider.extractObservations(concatenated);
-      reportSuccess(providerName);
+      // Per-provider breaker is fed inside ext.extractObservations.
+      observations = await ext.extractObservations(concatenated);
       const r = breaker.report("success");
       if (r.priorFailures > 0) {
         Logger.info("extract: circuit breaker recovered", {
@@ -172,9 +173,8 @@ export const runExtractOnce = mnemeFn(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const elapsed_s = Number(((Date.now() - t0) / 1000).toFixed(1));
-      reportFailure(providerName);
       Logger.error("extract: failed", e, {
-        provider: providerName,
+        provider: ext.name,
         jobs: jobIds.length,
         elapsed_s,
       });
@@ -216,8 +216,8 @@ export const runExtractOnce = mnemeFn(
           const meta = {
             source_capture_ids: captureIds,
             extracted_kind: obs.kind,
-            extractor_provider: providerName,
-            extractor_model: provider.extractModel,
+            extractor_provider: ext.name,
+            extractor_model: ext.model,
           };
 
           const rows = await tx<{ id: string }[]>`

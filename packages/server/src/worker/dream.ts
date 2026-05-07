@@ -10,7 +10,7 @@ import {
 } from "../config.ts";
 import { sha256Hex, sql } from "../db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
-import { pickDream, reportFailure, reportSuccess } from "../llm/pick.ts";
+import { pickDream } from "../llm/pick.ts";
 import type { Kind, SupersedeCandidate } from "../llm/types.ts";
 
 function clip(s: string, max: number): string {
@@ -162,23 +162,22 @@ export const runDreamOnce = mnemeFn(
       // Pick provider per cluster so the breaker can open mid-cycle if a
       // provider starts failing — the rest of the cycle then runs against
       // the other one. Each cluster's prompt-size clip respects whichever
-      // provider it ends up calling.
-      const { provider, providerName, limits } = pickDream();
+      // provider it ends up calling. The instance wraps the provider's
+      // methods so success/failure auto-feeds the per-provider breaker.
+      const dr = pickDream();
 
       const concatenated = clip(
         members.map((m, i) => `[${i + 1}] ${m.content}`).join("\n\n---\n\n"),
-        limits.maxClusterChars,
+        dr.limits.maxClusterChars,
       );
 
       let result: { title: string; summary: string };
       try {
-        result = await provider.distillCluster(concatenated);
-        reportSuccess(providerName);
+        result = await dr.distillCluster(concatenated);
       } catch (e) {
-        reportFailure(providerName);
         clustersFailed++;
         Logger.warn("dream: distill failed", e, {
-          provider: providerName,
+          provider: dr.name,
           members: members.length,
         });
         continue;
@@ -212,8 +211,8 @@ export const runDreamOnce = mnemeFn(
               ${sql.json({
                 cluster_title: result.title,
                 member_ids: memberIds,
-                distiller_provider: providerName,
-                distiller_model: provider.dreamModel,
+                distiller_provider: dr.name,
+                distiller_model: dr.model,
               } as never)}
             )
             ON CONFLICT (chunk_id) DO NOTHING
@@ -267,7 +266,7 @@ export const runDreamOnce = mnemeFn(
           clustersWritten++;
           Logger.info("dream: cluster written", {
             id: clusterId,
-            provider: providerName,
+            provider: dr.name,
             title: result.title,
             members: members.length,
             repo: seed.repo ?? "-",
@@ -280,11 +279,13 @@ export const runDreamOnce = mnemeFn(
 
       // ── Phase 4: supersede pass (cloud-only) ───────────────────────
       // Skip on local — declaring memories obsolete is too consequential
-      // for the 7B/3B path. Trust gate is the picker; we double-check
-      // findSupersedes is wired since it's optional in the contract.
-      if (providerName !== "openrouter" || !provider.findSupersedes) {
-        continue;
-      }
+      // for the 7B/3B path. The trust policy lives in the type:
+      // `findSupersedes` is optional and only exported by providers we
+      // trust to make this judgement (today: openrouter only). Local
+      // omits the method entirely, so this check both gates the policy
+      // and narrows the type for the call below.
+      if (!dr.findSupersedes) continue;
+      const findSupersedes = dr.findSupersedes;
 
       // Pull adjacent neighbors (cosine < 0.15, last 60d, not pinned, not
       // already superseded, not in this cluster). Caps per-member at 5;
@@ -334,16 +335,12 @@ export const runDreamOnce = mnemeFn(
 
       const candidateById = new Map(candidates.map((c) => [c.id, c]));
 
-      let pairs: Awaited<
-        ReturnType<NonNullable<typeof provider.findSupersedes>>
-      >;
+      let pairs: Awaited<ReturnType<typeof findSupersedes>>;
       try {
-        pairs = await provider.findSupersedes(candidates);
-        reportSuccess(providerName);
+        pairs = await findSupersedes(candidates);
       } catch (e) {
-        reportFailure(providerName);
         Logger.warn("dream: supersede call failed", e, {
-          provider: providerName,
+          provider: dr.name,
           candidates: candidates.length,
         });
         continue;
