@@ -153,6 +153,45 @@ export async function startDaemon(): Promise<void> {
           headers: { "Content-Type": "application/json" },
         });
       }
+      if (req.method === "POST" && url.pathname === "/dream/run") {
+        // Manual dream trigger. Same path as the hourly cron tick: tries
+        // to acquire the leader lock, fetches candidates, distills via
+        // Sonnet, posts clusters. Returns synchronously with the result
+        // so curl shows what happened. Useful for validation and ad-hoc
+        // operator runs.
+        try {
+          const result = await runDreamCycle({
+            serverUrl: config.server_url,
+            token: config.token,
+            machineId: config.machine_id,
+            fetch: (u, init) => fetch(u, init),
+            distill: (memories) => {
+              if (!agent.distill) {
+                throw new Error(
+                  `agent ${agent.name} does not support dream (no distill())`,
+                );
+              }
+              return agent.distill(memories);
+            },
+            findSupersedes: agent.findSupersedes
+              ? (candidates) => agent.findSupersedes!(candidates)
+              : undefined,
+          });
+          Logger.info("dream cycle (manual)", result);
+          return new Response(JSON.stringify(result), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (err) {
+          Logger.error("dream cycle (manual) failed", err);
+          return new Response(
+            JSON.stringify({
+              error: err instanceof Error ? err.message : String(err),
+            }),
+            { status: 500, headers: { "Content-Type": "application/json" } },
+          );
+        }
+      }
       if (req.method === "POST" && url.pathname === "/flush") {
         // Fire-and-forget: don't block the hook on extract latency.
         // The hook's flush ping is a hint, not a synchronous request.
