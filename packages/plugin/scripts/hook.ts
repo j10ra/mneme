@@ -38,6 +38,29 @@ async function postCapture(
   // Scrub here, not at the call sites, so every event funnels through one
   // redaction point. Server still scrubs on receipt as defense in depth.
   const cleaned = scrubData(body) as Record<string, unknown>;
+
+  // Daemon-first when the daemon block is present in config.json. The
+  // daemon owns local outbox + extract + embed + push. On
+  // ECONNREFUSED / timeout / non-2xx, fall back to the server's
+  // /api/capture so a down daemon doesn't drop captures during the
+  // Phase 1 rollout. The fallback path is removed in Phase 2.
+  if (cfg.daemon) {
+    try {
+      const resp = await fetch(`http://127.0.0.1:${cfg.daemon.port}/capture`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Mneme-Source": "hook",
+        },
+        body: JSON.stringify(cleaned),
+        signal: AbortSignal.timeout(2500),
+      });
+      if (resp.ok) return true;
+    } catch {
+      // Daemon unreachable; fall through to direct-server post.
+    }
+  }
+
   try {
     const resp = await fetch(serverUrl(cfg, "/api/capture"), {
       method: "POST",
