@@ -145,6 +145,10 @@ export function mountAuthRoutes(app: Hono): void {
 
   // ---------------------------------------------------------------------------
   // GET /api/auth/machines — list registered machines (active + revoked).
+  // Each row carries the latest daemon heartbeat (if the daemon has
+  // ever posted) so "is this machine's daemon healthy?" is answerable
+  // from one call. heartbeat_* fields are null on machines without an
+  // installed daemon or with a daemon that has never posted.
   // ---------------------------------------------------------------------------
   app.get(
     "/api/auth/machines",
@@ -160,11 +164,26 @@ export function mountAuthRoutes(app: Hono): void {
           created_at: string;
           last_used_at: string | null;
           revoked_at: string | null;
+          heartbeat_pending: number | null;
+          heartbeat_extracted: number | null;
+          heartbeat_embedded: number | null;
+          heartbeat_failed: number | null;
+          heartbeat_last_processed_at: string | null;
+          heartbeat_posted_at: string | null;
         }[]
       >`
-        SELECT id, name, machine_id, scopes, created_at, last_used_at, revoked_at
-        FROM _ops.api_keys
-        ORDER BY created_at DESC
+        SELECT
+          k.id, k.name, k.machine_id, k.scopes,
+          k.created_at, k.last_used_at, k.revoked_at,
+          h.outbox_pending    AS heartbeat_pending,
+          h.outbox_extracted  AS heartbeat_extracted,
+          h.outbox_embedded   AS heartbeat_embedded,
+          h.outbox_failed     AS heartbeat_failed,
+          h.last_processed_at AS heartbeat_last_processed_at,
+          h.posted_at         AS heartbeat_posted_at
+        FROM _ops.api_keys k
+        LEFT JOIN _ops.daemon_heartbeats h ON h.machine_id = k.machine_id
+        ORDER BY k.created_at DESC
       `;
       return c.json({ machines: rows });
     },
