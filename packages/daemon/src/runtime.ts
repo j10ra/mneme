@@ -83,9 +83,11 @@ const COALESCE_WINDOW_MS = 5 * 60 * 1000;
 // chunk into multiple back-to-back calls (each ~10s).
 const MAX_BATCH_SIZE = 20;
 
-// Defaults for the extract gating window. Production overrides them in
-// index.ts (idle=30s, force=5min, batchFull=20). Tests keep the
-// aggressive shape so single-capture happy-path assertions still hold.
+// Defaults for the extract gating window. Production overrides these
+// from index.ts (currently batchFull=50, idleMs=2min, forceMs=5min).
+// The aggressive defaults exist purely for tests, which don't wire any
+// of these deps and need 1-capture-per-call shape to assert end-to-end
+// flow without faking time.
 const DEFAULT_EXTRACT_BATCH_FULL = 1;
 const DEFAULT_EXTRACT_IDLE_MS = 0;
 const DEFAULT_EXTRACT_FORCE_MS = 0;
