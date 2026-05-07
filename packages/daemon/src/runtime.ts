@@ -23,6 +23,7 @@
 // behavior where coalesced extract jobs link memories to the seed
 // capture_id and other captures stand alone.
 
+import { Logger } from "@mneme/core";
 import { scrub, scrubData } from "@mneme/shared";
 import { EMBEDDER_DIM, EMBEDDER_MODEL } from "./embed.ts";
 import type { Outbox, OutboxState } from "./outbox.ts";
@@ -234,18 +235,19 @@ export function createRuntime(deps: DaemonDeps) {
         }
       }
 
-      const sessionLabel = seed.capture.session_id ?? "(none)";
-      const repoLabel = seed.capture.repo ?? "(none)";
-      console.log(
-        `[mneme-daemon] extract batch=${batch.length} session=${sessionLabel} repo=${repoLabel}`,
-      );
+      Logger.info("extract batch", {
+        size: batch.length,
+        session: seed.capture.session_id ?? null,
+        repo: seed.capture.repo ?? null,
+      });
 
       let memories: ExtractedMemory[];
       try {
         memories = await deps.extract(batch.map((e) => e.capture));
-        console.log(
-          `[mneme-daemon] extract -> ${memories.length} observation(s) from ${batch.length} capture(s)`,
-        );
+        Logger.info("extract result", {
+          observations: memories.length,
+          captures: batch.length,
+        });
       } catch (err) {
         if (asPermanent(err)) {
           // Permanent failure: every member of the batch goes to failed/.
@@ -327,9 +329,10 @@ export function createRuntime(deps: DaemonDeps) {
       };
       await deps.push(bundle);
       await deps.outbox.delete(id, "embedded");
-      console.log(
-        `[mneme-daemon] pushed bundle id=${id} memories=${stage.memories.length}`,
-      );
+      Logger.info("bundle pushed", {
+        id,
+        memories: stage.memories.length,
+      });
     });
   }
 

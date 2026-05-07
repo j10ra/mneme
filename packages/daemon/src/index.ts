@@ -14,9 +14,10 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { Logger, configureLogger } from "@mneme/core";
 import { pickAgent } from "./agents/index.ts";
 import { runDreamCycle } from "./dream.ts";
-import { embedBatch } from "./embed.ts";
+import { disposeIfIdle, embedBatch } from "./embed.ts";
 import { createOutbox } from "./outbox.ts";
 import { type Bundle, createRuntime } from "./runtime.ts";
 
@@ -48,6 +49,10 @@ const HEARTBEAT_TICK_MS = 60_000;
 const EXTRACT_BATCH_FULL = Number.MAX_SAFE_INTEGER;
 const EXTRACT_IDLE_MS = 3 * 60_000;
 const EXTRACT_FORCE_MS = 0;
+
+// How often to consider releasing the embedder pipeline if idle. Cheap
+// check; runs once a minute alongside the worker tick.
+const EMBEDDER_REAP_TICK_MS = 60_000;
 
 async function readConfig(): Promise<DaemonConfig> {
   const path = join(homedir(), ".mneme", "config.json");
@@ -113,11 +118,13 @@ export async function startDaemon(): Promise<void> {
     extractForceMs: EXTRACT_FORCE_MS,
   });
 
-  console.log(
-    `[mneme-daemon] starting (machine=${config.machine_id}, agent=${config.agent_provider})`,
-  );
-  console.log(`[mneme-daemon] outbox=${outboxRoot}`);
-  console.log(`[mneme-daemon] server=${config.server_url}`);
+  configureLogger({ jsonMode: false, minLevel: "debug" });
+  Logger.info("daemon starting", {
+    machine_id: config.machine_id,
+    agent: config.agent_provider,
+    outbox: outboxRoot,
+    server: config.server_url,
+  });
 
   // HTTP listener: hook posts captures here.
   Bun.serve({
@@ -191,9 +198,9 @@ export async function startDaemon(): Promise<void> {
       return new Response("not found", { status: 404 });
     },
   });
-  console.log(
-    `[mneme-daemon] listening on http://127.0.0.1:${config.daemon_port}`,
-  );
+  Logger.info("daemon listening", {
+    url: `http://127.0.0.1:${config.daemon_port}`,
+  });
 
   // Worker tick loop. The `isTicking` guard prevents concurrent ticks:
   // setInterval doesn't await, so a long extract / embed (multi-second)
@@ -207,7 +214,7 @@ export async function startDaemon(): Promise<void> {
     try {
       await runtime.runWorkerTick();
     } catch (err) {
-      console.error("worker tick crashed:", err);
+      Logger.error("worker tick crashed", err);
     } finally {
       isTicking = false;
     }
@@ -216,6 +223,14 @@ export async function startDaemon(): Promise<void> {
   // Kick once on boot so any backlog from before daemon start drains
   // immediately rather than waiting up to DEFAULT_TICK_MS.
   void tick();
+
+  // Embedder reaper: drops the loaded ONNX pipeline after PIPELINE_IDLE_MS
+  // with no embed calls. Frees the bge-large model's RAM (~500MB) when
+  // the laptop is idle between coding sessions; reloads transparently
+  // on the next embed.
+  setInterval(() => {
+    void disposeIfIdle();
+  }, EMBEDDER_REAP_TICK_MS);
 
   // Dream loop: hourly attempt, the server-side advisory-claim ledger
   // ensures only one daemon per 8h window actually runs. A cron offset
@@ -241,12 +256,12 @@ export async function startDaemon(): Promise<void> {
           : undefined,
       });
       if (!result.skipped) {
-        console.log(
-          `dream cycle complete: ${result.clustersWritten ?? 0} clusters written`,
-        );
+        Logger.info("dream cycle complete", {
+          clusters_written: result.clustersWritten ?? 0,
+        });
       }
     } catch (err) {
-      console.error("dream cycle crashed:", err);
+      Logger.error("dream cycle crashed", err);
     }
   };
   setInterval(dreamTick, DREAM_TICK_MS);
@@ -280,10 +295,12 @@ export async function startDaemon(): Promise<void> {
         }),
       });
       if (!response.ok) {
-        console.warn(`heartbeat ${response.status}`);
+        Logger.warn("heartbeat non-ok", { status: response.status });
       }
     } catch (err) {
-      console.warn("heartbeat failed:", err);
+      Logger.warn(
+        `heartbeat failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   };
   setInterval(heartbeatTick, HEARTBEAT_TICK_MS);

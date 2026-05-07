@@ -14,6 +14,7 @@
 // returns just {title, summary}); a follow-up can wire supersede_pairs
 // once the basic distill cycle is healthy.
 
+import { Logger } from "@mneme/core";
 import type {
   DreamOutput,
   Memory,
@@ -236,7 +237,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
             });
             supersede_pairs = await deps.findSupersedes(candidates);
           } catch (err) {
-            console.error("dream supersede pass failed", { memberIds, err });
+            Logger.warn("dream supersede pass failed", err, { memberIds });
           }
         }
 
@@ -251,7 +252,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
       } catch (err) {
         // Per-cluster failure isolation: one bad LLM call does not
         // crash the cycle. Other clusters proceed.
-        console.error("dream distill failed for cluster", { memberIds, err });
+        Logger.warn("dream distill failed for cluster", err, { memberIds });
       }
     }
   }
