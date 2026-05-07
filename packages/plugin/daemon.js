@@ -3,8 +3,8 @@ var __require = import.meta.require;
 
 // packages/daemon/src/index.ts
 import { mkdir as mkdir5, readFile as readFile4, readdir as readdir3, rename as rename4 } from "fs/promises";
-import { existsSync as existsSync4 } from "fs";
-import { homedir as homedir4 } from "os";
+import { existsSync as existsSync5 } from "fs";
+import { homedir as homedir5 } from "os";
 import { join as join5 } from "path";
 
 // packages/core/src/context.ts
@@ -290,10 +290,217 @@ var Logger = {
 import { Hono } from "hono";
 
 // packages/daemon/src/agents/claude.ts
+import { existsSync as existsSync2 } from "fs";
+import { spawnSync as spawnSync2 } from "child_process";
+import { homedir as homedir2 } from "os";
+import { query as query2 } from "@anthropic-ai/claude-agent-sdk";
+
+// packages/daemon/src/agents/claude-streaming.ts
 import { existsSync } from "fs";
 import { spawnSync } from "child_process";
 import { homedir } from "os";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+var DISALLOWED_TOOLS = [
+  "Bash",
+  "Read",
+  "Write",
+  "Edit",
+  "Grep",
+  "Glob",
+  "WebFetch",
+  "WebSearch",
+  "Task",
+  "TodoWrite"
+];
+var RECYCLE_MS = 30 * 60 * 1000;
+var TURN_TIMEOUT_MS = 90 * 1000;
+function findClaudeExecutable() {
+  if (process.env.CLAUDE_EXECUTABLE_PATH) {
+    return process.env.CLAUDE_EXECUTABLE_PATH;
+  }
+  const which = spawnSync("which", ["claude"], { encoding: "utf8" });
+  const fromPath = which.stdout?.trim();
+  if (fromPath && existsSync(fromPath))
+    return fromPath;
+  const fallbacks = [
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+    `${homedir()}/.local/bin/claude`,
+    `${homedir()}/.bun/bin/claude`
+  ];
+  for (const candidate of fallbacks) {
+    if (existsSync(candidate))
+      return candidate;
+  }
+  throw new Error("claude executable not found. Install Claude Code or set CLAUDE_EXECUTABLE_PATH.");
+}
+
+class StreamingClaudeSession {
+  model;
+  systemPrompt;
+  inputBuffer = [];
+  inputResolver = null;
+  inputClosed = false;
+  querySession = null;
+  startedAt = 0;
+  lock = Promise.resolve();
+  constructor(model, systemPrompt) {
+    this.model = model;
+    this.systemPrompt = systemPrompt;
+  }
+  async* streamInputs() {
+    while (!this.inputClosed) {
+      if (this.inputBuffer.length === 0) {
+        await new Promise((resolve) => {
+          this.inputResolver = resolve;
+        });
+        this.inputResolver = null;
+        if (this.inputClosed)
+          return;
+      }
+      const next = this.inputBuffer.shift();
+      if (next)
+        yield next;
+    }
+  }
+  start() {
+    if (this.querySession)
+      return;
+    this.inputClosed = false;
+    this.inputBuffer = [];
+    this.querySession = query({
+      prompt: this.streamInputs(),
+      options: {
+        model: this.model,
+        systemPrompt: this.systemPrompt,
+        pathToClaudeCodeExecutable: findClaudeExecutable(),
+        disallowedTools: DISALLOWED_TOOLS,
+        mcpServers: {},
+        settingSources: [],
+        strictMcpConfig: true,
+        includePartialMessages: false
+      }
+    });
+    this.startedAt = Date.now();
+    Logger.info("streaming-claude: session started", {
+      model: this.model
+    });
+  }
+  pushInput(prompt) {
+    this.inputBuffer.push({
+      type: "user",
+      message: { role: "user", content: prompt },
+      parent_tool_use_id: null
+    });
+    if (this.inputResolver) {
+      const r = this.inputResolver;
+      this.inputResolver = null;
+      r();
+    }
+  }
+  async readTurnText() {
+    if (!this.querySession)
+      throw new Error("session not started");
+    const session = this.querySession;
+    let response = "";
+    let assistantError = null;
+    const start = Date.now();
+    while (true) {
+      if (Date.now() - start > TURN_TIMEOUT_MS) {
+        throw new Error(`streaming-claude: turn timed out after ${TURN_TIMEOUT_MS}ms`);
+      }
+      const result = await session.next();
+      if (result.done) {
+        throw new Error("streaming-claude: query stream closed mid-turn");
+      }
+      const msg = result.value;
+      if (msg.type === "assistant") {
+        const errField = msg.error;
+        if (typeof errField === "string") {
+          assistantError = errField;
+          continue;
+        }
+        const content = msg.message?.content;
+        if (typeof content === "string") {
+          response += content;
+        } else if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block && typeof block === "object" && block.type === "text" && typeof block.text === "string") {
+              response += block.text;
+            }
+          }
+        }
+      } else if (msg.type === "result") {
+        if (msg.subtype !== "success") {
+          const detail = msg.error ?? msg.subtype;
+          throw new Error(`streaming-claude: non-success result \u2014 ${typeof detail === "string" ? detail : JSON.stringify(detail).slice(0, 200)}`);
+        }
+        if (assistantError && !response.trim()) {
+          throw new Error(`streaming-claude: assistant error \u2014 ${assistantError}`);
+        }
+        return response;
+      }
+    }
+  }
+  async ask(prompt) {
+    const previous = this.lock;
+    let release;
+    this.lock = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      if (this.shouldRecycle()) {
+        await this.teardown();
+      }
+      this.start();
+      this.pushInput(prompt);
+      try {
+        return await this.readTurnText();
+      } catch (err) {
+        await this.teardown();
+        throw err;
+      }
+    } finally {
+      release();
+    }
+  }
+  shouldRecycle() {
+    return this.querySession !== null && this.startedAt > 0 && Date.now() - this.startedAt > RECYCLE_MS;
+  }
+  async teardown() {
+    this.inputClosed = true;
+    if (this.inputResolver) {
+      const r = this.inputResolver;
+      this.inputResolver = null;
+      r();
+    }
+    if (this.querySession) {
+      try {
+        await this.querySession.interrupt();
+      } catch {}
+    }
+    this.querySession = null;
+    this.startedAt = 0;
+    this.inputBuffer = [];
+  }
+}
+var sessions = new Map;
+function sessionFor(model, systemPrompt) {
+  const key = `${model}::${systemPrompt.slice(0, 64)}`;
+  let s = sessions.get(key);
+  if (!s) {
+    s = new StreamingClaudeSession(model, systemPrompt);
+    sessions.set(key, s);
+  }
+  return s;
+}
+async function streamingCallClaude(prompt, model, systemPrompt) {
+  return sessionFor(model, systemPrompt).ask(prompt);
+}
+function streamingEnabled() {
+  return process.env.MNEME_DISABLE_STREAMING_SDK !== "1";
+}
 
 // packages/daemon/src/agents/prompts.ts
 var SYSTEM_PROMPT = `You distill conversation captures into structured memory observations that future-you will need when starting a fresh session.
@@ -556,27 +763,27 @@ function parseClusterResponse(text) {
     return null;
   return { title: p.title.trim(), summary: p.summary.trim() };
 }
-function findClaudeExecutable() {
+function findClaudeExecutable2() {
   if (process.env.CLAUDE_EXECUTABLE_PATH) {
     return process.env.CLAUDE_EXECUTABLE_PATH;
   }
-  const which = spawnSync("which", ["claude"], { encoding: "utf8" });
+  const which = spawnSync2("which", ["claude"], { encoding: "utf8" });
   const fromPath = which.stdout?.trim();
-  if (fromPath && existsSync(fromPath))
+  if (fromPath && existsSync2(fromPath))
     return fromPath;
   const fallbacks = [
     "/usr/local/bin/claude",
     "/opt/homebrew/bin/claude",
-    `${homedir()}/.local/bin/claude`,
-    `${homedir()}/.bun/bin/claude`
+    `${homedir2()}/.local/bin/claude`,
+    `${homedir2()}/.bun/bin/claude`
   ];
   for (const candidate of fallbacks) {
-    if (existsSync(candidate))
+    if (existsSync2(candidate))
       return candidate;
   }
   throw new Error("claude executable not found. Install Claude Code or set CLAUDE_EXECUTABLE_PATH.");
 }
-var DISALLOWED_TOOLS = [
+var DISALLOWED_TOOLS2 = [
   "Bash",
   "Read",
   "Write",
@@ -591,13 +798,19 @@ var DISALLOWED_TOOLS = [
 var EXTRACT_MODEL = "haiku";
 var DREAM_MODEL = "sonnet";
 async function callClaude(prompt, model, systemPrompt) {
-  const messages = query({
+  if (streamingEnabled()) {
+    return streamingCallClaude(prompt, model, systemPrompt);
+  }
+  return callClaudeOneShot(prompt, model, systemPrompt);
+}
+async function callClaudeOneShot(prompt, model, systemPrompt) {
+  const messages = query2({
     prompt,
     options: {
       model,
       systemPrompt,
-      pathToClaudeCodeExecutable: findClaudeExecutable(),
-      disallowedTools: DISALLOWED_TOOLS,
+      pathToClaudeCodeExecutable: findClaudeExecutable2(),
+      disallowedTools: DISALLOWED_TOOLS2,
       mcpServers: {},
       settingSources: [],
       strictMcpConfig: true,
@@ -1158,7 +1371,7 @@ async function embedBatch(texts) {
 }
 
 // packages/daemon/src/outbox.ts
-import { existsSync as existsSync2 } from "fs";
+import { existsSync as existsSync3 } from "fs";
 import {
   mkdir as mkdir2,
   readFile as readFile2,
@@ -1194,9 +1407,9 @@ function createOutbox(rootPath) {
     for (const { from, to } of LEGACY_MOVES) {
       const oldDir = join2(rootPath, from);
       const newDir = join2(rootPath, to);
-      if (!existsSync2(oldDir))
+      if (!existsSync3(oldDir))
         continue;
-      if (!existsSync2(newDir)) {
+      if (!existsSync3(newDir)) {
         await rename2(oldDir, newDir);
       } else {
         const entries = await readdir2(oldDir);
@@ -1318,13 +1531,9 @@ function mountOpsRoutes(app, runtime) {
 }
 
 // packages/daemon/src/runtime.ts
-import { existsSync as existsSync3 } from "fs";
-import {
-  appendFile,
-  mkdir as mkdir3,
-  readFile as fsReadFile
-} from "fs/promises";
-import { homedir as homedir2 } from "os";
+import { existsSync as existsSync4 } from "fs";
+import { appendFile, mkdir as mkdir3, readFile as fsReadFile } from "fs/promises";
+import { homedir as homedir3 } from "os";
 import { join as join3 } from "path";
 
 // packages/shared/src/scrub.ts
@@ -1373,7 +1582,12 @@ function scrubData(data) {
   return data;
 }
 // packages/daemon/src/runtime.ts
-var REQUIRED_STRING_FIELDS = ["content", "source", "hostname", "harness"];
+var REQUIRED_STRING_FIELDS = [
+  "content",
+  "source",
+  "hostname",
+  "harness"
+];
 var COALESCE_WINDOW_MS = 5 * 60 * 1000;
 var MAX_BATCH_SIZE = 20;
 var DEFAULT_EXTRACT_BATCH_FULL = 1;
@@ -1527,13 +1741,13 @@ function createRuntime(deps) {
       }));
     }
   }
-  const SHAS_DIR = deps.shasDir ?? join3(homedir2(), ".mneme", "shas");
+  const SHAS_DIR = deps.shasDir ?? join3(homedir3(), ".mneme", "shas");
   function shasFile(sessionId) {
     return join3(SHAS_DIR, `${sessionId}.txt`);
   }
   async function loadSessionLedger(sessionId) {
     const file = shasFile(sessionId);
-    if (!existsSync3(file))
+    if (!existsSync4(file))
       return new Set;
     try {
       const buf = await fsReadFile(file, "utf8");
@@ -1547,7 +1761,7 @@ function createRuntime(deps) {
     if (keys.length === 0)
       return;
     try {
-      if (!existsSync3(SHAS_DIR)) {
+      if (!existsSync4(SHAS_DIR)) {
         await mkdir3(SHAS_DIR, { recursive: true, mode: 448 });
       }
       await appendFile(shasFile(sessionId), `${keys.join(`
@@ -1744,10 +1958,10 @@ function createRuntime(deps) {
 
 // packages/daemon/src/scheduler.ts
 import { mkdir as mkdir4, readFile as readFile3, rename as rename3, writeFile as writeFile3 } from "fs/promises";
-import { homedir as homedir3 } from "os";
+import { homedir as homedir4 } from "os";
 import { dirname, join as join4 } from "path";
 var TICK_MS = 60000;
-var STATE_PATH = join4(homedir3(), ".mneme", "schedule.json");
+var STATE_PATH = join4(homedir4(), ".mneme", "schedule.json");
 var STALE_NEW_JOB_SLACK_MS = 5 * 60000;
 var registry = new Map;
 var state = {};
@@ -1896,7 +2110,7 @@ var DREAM_SCHEDULE_MS = 8 * 3600000;
 var HEARTBEAT_SCHEDULE_MS = 60000;
 var EMBEDDER_REAP_SCHEDULE_MS = 60000;
 async function readConfig() {
-  const path = join5(homedir4(), ".mneme", "config.json");
+  const path = join5(homedir5(), ".mneme", "config.json");
   const raw = await readFile4(path, "utf8");
   const shaped = JSON.parse(raw);
   if (!shaped.daemon) {
@@ -1931,12 +2145,12 @@ function pushBundleViaServer(serverUrl, token) {
   };
 }
 async function migrateLegacyCaptureOutbox() {
-  const root = join5(homedir4(), ".mneme", "outbox");
+  const root = join5(homedir5(), ".mneme", "outbox");
   const captureRoot = join5(root, "capture");
-  if (existsSync4(captureRoot))
+  if (existsSync5(captureRoot))
     return;
   const stages = ["pending", "extracted", "embedded", "failed"];
-  const present = stages.filter((s) => existsSync4(join5(root, s)));
+  const present = stages.filter((s) => existsSync5(join5(root, s)));
   if (present.length === 0)
     return;
   Logger.info("outbox: migrating legacy capture layout", { stages: present });
@@ -1946,9 +2160,9 @@ async function migrateLegacyCaptureOutbox() {
   }
 }
 async function reclaimLegacyPluginOutbox() {
-  const root = join5(homedir4(), ".mneme", "outbox");
+  const root = join5(homedir5(), ".mneme", "outbox");
   const pluginDir = join5(root, "plugin");
-  if (!existsSync4(pluginDir))
+  if (!existsSync5(pluginDir))
     return;
   let entries;
   try {
@@ -1977,8 +2191,8 @@ async function startDaemon() {
   const config = await readConfig();
   await migrateLegacyCaptureOutbox();
   await reclaimLegacyPluginOutbox();
-  const captureOutboxRoot = join5(homedir4(), ".mneme", "outbox", "capture");
-  const dreamOutboxRoot = join5(homedir4(), ".mneme", "outbox", "dream");
+  const captureOutboxRoot = join5(homedir5(), ".mneme", "outbox", "capture");
+  const dreamOutboxRoot = join5(homedir5(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
   const agent = pickAgent(config.agent_provider);

@@ -17,6 +17,7 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { streamingCallClaude, streamingEnabled } from "./claude-streaming.ts";
 import { CLUSTER_PROMPT, SUPERSEDE_PROMPT, SYSTEM_PROMPT } from "./prompts.ts";
 import type {
   AgentProvider,
@@ -282,6 +283,20 @@ export const DREAM_MODEL = "sonnet";
 // assistant" and the model responds in coding-help style instead of
 // returning the JSON we asked for.
 async function callClaude(
+  prompt: string,
+  model: string,
+  systemPrompt: string,
+): Promise<string> {
+  // Default path: long-lived streaming session reuses one subprocess
+  // across many calls. Fall back to one-shot when the operator opts
+  // out via MNEME_DISABLE_STREAMING_SDK=1.
+  if (streamingEnabled()) {
+    return streamingCallClaude(prompt, model, systemPrompt);
+  }
+  return callClaudeOneShot(prompt, model, systemPrompt);
+}
+
+async function callClaudeOneShot(
   prompt: string,
   model: string,
   systemPrompt: string,
