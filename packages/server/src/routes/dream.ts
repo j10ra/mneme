@@ -230,7 +230,7 @@ export async function writeClusters(
         cluster_title: cluster.title,
         member_ids: cluster.member_ids,
         distiller_provider: "anthropic",
-        distiller_model: "claude-code",
+        distiller_model: "claude-sonnet",
       };
 
       const [clusterRow] = await tx<{ id: string }[]>`

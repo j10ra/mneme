@@ -306,7 +306,7 @@ export function createRuntime(deps: DaemonDeps) {
           embedding_model: embedderModel,
           meta: {
             extractor_provider: "anthropic",
-            extractor_model: "claude-code",
+            extractor_model: "claude-haiku",
           },
         });
       }
