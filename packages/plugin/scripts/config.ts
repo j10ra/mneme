@@ -1,5 +1,6 @@
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
 export type ProjectEntry = { path: string; registered_at: string };
@@ -66,6 +67,64 @@ export function saveConfig(cfg: MnemeConfig): void {
   const tmp = `${path}.tmp.${process.pid}`;
   writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, path);
+}
+
+/** Stable per-machine identifier so re-installing the plugin maps back
+ *  to the same DB row instead of creating a zombie alongside it.
+ *
+ *  - darwin: IOPlatformUUID from ioreg (survives OS reinstall on same
+ *    hardware; tied to the SMC, not the disk).
+ *  - linux: /etc/machine-id (systemd / dbus convention; persists across
+ *    reboots, regenerated on disk image clone).
+ *  - win32: HKLM\SOFTWARE\Microsoft\Cryptography MachineGuid (Windows-
+ *    canonical hardware-ish id).
+ *
+ *  Returns null on probe failure rather than throwing. The caller (slash
+ *  setup) treats null as "old behavior" — the server still mints a fresh
+ *  machine_id, which is the correct fallback for an unknown environment.
+ */
+export function machineFingerprint(): string | null {
+  try {
+    const p = platform();
+    if (p === "darwin") {
+      const out = execFileSync("ioreg", ["-d2", "-c", "IOPlatformExpertDevice"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 2000,
+      });
+      const match = out.match(/IOPlatformUUID["\s=]+"([0-9A-Fa-f-]{36})"/);
+      return match?.[1]?.toLowerCase() ?? null;
+    }
+    if (p === "linux") {
+      for (const path of ["/etc/machine-id", "/var/lib/dbus/machine-id"]) {
+        if (existsSync(path)) {
+          const id = readFileSync(path, "utf8").trim();
+          if (/^[0-9a-f]{32}$/.test(id)) return id;
+        }
+      }
+      return null;
+    }
+    if (p === "win32") {
+      const result = spawnSync(
+        "reg",
+        [
+          "query",
+          "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
+          "/v",
+          "MachineGuid",
+        ],
+        { encoding: "utf8", timeout: 2000 },
+      );
+      if (result.status !== 0) return null;
+      const match = result.stdout.match(
+        /MachineGuid\s+REG_SZ\s+([0-9A-Fa-f-]{36})/,
+      );
+      return match?.[1]?.toLowerCase() ?? null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /** Append cwd to config.projects[] if not already there. */

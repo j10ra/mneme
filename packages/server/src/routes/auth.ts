@@ -27,11 +27,101 @@ function generateToken(machineName: string): string {
   return `mneme_pat_${safeName}_${hex}`;
 }
 
+export type RegisterResult = {
+  machine_id: string;
+  machine_name: string;
+  token: string;
+  /** True when a row with the same fingerprint already existed and the
+   *  token was rotated in place (machine_id reused). False when this is
+   *  a fresh machine_id. */
+  reused_machine_id: boolean;
+};
+
+/** Pure upsert: rotates token + reuses machine_id when an active row
+ *  shares the fingerprint, else mints fresh. Exported so tests can hit
+ *  the data path without going through Hono. */
+export async function registerOrRotate(input: {
+  machineName: string;
+  fingerprint: string | null;
+}): Promise<RegisterResult> {
+  const { machineName, fingerprint } = input;
+
+  if (fingerprint) {
+    const existing = await sql<
+      { machine_id: string; name: string }[]
+    >`
+      SELECT machine_id, name
+      FROM _ops.api_keys
+      WHERE machine_fingerprint = ${fingerprint}
+        AND revoked_at IS NULL
+        AND machine_id IS NOT NULL
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+    const row = existing[0];
+    if (row) {
+      const reusedId = row.machine_id;
+      const reusedName = row.name;
+      const token = generateToken(reusedName);
+      const keyHash = await sha256Hex(token);
+      // Single transaction so the old token is never valid alongside
+      // the new one and the unique fingerprint index never sees both.
+      await sql.begin(async (tx) => {
+        await tx`
+          UPDATE _ops.api_keys
+          SET revoked_at = now()
+          WHERE machine_id = ${reusedId} AND revoked_at IS NULL
+        `;
+        await tx`
+          INSERT INTO _ops.api_keys
+            (key_hash, name, machine_id, machine_fingerprint)
+          VALUES (${keyHash}, ${reusedName}, ${reusedId}, ${fingerprint})
+        `;
+      });
+      return {
+        machine_id: reusedId,
+        machine_name: reusedName,
+        token,
+        reused_machine_id: true,
+      };
+    }
+  }
+
+  const machineId = crypto.randomUUID();
+  const token = generateToken(machineName);
+  const keyHash = await sha256Hex(token);
+  await sql`
+    INSERT INTO _ops.api_keys
+      (key_hash, name, machine_id, machine_fingerprint)
+    VALUES (${keyHash}, ${machineName}, ${machineId}, ${fingerprint})
+  `;
+  return {
+    machine_id: machineId,
+    machine_name: machineName,
+    token,
+    reused_machine_id: false,
+  };
+}
+
 export function mountAuthRoutes(app: Hono): void {
   // ---------------------------------------------------------------------------
   // POST /api/auth/register — issue a per-machine token.
-  // Body: { machine_name }. Returns { machine_id, machine_name, token }.
+  // Body: { machine_name, machine_fingerprint? }.
+  // Returns { machine_id, machine_name, token, reused_machine_id }.
   // Token plaintext is shown ONCE; the DB stores sha256(token) only.
+  //
+  // Fingerprint upsert (re-install on the same machine):
+  //   When `machine_fingerprint` is provided AND already exists on an
+  //   active key row, this rotates the token in place: revoke any active
+  //   keys for that machine_id, insert a fresh row reusing the existing
+  //   machine_id + name + fingerprint. The user's captures, memories, and
+  //   clusters keep their machine_id; only the bearer token changes. The
+  //   `machine_name` from the body is ignored on a fingerprint match (use
+  //   /api/auth/rename to change the name).
+  //
+  //   When the fingerprint is absent (old plugin versions), or no active
+  //   row matches, a fresh machine_id is minted. Same as pre-fingerprint
+  //   behavior.
   // ---------------------------------------------------------------------------
   app.post(
     "/api/auth/register",
@@ -40,24 +130,21 @@ export function mountAuthRoutes(app: Hono): void {
     async (c) => {
       const body = (await c.req.json().catch(() => null)) as {
         machine_name?: unknown;
+        machine_fingerprint?: unknown;
       } | null;
       const machineName =
         typeof body?.machine_name === "string" && body.machine_name.trim()
           ? body.machine_name.trim()
           : "";
       if (!machineName) return c.json({ error: "machine_name required" }, 400);
+      const fingerprint =
+        typeof body?.machine_fingerprint === "string" &&
+        body.machine_fingerprint.trim()
+          ? body.machine_fingerprint.trim()
+          : null;
 
-      const machineId = crypto.randomUUID();
-      const token = generateToken(machineName);
-      const keyHash = await sha256Hex(token);
-
-      // scopes defaults to {capture,read,mcp} from migration 0002.
-      await sql`
-        INSERT INTO _ops.api_keys (key_hash, name, machine_id)
-        VALUES (${keyHash}, ${machineName}, ${machineId})
-      `;
-
-      return c.json({ machine_id: machineId, machine_name: machineName, token });
+      const result = await registerOrRotate({ machineName, fingerprint });
+      return c.json(result);
     },
   );
 

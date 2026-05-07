@@ -13,7 +13,13 @@ import {
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { type MnemeConfig, loadConfig, saveConfig, serverUrl } from "./config.ts";
+import {
+  type MnemeConfig,
+  loadConfig,
+  machineFingerprint,
+  saveConfig,
+  serverUrl,
+} from "./config.ts";
 import {
   installDaemonService,
   pickFreePortDeterministic,
@@ -142,12 +148,22 @@ type RegisterResponse = {
   machine_id: string;
   machine_name: string;
   token: string;
+  /** Server flag: true when the fingerprint matched an existing row and
+   *  the token was rotated in place (machine_id reused). False on a
+   *  fresh registration. Surfaced in the setup output so the user sees
+   *  whether their existing identity was preserved. */
+  reused_machine_id?: boolean;
 };
 
-/** Setup: POST /api/auth/register with admin password as bearer, get a fresh
- *  per-machine token, write it to ~/.mneme/config.json. Existing config is
- *  preserved for `projects[]` only — machine id/name/token are replaced with
- *  what the server returns (this is a re-registration, not a merge). */
+/** Setup: POST /api/auth/register with admin password as bearer, get a
+ *  per-machine token, write it to ~/.mneme/config.json. Sends a stable
+ *  hardware fingerprint so re-running setup on the same machine reuses
+ *  the existing machine_id (and the captures attached to it) instead of
+ *  creating a parallel row. The token is always rotated; the identity
+ *  is preserved when the fingerprint matches.
+ *
+ *  Existing config is preserved for `projects[]` only — machine
+ *  id/name/token are replaced with what the server returns. */
 async function setup(
   url: string,
   adminPassword: string,
@@ -160,13 +176,17 @@ async function setup(
   const machineName =
     name ?? hostname().toLowerCase().split(".")[0] ?? "unknown";
 
+  const fingerprint = machineFingerprint();
   const resp = await fetch(`${baseUrl}/api/auth/register`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${adminPassword}`,
     },
-    body: JSON.stringify({ machine_name: machineName }),
+    body: JSON.stringify({
+      machine_name: machineName,
+      ...(fingerprint ? { machine_fingerprint: fingerprint } : {}),
+    }),
   });
   if (!resp.ok) {
     const detail = (await resp.text()).slice(0, 200);
@@ -211,10 +231,19 @@ async function setup(
   writeFileSync(cfgPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   chmodSync(cfgPath, 0o600);
 
-  console.log("✓ registered with mneme server");
+  if (reg.reused_machine_id) {
+    console.log("✓ registered (reused existing machine_id; token rotated)");
+  } else {
+    console.log("✓ registered with mneme server (fresh machine_id)");
+  }
   console.log(`  server:  ${config.server.url}`);
   console.log(`  machine: ${reg.machine_name} (${reg.machine_id})`);
   console.log(`  token:   ${reg.token.slice(0, 22)}…`);
+  if (!fingerprint) {
+    console.log(
+      "  fingerprint: none (re-installs on this platform create new rows)",
+    );
+  }
   console.log("✓ wrote ~/.mneme/config.json (mode 600)");
 
   // Best-effort daemon install. CLAUDE_PLUGIN_ROOT is the plugin
