@@ -15,7 +15,7 @@ import {
 } from "../scripts/daemon-install.ts";
 
 const cfg = {
-  repoPath: "/Users/jetz/code/mneme",
+  pluginRoot: "/Users/jetz/.claude/plugins/cache/j10ra-mneme/mneme/1.0.45",
   daemonPort: 53121,
   bunPath: "/Users/jetz/.bun/bin/bun",
 };
@@ -24,9 +24,7 @@ describe("buildLaunchdPlist", () => {
   test("includes the bun path, daemon entry, and KeepAlive=true", () => {
     const plist = buildLaunchdPlist(cfg);
     expect(plist).toContain(cfg.bunPath);
-    expect(plist).toContain(
-      "/Users/jetz/code/mneme/packages/daemon/src/index.ts",
-    );
+    expect(plist).toContain(`${cfg.pluginRoot}/daemon.js`);
     expect(plist).toContain("<key>KeepAlive</key>");
     expect(plist).toContain("dev.mneme.daemon");
   });

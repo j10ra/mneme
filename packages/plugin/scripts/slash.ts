@@ -246,16 +246,14 @@ async function setup(
   }
   console.log("✓ wrote ~/.mneme/config.json (mode 600)");
 
-  // Best-effort daemon install. CLAUDE_PLUGIN_ROOT is the plugin
-  // directory; the mneme repo is two levels up (packages/plugin -> mneme).
-  // This is the Phase 1 "developer install" path: the daemon binary
-  // lives in the user's local mneme checkout. Production binary
-  // distribution lands in a follow-up.
+  // Daemon install. CLAUDE_PLUGIN_ROOT is the plugin's root inside CC's
+  // plugin cache (or a developer checkout's packages/plugin/). Both
+  // shapes have the same layout: daemon.js at the root, package.json
+  // alongside, node_modules created by bun install at install time.
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
   if (pluginRoot) {
-    const repoPath = process.env.MNEME_REPO_PATH ?? join(pluginRoot, "../..");
     const installResult = await installDaemonService({
-      repoPath,
+      pluginRoot,
       daemonPort,
       bunPath: process.execPath,
     });

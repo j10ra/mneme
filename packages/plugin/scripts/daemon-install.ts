@@ -3,10 +3,13 @@
 // Scheduler XML on win32) and the install / uninstall procedures that
 // register them with the OS service manager.
 //
-// Phase 1: the daemon binary is an entry point in the user's local
-// mneme checkout. Set MNEME_REPO_PATH or pass --repo-path to point at
-// it. A future PR ships pre-built per-platform binaries via GitHub
-// releases so install can be repo-free.
+// The daemon ships as a pre-bundled `daemon.js` inside the plugin
+// directory (built by `scripts/build-plugin.ts` before each release).
+// Native runtime deps (`@xenova/transformers`, `@anthropic-ai/claude-
+// agent-sdk`, etc.) live in `<pluginRoot>/node_modules/`, populated by
+// `bun install --production` at install time. After that the plist
+// just runs `bun run <pluginRoot>/daemon.js` and Bun resolves the
+// externals adjacent to the bundle.
 //
 // All file generators are pure: given a config, they return a string.
 // The execute paths (install / uninstall / start) are isolated so tests
@@ -16,8 +19,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export type DaemonInstallConfig = {
-  /** Absolute path to the directory containing packages/daemon/src/index.ts */
-  repoPath: string;
+  /** Absolute path to the plugin's root inside CC's plugin cache (or a
+   *  developer checkout's packages/plugin/). The bundle lives at
+   *  `<pluginRoot>/daemon.js` and node_modules at `<pluginRoot>/node_modules/`. */
+  pluginRoot: string;
   /** Local TCP port the daemon listens on (127.0.0.1 only) */
   daemonPort: number;
   /** Path to the user's bun binary (e.g. ~/.bun/bin/bun) */
@@ -30,7 +35,7 @@ const DEFAULT_LABEL = "dev.mneme.daemon";
 
 export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   const label = cfg.serviceLabel ?? DEFAULT_LABEL;
-  const daemonEntry = join(cfg.repoPath, "packages/daemon/src/index.ts");
+  const daemonEntry = join(cfg.pluginRoot, "daemon.js");
   const logsDir = join(homedir(), ".mneme", "logs");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -63,7 +68,7 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
 }
 
 export function buildSystemdUnit(cfg: DaemonInstallConfig): string {
-  const daemonEntry = join(cfg.repoPath, "packages/daemon/src/index.ts");
+  const daemonEntry = join(cfg.pluginRoot, "daemon.js");
   return `[Unit]
 Description=Mneme daemon (per-machine extract + push)
 After=network-online.target
@@ -82,7 +87,7 @@ WantedBy=default.target
 }
 
 export function buildWindowsTaskXml(cfg: DaemonInstallConfig): string {
-  const daemonEntry = join(cfg.repoPath, "packages/daemon/src/index.ts");
+  const daemonEntry = join(cfg.pluginRoot, "daemon.js");
   const label = cfg.serviceLabel ?? DEFAULT_LABEL;
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -119,6 +124,23 @@ export function detectPlatform(): Platform {
   if (process.platform === "linux") return "linux";
   if (process.platform === "win32") return "win32";
   throw new Error(`unsupported platform: ${process.platform}`);
+}
+
+/** True when running inside Windows Subsystem for Linux. WSL exposes
+ *  itself via env vars set by the WSL launcher, plus the kernel string
+ *  in /proc/version. We use it to gate the linux/systemd install path:
+ *  WSL without `systemd=true` in /etc/wsl.conf has no user systemd, so
+ *  the daemon can't auto-start. */
+export function isWSL(): boolean {
+  if (process.platform !== "linux") return false;
+  if (process.env.WSL_DISTRO_NAME) return true;
+  if (process.env.WSL_INTEROP) return true;
+  try {
+    const { readFileSync } = require("node:fs");
+    return /microsoft/i.test(readFileSync("/proc/version", "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 export function serviceConfigPath(platform: Platform): string {
@@ -181,6 +203,40 @@ export type InstallResult = {
   error?: string;
 };
 
+// Run `bun install --production` inside pluginRoot to populate
+// node_modules adjacent to daemon.js. Bun resolves the bundle's
+// externals from there at runtime. Skips if node_modules already
+// exists (idempotent re-setup) unless force=true.
+async function ensurePluginDeps(
+  pluginRoot: string,
+  bunPath: string,
+  force = false,
+): Promise<{ ok: boolean; error?: string }> {
+  const { existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { spawn } = await import("node:child_process");
+  const nm = join(pluginRoot, "node_modules");
+  if (!force && existsSync(nm)) {
+    return { ok: true };
+  }
+  const result = await new Promise<{ code: number | null; stderr: string }>(
+    (resolve) => {
+      const proc = spawn(bunPath, ["install", "--production"], {
+        cwd: pluginRoot,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stderr = "";
+      proc.stderr.on("data", (b) => (stderr += b.toString()));
+      proc.on("close", (code) => resolve({ code, stderr }));
+      proc.on("error", () => resolve({ code: -1, stderr: "spawn failed" }));
+    },
+  );
+  if (result.code !== 0) {
+    return { ok: false, error: `bun install failed: ${result.stderr.slice(0, 400)}` };
+  }
+  return { ok: true };
+}
+
 // Write the service config and run the start commands. Best-effort: any
 // failure logs a clear message and returns ok=false rather than throwing,
 // so /mneme:setup doesn't bail on a service-manager wrinkle and leave
@@ -192,9 +248,65 @@ export async function installDaemonService(
   const servicePath = serviceConfigPath(platform);
   const config = buildServiceConfig(platform, cfg);
 
-  const { mkdirSync, writeFileSync } = await import("node:fs");
-  const { dirname } = await import("node:path");
+  const { existsSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { dirname, join: joinPath } = await import("node:path");
   const { spawn } = await import("node:child_process");
+
+  // Sanity-check the bundle is actually present at the expected path.
+  // Surfacing this early gives a clear error instead of a launchd
+  // failure 30s later when the daemon process can't find its entry.
+  const daemonBundle = joinPath(cfg.pluginRoot, "daemon.js");
+  if (!existsSync(daemonBundle)) {
+    return {
+      ok: false,
+      platform,
+      servicePath,
+      port: cfg.daemonPort,
+      startedCommands: [],
+      error: `daemon bundle missing at ${daemonBundle} (run scripts/build-plugin.ts before tagging)`,
+    };
+  }
+
+  // WSL guard: linux platform path uses systemctl --user. WSL distros
+  // older than the systemd-enabled releases (or any WSL where the user
+  // hasn't opted in via /etc/wsl.conf) have no user systemd, so the
+  // launchctl-equivalent step would silently fail with "Failed to
+  // connect to bus." Fail loud here with the actual fix instead.
+  if (platform === "linux" && isWSL()) {
+    const probe = spawn("systemctl", ["--user", "is-system-running"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const probeResult = await new Promise<number | null>((resolve) => {
+      probe.on("close", (code) => resolve(code));
+      probe.on("error", () => resolve(-1));
+    });
+    if (probeResult !== 0 && probeResult !== 1) {
+      // 0 = running, 1 = degraded; both mean systemd-user works.
+      return {
+        ok: false,
+        platform,
+        servicePath,
+        port: cfg.daemonPort,
+        startedCommands: [],
+        error:
+          "WSL detected without systemd-user. Add `[boot]\\nsystemd=true` to /etc/wsl.conf, run `wsl --shutdown` from PowerShell, restart your distro, then re-run /mneme:setup.",
+      };
+    }
+  }
+
+  // Populate node_modules at pluginRoot before launchctl load, so the
+  // daemon process has its native externals resolvable at startup.
+  const depsResult = await ensurePluginDeps(cfg.pluginRoot, cfg.bunPath);
+  if (!depsResult.ok) {
+    return {
+      ok: false,
+      platform,
+      servicePath,
+      port: cfg.daemonPort,
+      startedCommands: [],
+      error: depsResult.error,
+    };
+  }
 
   try {
     mkdirSync(dirname(servicePath), { recursive: true, mode: 0o755 });
@@ -217,8 +329,12 @@ export async function installDaemonService(
   for (const cmd of cmds) {
     const result = await new Promise<{ code: number | null; stderr: string }>(
       (resolve) => {
-        const proc = spawn("sh", ["-c", cmd], {
+        // shell: true picks /bin/sh on darwin/linux and cmd.exe on
+        // win32, so the same install code path works on every platform
+        // without having to choose a shell ourselves.
+        const proc = spawn(cmd, {
           stdio: ["ignore", "pipe", "pipe"],
+          shell: true,
         });
         let stderr = "";
         proc.stderr.on("data", (b) => (stderr += b.toString()));

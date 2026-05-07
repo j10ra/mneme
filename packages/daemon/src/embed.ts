@@ -30,10 +30,13 @@ type FeatureExtractionPipeline = (
 ) => Promise<{ tolist(): number[][] | number[][][]; data: Float32Array; dims: number[] }>;
 
 // Idle window after which disposeIfIdle() will release the loaded
-// pipeline. Tuned so a brief gap between bursts (e.g. user switches
-// windows for a minute) keeps the model warm, but a longer gap (idle
-// laptop, between coding sessions) reclaims the ~500MB.
-const PIPELINE_IDLE_MS = 5 * 60 * 1000;
+// pipeline. Tuned aggressively: extract pipeline gates wait minutes
+// between batches anyway, and laptop fans light up fast under a 1GB
+// resident model. 60s keeps the model warm across coalesced extract
+// bursts but reclaims it during normal idle. Cold start on next call
+// is ~1-2s, which is invisible against extract latency and acceptable
+// on the MCP `embed("...")` hot path.
+const PIPELINE_IDLE_MS = 60 * 1000;
 
 let pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
 let lastUsedAt = 0;
