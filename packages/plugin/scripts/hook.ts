@@ -4,6 +4,9 @@
 // capture (or fetches the surface for SessionStart) to the Mneme server.
 // Fail-open: errors never block the harness.
 
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   type MnemeConfig,
   isBlacklistedPath,
@@ -12,7 +15,6 @@ import {
   registerProject,
   serverUrl,
 } from "./config.ts";
-import { drainOutbox, writeOutbox } from "./outbox.ts";
 import { baseScope as buildScope, discoverRepos } from "./scope.ts";
 import { scrubData } from "./scrub.ts";
 
@@ -48,51 +50,78 @@ async function pingDaemonFlush(cfg: MnemeConfig): Promise<void> {
   }
 }
 
+async function sha256Hex(input: string): Promise<string> {
+  const buf = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  const bytes = new Uint8Array(digest);
+  let hex = "";
+  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+  return hex;
+}
+
+// Write directly into the daemon's pending queue. Used when the daemon
+// HTTP listener is briefly unreachable (restart gap, crash). The daemon
+// picks up files from outbox/capture/pending/ on its very next tick or
+// fs.watch event, so brief gaps don't drop captures.
+//
+// Uses the same id format the daemon's handleCapture writes:
+// `<ms-timestamp>-<8-char-sha-prefix>`. Atomic-rename pattern matches
+// the daemon's outbox so a half-written file is never visible.
+async function writeToDaemonOutbox(
+  cleaned: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    const content =
+      typeof cleaned.content === "string" ? cleaned.content : "";
+    const hash = await sha256Hex(content);
+    const id = `${Date.now()}-${hash.slice(0, 8)}`;
+    const dir = join(homedir(), ".mneme", "outbox", "capture", "pending");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const tmp = join(dir, `.${id}.json.tmp`);
+    const final = join(dir, `${id}.json`);
+    writeFileSync(tmp, JSON.stringify(cleaned));
+    renameSync(tmp, final);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function postCapture(
   cfg: MnemeConfig,
   body: Record<string, unknown>,
 ): Promise<boolean> {
-  // Scrub here, not at the call sites, so every event funnels through one
-  // redaction point. Server still scrubs on receipt as defense in depth.
+  // Scrub here so every event funnels through one redaction point.
   const cleaned = scrubData(body) as Record<string, unknown>;
 
-  // Daemon-first when the daemon block is present in config.json. The
-  // daemon owns local outbox + extract + embed + push. On
-  // ECONNREFUSED / timeout / non-2xx, fall back to the server's
-  // /api/capture so a down daemon doesn't drop captures during the
-  // Phase 1 rollout. The fallback path is removed in Phase 2.
-  if (cfg.daemon) {
-    try {
-      const resp = await fetch(`http://127.0.0.1:${cfg.daemon.port}/capture`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Mneme-Source": "hook",
-        },
-        body: JSON.stringify(cleaned),
-        signal: AbortSignal.timeout(2500),
-      });
-      if (resp.ok) return true;
-    } catch {
-      // Daemon unreachable; fall through to direct-server post.
-    }
+  // The machine is the sole authority on captures. The hook only ever
+  // talks to the local daemon - never the cloud server directly. If the
+  // daemon HTTP listener is unreachable (briefly, during a restart),
+  // we write the capture file directly into the daemon's pending queue
+  // and the daemon's worker tick or fs.watch picks it up on the very
+  // next event. No cross-machine fallback, no parallel namespace.
+  if (!cfg.daemon) {
+    // No daemon configured = no place to put captures. Drop and let the
+    // operator re-run /mneme:setup. Returning true so the harness
+    // doesn't surface this as an error per call.
+    return true;
   }
 
   try {
-    const resp = await fetch(serverUrl(cfg, "/api/capture"), {
+    const resp = await fetch(`http://127.0.0.1:${cfg.daemon.port}/capture`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.auth.key}`,
         "X-Mneme-Source": "hook",
       },
       body: JSON.stringify(cleaned),
       signal: AbortSignal.timeout(2500),
     });
-    return resp.ok;
+    if (resp.ok) return true;
   } catch {
-    return false;
+    // Daemon unreachable; fall through to direct outbox write.
   }
+  return await writeToDaemonOutbox(cleaned);
 }
 
 async function fetchSurface(
@@ -250,12 +279,10 @@ async function main(): Promise<void> {
 
   switch (event) {
     case "SessionStart": {
-      const drain = await drainOutbox((b) => postCapture(cfg, b as Record<string, unknown>));
-      if (drain.sent > 0 || drain.failed > 0) {
-        process.stderr.write(
-          `mneme-hook[SessionStart]: outbox flushed (${drain.sent} sent, ${drain.failed} still queued)\n`,
-        );
-      }
+      // Outbox draining used to live here for the legacy plugin/ fallback
+      // queue. Now the hook writes directly into outbox/capture/pending/
+      // when the daemon is briefly unreachable, and the daemon's worker
+      // tick + fs.watch drains it without any plugin-side help.
       // Walk cwd for sub-repos (Pinnacle-style multi-repo workspaces, git
       // worktrees). Falls back to whatever canonicalRepo resolved at the top.
       const discovered = sessionCwd ? discoverRepos(sessionCwd) : [];
@@ -282,7 +309,6 @@ async function main(): Promise<void> {
       if (!prompt.trim()) return;
       const body = { ...baseScope, content: prompt };
       const ok = await postCapture(cfg, body);
-      if (!ok) writeOutbox(body, "user_prompt");
       return;
     }
 
@@ -298,7 +324,6 @@ async function main(): Promise<void> {
         raw_meta: { event },
       };
       const ok = await postCapture(cfg, body);
-      if (!ok) writeOutbox(body, "summary");
 
       // 2) Conversation text — read the JSONL transcript and capture assistant
       //    messages individually. Without this the assistant's reasoning,
@@ -335,7 +360,6 @@ async function main(): Promise<void> {
             };
             const turnOk = await postCapture(cfg, turnBody);
             if (turnOk) captured++;
-            else writeOutbox(turnBody, "assistant_turn");
           }
           if (captured > 0) {
             process.stderr.write(
@@ -380,7 +404,6 @@ async function main(): Promise<void> {
           raw_meta: { tool: toolName, file_path: memPath },
         };
         const ok = await postCapture(cfg, body);
-        if (!ok) writeOutbox(body, "claude_memory");
         return;
       }
 
@@ -396,7 +419,6 @@ async function main(): Promise<void> {
         raw_meta: { event, tool: toolName },
       };
       const ok = await postCapture(cfg, body);
-      if (!ok) writeOutbox(body, "post_tool");
       return;
     }
 

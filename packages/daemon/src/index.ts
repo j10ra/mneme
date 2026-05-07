@@ -126,33 +126,47 @@ async function migrateLegacyCaptureOutbox(): Promise<void> {
   }
 }
 
-// Move plugin's fallback files (root-level *.json) under outbox/plugin/
-// so the parent dir holds only sub-namespaces (capture/, dream/, plugin/).
-async function migrateLegacyPluginOutbox(): Promise<void> {
+// One-shot cleanup of the now-defunct outbox/plugin/ namespace. The
+// plugin no longer keeps its own fallback queue; the hook writes
+// directly into outbox/capture/pending/ when the daemon is briefly
+// unreachable. Any pre-existing files there are stranded captures
+// from older plugin versions; move them into capture/pending/ so the
+// daemon picks them up, then remove the empty plugin/ dir.
+async function reclaimLegacyPluginOutbox(): Promise<void> {
   const root = join(homedir(), ".mneme", "outbox");
-  if (!existsSync(root)) return;
   const pluginDir = join(root, "plugin");
+  if (!existsSync(pluginDir)) return;
   let entries: string[];
   try {
-    entries = await readdir(root);
+    entries = await readdir(pluginDir);
   } catch {
     return;
   }
-  const looseFiles = entries.filter((e) => e.endsWith(".json"));
-  if (looseFiles.length === 0) return;
-  Logger.info("outbox: migrating loose plugin fallback files", {
-    count: looseFiles.length,
-  });
-  await mkdir(pluginDir, { recursive: true });
-  for (const f of looseFiles) {
-    await rename(join(root, f), join(pluginDir, f));
+  const stranded = entries.filter((e) => e.endsWith(".json"));
+  const captureDir = join(root, "capture", "pending");
+  await mkdir(captureDir, { recursive: true });
+  for (const f of stranded) {
+    const id = `${Date.now()}-${f.slice(0, 8)}.json`;
+    await rename(join(pluginDir, f), join(captureDir, id));
+  }
+  if (stranded.length > 0) {
+    Logger.info("outbox: reclaimed stranded plugin captures into pending/", {
+      count: stranded.length,
+    });
+  }
+  // rmdir is best-effort; only succeeds if dir is empty.
+  try {
+    const { rmdir } = await import("node:fs/promises");
+    await rmdir(pluginDir);
+  } catch {
+    // not empty (unexpected file types) - leave it alone
   }
 }
 
 export async function startDaemon(): Promise<void> {
   const config = await readConfig();
   await migrateLegacyCaptureOutbox();
-  await migrateLegacyPluginOutbox();
+  await reclaimLegacyPluginOutbox();
   const captureOutboxRoot = join(homedir(), ".mneme", "outbox", "capture");
   const dreamOutboxRoot = join(homedir(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);
