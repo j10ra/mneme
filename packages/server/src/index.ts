@@ -10,6 +10,8 @@ import {
 } from "@mneme/core";
 import { mountAuthRoutes } from "./routes/auth.ts";
 import { mountBundleRoute } from "./routes/bundle.ts";
+import { mountDreamRoutes } from "./routes/dream.ts";
+import { mountHeartbeatRoute } from "./routes/heartbeat.ts";
 import { mountIngestRoutes } from "./routes/ingest.ts";
 import { mountMcpRoutes } from "./routes/mcp.ts";
 import { mountSessionRoutes } from "./routes/session.ts";
@@ -36,6 +38,8 @@ app.get("/health", mnemeRoute("health"), (c) =>
 
 mountAuthRoutes(app);
 mountBundleRoute(app);
+mountDreamRoutes(app);
+mountHeartbeatRoute(app);
 mountIngestRoutes(app);
 mountSessionRoutes(app);
 mountMcpRoutes(app);
