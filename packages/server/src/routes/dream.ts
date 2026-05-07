@@ -25,6 +25,16 @@ import {
 } from "../infra/config.ts";
 import { sql } from "../infra/db.ts";
 
+// HNSW lookups against memories.embedding take ~50ms per probe in
+// practice (the index is global; per-repo filtering forces deep
+// traversal). Without a cap, a fresh fleet with thousands of
+// never-clustered memories blows past Railway's gateway timeout. The
+// architecture's intent is "recent (last 7d) OR never-processed", so
+// we order by created_at DESC and cap. Multiple dream cycles drain
+// the inaugural backlog; steady state (~50 new memories/day) is
+// always far below this limit.
+const DREAM_MAX_CANDIDATES_PER_CYCLE = 500;
+
 export type DreamLockResult =
   | { acquired: true; window_key: number }
   | { acquired: false; window_key: number; heldBy: string };
@@ -140,11 +150,33 @@ export async function fetchDreamCandidates(
   // Privacy filter: caller sees public rows + their own private rows.
   // Other machines' privates stay invisible.
   const rows = await sql<EdgeRow[]>`
+    WITH seeds AS (
+      -- Outer scan picks at most DREAM_MAX_CANDIDATES_PER_CYCLE rows,
+      -- newest first. Every dream cycle works through this many
+      -- previously-unclustered memories; subsequent cycles process
+      -- the next 500 + the day's new arrivals. The inaugural backlog
+      -- drains over ~10 cycles for a fresh deployment.
+      SELECT id, repo, embedding, content, kind, created_at
+      FROM memories
+      WHERE archived_at IS NULL
+        AND embedding IS NOT NULL
+        AND kind <> 'cluster'
+        AND (private = false OR machine_id = ${machineId})
+        AND NOT COALESCE((meta->>'pinned')::boolean, false)
+        AND (meta->>'shadow_of') IS NULL
+        AND (meta->>'superseded_by') IS NULL
+        AND (meta->>'in_cluster') IS NULL
+      ORDER BY created_at DESC
+      LIMIT ${DREAM_MAX_CANDIDATES_PER_CYCLE}
+    )
     SELECT
-      c.id, c.repo, c.content, c.kind, c.created_at,
+      s.id, s.repo, s.content, s.kind, s.created_at,
       n.neighbor_id
-    FROM memories c
+    FROM seeds s
     LEFT JOIN LATERAL (
+      -- Inner LATERAL still hits memories directly so HNSW is usable
+      -- on the cosine ORDER BY. The repo predicate is a hard filter
+      -- so HNSW oversamples and we drop non-matching neighbors.
       SELECT m.id AS neighbor_id
       FROM memories m
       WHERE m.archived_at IS NULL
@@ -155,20 +187,12 @@ export async function fetchDreamCandidates(
         AND (m.meta->>'shadow_of') IS NULL
         AND (m.meta->>'superseded_by') IS NULL
         AND (m.meta->>'in_cluster') IS NULL
-        AND m.repo IS NOT DISTINCT FROM c.repo
-        AND m.id <> c.id
-        AND c.embedding <=> m.embedding < ${DREAM_CLUSTER_DISTANCE}
-      ORDER BY c.embedding <=> m.embedding
+        AND m.repo IS NOT DISTINCT FROM s.repo
+        AND m.id <> s.id
+        AND s.embedding <=> m.embedding < ${DREAM_CLUSTER_DISTANCE}
+      ORDER BY s.embedding <=> m.embedding
       LIMIT ${DREAM_MAX_NEIGHBORS_PER_MEMORY}
     ) n ON true
-    WHERE c.archived_at IS NULL
-      AND c.embedding IS NOT NULL
-      AND c.kind <> 'cluster'
-      AND (c.private = false OR c.machine_id = ${machineId})
-      AND NOT COALESCE((c.meta->>'pinned')::boolean, false)
-      AND (c.meta->>'shadow_of') IS NULL
-      AND (c.meta->>'superseded_by') IS NULL
-      AND (c.meta->>'in_cluster') IS NULL
   `;
 
   const repos: DreamCandidates["repos"] = {};

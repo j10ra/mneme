@@ -64,4 +64,11 @@ startWorker();
 
 Logger.info(`mneme server listening on :${port}`);
 
-export default { port, fetch: app.fetch };
+// idleTimeout: 0 disables Bun's default 10s connection idle cutoff.
+// /api/dream/candidates can run multi-second (HNSW lookups against
+// thousands of memories), and even capped at 500 candidates the
+// query takes ~15s. With the default cutoff the connection dies
+// mid-query and Railway's edge serves 502. Setting 0 lets long
+// queries complete; client-side timeouts (daemon's fetch) bound the
+// other end.
+export default { port, fetch: app.fetch, idleTimeout: 0 };
