@@ -23,7 +23,7 @@ import {
   DREAM_CLUSTER_DISTANCE,
   DREAM_MAX_NEIGHBORS_PER_MEMORY,
 } from "../infra/config.ts";
-import { sql } from "../infra/db.ts";
+import { sha256Hex, sql } from "../infra/db.ts";
 
 // HNSW lookups against memories.embedding take ~50ms per probe in
 // practice (the index is global; per-repo filtering forces deep
@@ -316,34 +316,56 @@ export async function writeClusters(
         distiller_model: "claude-sonnet",
       };
 
-      // null + ::vector cast yields NULL with the right type, so we
-      // can always pass the literal and cast unconditionally rather
-      // than nesting sql template fragments.
+      // chunk_id is NOT NULL on memories. Same scheme as the bundle
+      // path: sha256(content) -> content_hash, sha256(content_hash +
+      // ":" + embedding_model) -> chunk_id. Always set embedding_model
+      // to the canonical name even when the embedding itself is null,
+      // so chunk_id is deterministic and ON CONFLICT dedupes
+      // re-runs of the same cluster.
+      const embeddingModel = "BAAI/bge-large-en-v1.5";
+      const contentHash = await sha256Hex(cluster.summary);
+      const chunkId = await sha256Hex(`${contentHash}:${embeddingModel}`);
       const vectorLiteral = cluster.summary_embedding
         ? `[${cluster.summary_embedding.join(",")}]`
         : null;
-      const embeddingModel = cluster.summary_embedding
-        ? "BAAI/bge-large-en-v1.5"
-        : null;
       const [clusterRow] = await tx<{ id: string }[]>`
         INSERT INTO memories (
-          capture_id, content, kind, importance,
+          capture_id, chunk_id, content, content_hash,
+          kind, importance,
           machine_id, repo, harness, agent, topics, private,
           tsv, meta,
           embedding, embedding_model
         )
         VALUES (
-          ${seed.capture_id}, ${cluster.summary}, 'cluster', 0.8,
+          ${seed.capture_id}, ${chunkId}, ${cluster.summary}, ${contentHash},
+          'cluster', 0.8,
           ${seed.machine_id}, ${seed.repo}, ${seed.harness}, ${seed.agent},
           '{}'::text[], false,
           to_tsvector('english', ${cluster.summary}),
           ${sql.json(meta as never)},
           ${vectorLiteral}::vector, ${embeddingModel}
         )
+        ON CONFLICT (chunk_id) DO NOTHING
         RETURNING id
       `;
-      const clusterId = clusterRow!.id;
-      written++;
+      // ON CONFLICT no-op means a prior dream wrote this exact cluster
+      // (same summary + same embedder). Look up the existing row's id
+      // so we still apply meta.in_cluster to any members that weren't
+      // marked yet (e.g. prior cycle crashed between cluster INSERT
+      // and member UPDATE). If we skipped, a deterministic NN graph
+      // plus unmarked members would re-distill the same content
+      // forever.
+      let clusterId: string;
+      if (clusterRow) {
+        clusterId = clusterRow.id;
+        written++;
+      } else {
+        const [existing] = await tx<{ id: string }[]>`
+          SELECT id FROM memories WHERE chunk_id = ${chunkId} LIMIT 1
+        `;
+        if (!existing) continue;
+        clusterId = existing.id;
+      }
 
       await tx`
         UPDATE memories
