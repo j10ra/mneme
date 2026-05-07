@@ -103,7 +103,6 @@ type EdgeRow = {
   id: string;
   repo: string | null;
   neighbor_id: string | null;
-  embedding: number[] | null;
   content: string;
   kind: string;
   created_at: Date;
@@ -145,9 +144,17 @@ export async function fetchDreamCandidates(
         AND (meta->>'superseded_by') IS NULL
         AND (meta->>'in_cluster') IS NULL
     )
+    -- c.embedding is intentionally omitted from the SELECT projection.
+    -- The cosine comparison happens inside the LATERAL JOIN (where the
+    -- embedding IS in scope from the candidates CTE), but we don't ship
+    -- the 1024-dim vector across the wire to the daemon. Each row's
+    -- embedding is ~4KB serialized; with thousands of candidates that
+    -- adds up to a multi-MB payload that times out at Railway's gateway.
+    -- The daemon only needs ids + edges + seed metadata (content, kind,
+    -- created_at) to build clusters and call distill.
     SELECT
       c.id, c.repo, c.content, c.kind, c.created_at,
-      n.neighbor_id, c.embedding
+      n.neighbor_id
     FROM candidates c
     LEFT JOIN LATERAL (
       SELECT m.id AS neighbor_id
