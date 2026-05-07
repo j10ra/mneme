@@ -31,6 +31,23 @@ async function readStdin(): Promise<Record<string, unknown>> {
   }
 }
 
+// Fire-and-forget ping to the local daemon's /flush endpoint. Used at
+// natural session boundaries (Stop, PreCompact, SessionEnd) to skip
+// the daemon's idle window and process pending captures immediately.
+// Returns void: a flush failure (daemon down, server error) doesn't
+// matter because the daemon's idle gate is the safety net.
+async function pingDaemonFlush(cfg: MnemeConfig): Promise<void> {
+  if (!cfg.daemon) return;
+  try {
+    await fetch(`http://127.0.0.1:${cfg.daemon.port}/flush`, {
+      method: "POST",
+      signal: AbortSignal.timeout(1500),
+    });
+  } catch {
+    // Daemon unreachable; idle gate will eventually fire.
+  }
+}
+
 async function postCapture(
   cfg: MnemeConfig,
   body: Record<string, unknown>,
@@ -270,7 +287,8 @@ async function main(): Promise<void> {
     }
 
     case "Stop":
-    case "PreCompact": {
+    case "PreCompact":
+    case "SessionEnd": {
       // 1) Audit/metadata capture (session_id, transcript_path, cwd, etc).
       //    Small payload — Claude Code doesn't include conversation text here.
       const body = {
@@ -332,6 +350,9 @@ async function main(): Promise<void> {
           );
         }
       }
+      // Natural session boundary: tell the daemon to flush whatever's
+      // pending instead of waiting for the idle window.
+      await pingDaemonFlush(cfg);
       return;
     }
 

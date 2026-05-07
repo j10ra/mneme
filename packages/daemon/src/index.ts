@@ -41,14 +41,12 @@ const DEFAULT_TICK_MS = 2_000;
 const DREAM_TICK_MS = 60 * 60 * 1000; // try every hour; lock dedups to one win per 8h window
 const HEARTBEAT_TICK_MS = 60_000;
 
-// Extract gating: idle-only. Hold pending captures until pending/ has
-// been quiet for EXTRACT_IDLE_MS (no new file written). The point is
-// "let the user finish typing / let the burst of hook events settle"
-// rather than spawning a Claude subprocess for every capture as it
-// lands. batchFull and forceMs are set high/disabled so idle is the
-// only trigger.
+// Extract gating. Idle is the safety net; the hook pings /flush on
+// natural session boundaries (Stop, PreCompact, SessionEnd) for a
+// faster response. 3 min matches claude-mem's IDLE_TIMEOUT_MS, which
+// is empirically a sensible "session is dead" floor.
 const EXTRACT_BATCH_FULL = Number.MAX_SAFE_INTEGER;
-const EXTRACT_IDLE_MS = 10_000;
+const EXTRACT_IDLE_MS = 3 * 60_000;
 const EXTRACT_FORCE_MS = 0;
 
 async function readConfig(): Promise<DaemonConfig> {
@@ -145,6 +143,17 @@ export async function startDaemon(): Promise<void> {
       if (req.method === "GET" && url.pathname === "/health") {
         return new Response(JSON.stringify({ ok: true }), {
           status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (req.method === "POST" && url.pathname === "/flush") {
+        // Fire-and-forget: don't block the hook on extract latency.
+        // The hook's flush ping is a hint, not a synchronous request.
+        void runtime.flush().catch((err) => {
+          console.error("flush failed:", err);
+        });
+        return new Response(JSON.stringify({ ok: true, accepted: true }), {
+          status: 202,
           headers: { "Content-Type": "application/json" },
         });
       }

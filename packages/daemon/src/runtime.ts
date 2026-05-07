@@ -333,7 +333,17 @@ export function createRuntime(deps: DaemonDeps) {
     });
   }
 
-  return { handleCapture, runWorkerTick };
+  // Force an immediate extract pass regardless of gating, then run the
+  // rest of the pipeline. Called from /flush when a hook event (Stop,
+  // PreCompact, SessionEnd) signals a natural session boundary - no
+  // need to wait for the idle window if the burst has explicitly
+  // ended.
+  async function flush(): Promise<void> {
+    lastPendingWriteAt = 0; // makes isIdle true on the next gate check
+    await runWorkerTick();
+  }
+
+  return { handleCapture, runWorkerTick, flush };
 }
 
 // Re-exported so consumers don't have to know the embedder details to
