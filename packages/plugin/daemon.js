@@ -1730,9 +1730,9 @@ async function startScheduler() {
 
 // packages/daemon/src/index.ts
 var WORKER_TICK_MS = 2000;
-var EXTRACT_BATCH_FULL = 100;
-var EXTRACT_IDLE_MS = 3 * 60000;
-var EXTRACT_FORCE_MS = 0;
+var EXTRACT_BATCH_FULL = 50;
+var EXTRACT_IDLE_MS = 2 * 60000;
+var EXTRACT_FORCE_MS = 5 * 60000;
 var DREAM_SCHEDULE_MS = 8 * 3600000;
 var HEARTBEAT_SCHEDULE_MS = 60000;
 var EMBEDDER_REAP_SCHEDULE_MS = 60000;

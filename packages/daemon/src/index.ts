@@ -56,11 +56,14 @@ const WORKER_TICK_MS = 2_000;
 //   2. group hits EXTRACT_BATCH_FULL - runaway protection on long sessions
 //      with no real pauses
 //   3. group idle EXTRACT_IDLE_MS - "user took a break" detector
+//   4. oldest pending older than EXTRACT_FORCE_MS - latency floor; ensures
+//      /recall freshness even on sessions that never pause and never
+//      reach the runaway cap (rare but worth covering)
 // Per-turn Stop events no longer flush, so captures from many turns
 // coalesce into one Haiku call with richer cross-turn context.
-const EXTRACT_BATCH_FULL = 100;
-const EXTRACT_IDLE_MS = 3 * 60_000;
-const EXTRACT_FORCE_MS = 0;
+const EXTRACT_BATCH_FULL = 50;
+const EXTRACT_IDLE_MS = 2 * 60_000;
+const EXTRACT_FORCE_MS = 5 * 60_000;
 
 // Scheduler intervals for time-driven jobs.
 const DREAM_SCHEDULE_MS = 8 * 3600_000;
