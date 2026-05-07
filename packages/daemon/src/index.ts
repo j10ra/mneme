@@ -30,6 +30,7 @@ export type DaemonConfig = {
 
 const DEFAULT_TICK_MS = 2_000;
 const DREAM_TICK_MS = 60 * 60 * 1000; // try every hour; lock dedups to one win per 8h window
+const HEARTBEAT_TICK_MS = 60_000;
 
 async function readConfig(): Promise<DaemonConfig> {
   const path = join(homedir(), ".mneme", "config.json");
@@ -67,11 +68,17 @@ export async function startDaemon(): Promise<void> {
   const outbox = createOutbox(outboxRoot);
   const agent = pickAgent(config.agent_provider);
 
+  let lastProcessedAt: Date | null = null;
+  const realPush = pushBundleViaServer(config.server_url, config.token);
+
   const runtime = createRuntime({
     outbox,
     extract: (captures) => agent.extract({ captures }),
     embed: embedBatch,
-    push: pushBundleViaServer(config.server_url, config.token),
+    push: async (bundle) => {
+      await realPush(bundle);
+      lastProcessedAt = new Date();
+    },
   });
 
   // HTTP listener: hook posts captures here.
@@ -152,6 +159,43 @@ export async function startDaemon(): Promise<void> {
   // Don't auto-fire on boot; the first scheduled tick gives the daemon
   // a chance to drain any pending captures before competing for the
   // dream lock.
+
+  // Heartbeat: post outbox depth + last-processed-at every 60s. The
+  // server upserts to _ops.daemon_heartbeats so /api/auth/machines can
+  // surface "is this daemon alive and processing?" at a glance.
+  const heartbeatTick = async () => {
+    try {
+      const [pending, extracted, embedded, failed] = await Promise.all([
+        outbox.list("pending"),
+        outbox.list("extracted"),
+        outbox.list("embedded"),
+        outbox.list("failed"),
+      ]);
+      const response = await fetch(`${config.server_url}/api/heartbeat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.token}`,
+        },
+        body: JSON.stringify({
+          outbox_pending: pending.length,
+          outbox_extracted: extracted.length,
+          outbox_embedded: embedded.length,
+          outbox_failed: failed.length,
+          last_processed_at: lastProcessedAt?.toISOString() ?? null,
+        }),
+      });
+      if (!response.ok) {
+        console.warn(`heartbeat ${response.status}`);
+      }
+    } catch (err) {
+      console.warn("heartbeat failed:", err);
+    }
+  };
+  setInterval(heartbeatTick, HEARTBEAT_TICK_MS);
+  // Fire one heartbeat on boot so the server immediately sees the
+  // daemon is alive without waiting a full minute.
+  void heartbeatTick();
 }
 
 // When invoked directly (`bun run src/index.ts`), start the daemon.
