@@ -270,21 +270,50 @@ export async function startDaemon(): Promise<void> {
     url: `http://127.0.0.1:${config.daemon_port}`,
   });
 
-  // ── Worker tick (queue-driven; outbox file scanner) ──────────────────
-  let isTicking = false;
-  const tick = async () => {
-    if (isTicking) return;
-    isTicking = true;
-    try {
-      await runtime.runWorkerTick();
-    } catch (err) {
-      Logger.error("worker tick crashed", err);
-    } finally {
-      isTicking = false;
-    }
-  };
-  setInterval(tick, WORKER_TICK_MS);
-  void tick(); // drain any backlog from before boot immediately
+  // ── Stage workers (independent, file-system synchronized) ───────────
+  // Three ticks each on their own setInterval. While capture (extract)
+  // is mid-Haiku-call (~3-5s on streaming SDK), embed and push keep
+  // making progress on what's already in observations/ and embedded/.
+  // Re-entry guard per tick — a long-running stage doesn't pile up
+  // overlapping invocations of itself; it just no-ops on each
+  // intermediate tick until the previous run releases.
+  //
+  // dedup + extract are kept sequential WITHIN the capture tick:
+  // dedup must drain captured/ before extract reads it, otherwise
+  // extract could pick up a file dedup is about to delete. embed and
+  // push read different directories so they need no coordination
+  // beyond the atomic POSIX renames the outbox already does.
+  function makeTick(name: string, fn: () => Promise<void>): () => Promise<void> {
+    let isTicking = false;
+    return async () => {
+      if (isTicking) return;
+      isTicking = true;
+      try {
+        await fn();
+      } catch (err) {
+        Logger.error(`${name} tick crashed`, err);
+      } finally {
+        isTicking = false;
+      }
+    };
+  }
+
+  const captureTick = makeTick("capture", () => runtime.runCaptureTick());
+  const embedTick = makeTick("embed", () => runtime.runEmbedTick());
+  const pushTick = makeTick("push", () => runtime.runPushTick());
+
+  setInterval(captureTick, WORKER_TICK_MS);
+  setInterval(embedTick, WORKER_TICK_MS);
+  setInterval(pushTick, WORKER_TICK_MS);
+
+  // Drain any backlog from before boot immediately. Run them in
+  // pipeline order (capture → embed → push) so files migrate forward
+  // through stages on the very first tick.
+  void (async () => {
+    await captureTick();
+    await embedTick();
+    await pushTick();
+  })();
 
   // ── Time-driven jobs (scheduler-managed; ~/.mneme/schedule.json) ─────
   // Heartbeat: outbox depth + last-processed-at posted to the server.

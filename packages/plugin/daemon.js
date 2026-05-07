@@ -1943,17 +1943,33 @@ function createRuntime(deps) {
       }
     }
   }
-  async function runWorkerTick() {
+  async function runCaptureTick() {
     await runDedup();
     await runCoalescedExtract();
+  }
+  async function runEmbedTick() {
     await runBatchedEmbed();
+  }
+  async function runPushTick() {
     await runParallelPush();
+  }
+  async function runWorkerTick() {
+    await runCaptureTick();
+    await runEmbedTick();
+    await runPushTick();
   }
   async function flush() {
     lastCapturedWriteAt = 0;
     await runWorkerTick();
   }
-  return { handleCapture, runWorkerTick, flush };
+  return {
+    handleCapture,
+    runWorkerTick,
+    runCaptureTick,
+    runEmbedTick,
+    runPushTick,
+    flush
+  };
 }
 
 // packages/daemon/src/scheduler.ts
@@ -2262,21 +2278,32 @@ async function startDaemon() {
   Logger.info("daemon listening", {
     url: `http://127.0.0.1:${config.daemon_port}`
   });
-  let isTicking = false;
-  const tick2 = async () => {
-    if (isTicking)
-      return;
-    isTicking = true;
-    try {
-      await runtime.runWorkerTick();
-    } catch (err) {
-      Logger.error("worker tick crashed", err);
-    } finally {
-      isTicking = false;
-    }
-  };
-  setInterval(tick2, WORKER_TICK_MS);
-  tick2();
+  function makeTick(name, fn) {
+    let isTicking = false;
+    return async () => {
+      if (isTicking)
+        return;
+      isTicking = true;
+      try {
+        await fn();
+      } catch (err) {
+        Logger.error(`${name} tick crashed`, err);
+      } finally {
+        isTicking = false;
+      }
+    };
+  }
+  const captureTick = makeTick("capture", () => runtime.runCaptureTick());
+  const embedTick = makeTick("embed", () => runtime.runEmbedTick());
+  const pushTick = makeTick("push", () => runtime.runPushTick());
+  setInterval(captureTick, WORKER_TICK_MS);
+  setInterval(embedTick, WORKER_TICK_MS);
+  setInterval(pushTick, WORKER_TICK_MS);
+  (async () => {
+    await captureTick();
+    await embedTick();
+    await pushTick();
+  })();
   const postHeartbeat = async () => {
     const [captured, observations, embedded, failed] = await Promise.all([
       outbox.list("captured"),

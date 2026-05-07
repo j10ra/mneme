@@ -24,22 +24,14 @@
 // capture_id and other captures stand alone.
 
 import { existsSync } from "node:fs";
-import {
-  appendFile,
-  mkdir,
-  readFile as fsReadFile,
-} from "node:fs/promises";
+import { appendFile, mkdir, readFile as fsReadFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Logger } from "@mneme/core";
 import { scrub, scrubData } from "@mneme/shared";
 import { EMBEDDER_DIM, EMBEDDER_MODEL } from "./embed.ts";
 import type { Outbox } from "./outbox.ts";
-import type {
-  Capture,
-  ExtractedMemory,
-  Memory,
-} from "./agents/types.ts";
+import type { Capture, ExtractedMemory, Memory } from "./agents/types.ts";
 
 export type CaptureBody = {
   content: string;
@@ -86,7 +78,12 @@ export type DaemonDeps = {
   shasDir?: string;
 };
 
-const REQUIRED_STRING_FIELDS = ["content", "source", "hostname", "harness"] as const;
+const REQUIRED_STRING_FIELDS = [
+  "content",
+  "source",
+  "hostname",
+  "harness",
+] as const;
 const COALESCE_WINDOW_MS = 5 * 60 * 1000;
 // Max captures per Haiku call. 20 keeps each extract focused enough
 // that observation quality stays high; sessions larger than this
@@ -146,7 +143,9 @@ export function createRuntime(deps: DaemonDeps) {
   // backlogs are caught by the forceMs trigger (oldest-file age) instead.
   let lastCapturedWriteAt = now();
 
-  async function handleCapture(body: CaptureBody): Promise<HandleCaptureResult> {
+  async function handleCapture(
+    body: CaptureBody,
+  ): Promise<HandleCaptureResult> {
     for (const field of REQUIRED_STRING_FIELDS) {
       const v = body[field];
       if (typeof v !== "string" || !v.trim()) {
@@ -407,8 +406,7 @@ export function createRuntime(deps: DaemonDeps) {
       const isDup =
         ledger.has(shaKey) ||
         tickSeen.has(shaKey) ||
-        (uuidKey !== null &&
-          (ledger.has(uuidKey) || tickSeen.has(uuidKey)));
+        (uuidKey !== null && (ledger.has(uuidKey) || tickSeen.has(uuidKey)));
       if (isDup) {
         try {
           await deps.outbox.delete(e.id, "captured");
@@ -433,7 +431,11 @@ export function createRuntime(deps: DaemonDeps) {
    *  ledger. Called from runCoalescedExtract once a file has been
    *  successfully transitioned to observations/. */
   async function recordAcceptedKeys(
-    captures: Array<{ session_id: string | null; content: string; raw_meta: Record<string, unknown> }>,
+    captures: Array<{
+      session_id: string | null;
+      content: string;
+      raw_meta: Record<string, unknown>;
+    }>,
   ): Promise<void> {
     const bySession = new Map<string, string[]>();
     for (const c of captures) {
@@ -577,28 +579,42 @@ export function createRuntime(deps: DaemonDeps) {
     }
   }
 
-  async function runWorkerTick(): Promise<void> {
-    // Stage 0: dedup at the captured/ entry. Drops byte-for-byte and
-    // logical-id duplicates BEFORE Haiku ever sees them, so we don't
-    // pay tokens to extract observations from content the server would
-    // reject anyway. Mirrors the server's (content_sha256, machine_id)
-    // intake constraint, but per-session and uuid-aware.
+  // Stage workers, exposed individually so index.ts can drive each on
+  // its own setInterval. Three independent loops let embed and push
+  // make progress while extract is mid-Haiku-call (~3-5s per batch on
+  // the streaming SDK), without anything blocking anything else.
+  //
+  // The capture-side tick keeps dedup and extract sequential within
+  // ITSELF: dedup must drain the duplicates from captured/ before
+  // extract reads the directory, otherwise extract could pick up a
+  // file dedup is about to delete. That ordering is local to this
+  // tick, not coordinated with the others — embed/push read different
+  // directories, so they're naturally independent.
+
+  /** captured/ → observations/. Dedup runs first; then coalesced
+   *  extract reads what survived and moves it forward. */
+  async function runCaptureTick(): Promise<void> {
     await runDedup();
-
-    // Stage 1: captured -> observations (coalesced; one LLM call per session window)
     await runCoalescedExtract();
+  }
 
-    // Stage 2: observations -> embedded
-    // Batch embed across files: one ONNX call covers all memories in the
-    // current observations/ snapshot, distributed back per-file. bge-large
-    // vectorizes large batches efficiently; serial per-file embed wastes
-    // ~5x the wall-clock when there are many files queued.
+  /** observations/ → embedded/. Batched bge across all files in flight. */
+  async function runEmbedTick(): Promise<void> {
     await runBatchedEmbed();
+  }
 
-    // Stage 3: embedded -> pushed -> deleted
-    // Parallel pushes (bounded). Each is independent HTTP; server dedupes
-    // by (content_sha256, machine_id) so no contention.
+  /** embedded/ → server → delete. Parallel pushes, bounded. */
+  async function runPushTick(): Promise<void> {
     await runParallelPush();
+  }
+
+  /** Run all three stages in sequence. Kept for tests and for /flush
+   *  semantics where the caller wants a one-shot drain. Production
+   *  uses the three stage ticks above on independent intervals. */
+  async function runWorkerTick(): Promise<void> {
+    await runCaptureTick();
+    await runEmbedTick();
+    await runPushTick();
   }
 
   // Force an immediate extract pass regardless of gating, then run the
@@ -611,7 +627,14 @@ export function createRuntime(deps: DaemonDeps) {
     await runWorkerTick();
   }
 
-  return { handleCapture, runWorkerTick, flush };
+  return {
+    handleCapture,
+    runWorkerTick,
+    runCaptureTick,
+    runEmbedTick,
+    runPushTick,
+    flush,
+  };
 }
 
 // Re-exported so consumers don't have to know the embedder details to
