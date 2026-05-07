@@ -232,4 +232,95 @@ describe("runWorkerTick", () => {
     await runtime.runWorkerTick();
     expect(mocks.pushed).toHaveLength(0);
   });
+
+  test("coalesces same-session captures into one extract call", async () => {
+    const outbox = createOutbox(root);
+    let extractCalls = 0;
+    const mocks = createMocks({
+      extract: async (captures) => {
+        extractCalls++;
+        // Return one observation per call regardless of input size
+        return [
+          {
+            content: `combined: ${captures.length} captures`,
+            kind: "summary",
+            importance: 0.6,
+            topics: [],
+          },
+        ];
+      },
+    });
+    const runtime = createRuntime({
+      outbox,
+      extract: mocks.extract,
+      embed: mocks.embed,
+      push: mocks.push,
+    });
+
+    // Three captures sharing session_id "session-coal" land in the
+    // outbox within a few seconds. They should be processed in ONE
+    // extract call.
+    await runtime.handleCapture({
+      ...validBody,
+      content: "first prompt of session",
+      session_id: "session-coal",
+    });
+    await runtime.handleCapture({
+      ...validBody,
+      content: "follow-up question in same session",
+      session_id: "session-coal",
+    });
+    await runtime.handleCapture({
+      ...validBody,
+      content: "third turn",
+      session_id: "session-coal",
+    });
+
+    await runtime.runWorkerTick();
+
+    expect(extractCalls).toBe(1);
+
+    // All three captures get pushed (each carries its own provenance
+    // row); only the seed bundle has the LLM-derived memories.
+    expect(mocks.pushed).toHaveLength(3);
+    const memoryCounts = (mocks.pushed as Array<{ memories: unknown[] }>).map(
+      (b) => b.memories.length,
+    );
+    expect(memoryCounts.filter((n) => n > 0)).toHaveLength(1);
+    expect(memoryCounts.filter((n) => n === 0)).toHaveLength(2);
+  });
+
+  test("does not coalesce across different session_ids", async () => {
+    const outbox = createOutbox(root);
+    let extractCalls = 0;
+    const mocks = createMocks({
+      extract: async () => {
+        extractCalls++;
+        return [];
+      },
+    });
+    const runtime = createRuntime({
+      outbox,
+      extract: mocks.extract,
+      embed: mocks.embed,
+      push: mocks.push,
+    });
+
+    await runtime.handleCapture({
+      ...validBody,
+      content: "session A capture",
+      session_id: "session-a",
+    });
+    await runtime.handleCapture({
+      ...validBody,
+      content: "session B capture",
+      session_id: "session-b",
+    });
+
+    await runtime.runWorkerTick();
+
+    // Two extract calls because the captures belong to different
+    // sessions. Coalescing groups by session_id (and repo, private).
+    expect(extractCalls).toBe(2);
+  });
 });
