@@ -166,6 +166,9 @@ export async function startDaemon(): Promise<void> {
           }
           return agent.distill(memories);
         },
+        findSupersedes: agent.findSupersedes
+          ? (candidates) => agent.findSupersedes!(candidates)
+          : undefined,
       });
       if (!result.skipped) {
         console.log(

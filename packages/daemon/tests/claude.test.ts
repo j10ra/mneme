@@ -8,11 +8,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   buildExtractPrompt,
+  buildSupersedePrompt,
   detectAuthMode,
   parseExtractResponse,
+  parseSupersedeResponse,
 } from "../src/agents/claude.ts";
 import { claudeProvider } from "../src/agents/claude.ts";
-import type { Capture } from "../src/agents/types.ts";
+import type { Capture, SupersedeCandidate } from "../src/agents/types.ts";
 
 const ENV_KEYS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
 const RUN_LIVE = process.env.MNEME_RUN_LIVE === "1";
@@ -175,6 +177,79 @@ describe("claudeProvider.isAvailable", () => {
 describe("claudeProvider.supportsDream", () => {
   test("returns true (Claude is suitable for the distill + supersede pass)", () => {
     expect(claudeProvider.supportsDream()).toBe(true);
+  });
+});
+
+describe("buildSupersedePrompt", () => {
+  test("includes id, kind, created_at, and content for each candidate", () => {
+    const cands: SupersedeCandidate[] = [
+      {
+        id: "11111111-1111-1111-1111-111111111111",
+        content: "We use 14B model.",
+        kind: "decision",
+        created_at: "2025-01-01T00:00:00Z",
+      },
+      {
+        id: "22222222-2222-2222-2222-222222222222",
+        content: "We use 7B model now.",
+        kind: "decision",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+    const prompt = buildSupersedePrompt(cands);
+    expect(prompt).toContain("11111111");
+    expect(prompt).toContain("22222222");
+    expect(prompt).toContain("14B");
+    expect(prompt).toContain("7B");
+    expect(prompt).toMatch(/json/i);
+  });
+});
+
+describe("parseSupersedeResponse", () => {
+  test("returns the validated pairs from clean JSON", () => {
+    const response = JSON.stringify({
+      pairs: [
+        {
+          old_id: "11111111-1111-1111-1111-111111111111",
+          new_id: "22222222-2222-2222-2222-222222222222",
+          reason: "Project moved to 7B.",
+        },
+      ],
+    });
+    const pairs = parseSupersedeResponse(response);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]!.old_id).toContain("11111111");
+    expect(pairs[0]!.reason).toContain("7B");
+  });
+
+  test("returns empty array on missing or empty pairs", () => {
+    expect(parseSupersedeResponse(JSON.stringify({ pairs: [] }))).toEqual([]);
+    expect(parseSupersedeResponse("not json")).toEqual([]);
+  });
+
+  test("filters self-supersede entries (old_id === new_id)", () => {
+    const same = "33333333-3333-3333-3333-333333333333";
+    const response = JSON.stringify({
+      pairs: [{ old_id: same, new_id: same, reason: "bogus" }],
+    });
+    expect(parseSupersedeResponse(response)).toEqual([]);
+  });
+
+  test("drops malformed pairs (missing fields)", () => {
+    const response = JSON.stringify({
+      pairs: [
+        { old_id: "11111111-1111-1111-1111-111111111111", new_id: "22222222-2222-2222-2222-222222222222" }, // no reason
+        { new_id: "22222222-2222-2222-2222-222222222222", reason: "x" }, // no old_id
+        {
+          old_id: "11111111-1111-1111-1111-111111111111",
+          new_id: "22222222-2222-2222-2222-222222222222",
+          reason: "valid",
+        },
+      ],
+    });
+    const pairs = parseSupersedeResponse(response);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]!.reason).toBe("valid");
   });
 });
 

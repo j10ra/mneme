@@ -20,6 +20,8 @@ import type {
   DreamOutput,
   ExtractedMemory,
   Memory,
+  SupersedeCandidate,
+  SupersedePair,
 } from "./types.ts";
 
 const VALID_KINDS = new Set([
@@ -66,12 +68,43 @@ export function buildClusterPrompt(memories: Memory[]): string {
 }
 
 export function buildSupersedePrompt(
-  memories: Array<Memory & { id: string; created_at: string }>,
+  candidates: SupersedeCandidate[],
 ): string {
-  const lines = memories.map(
+  const lines = candidates.map(
     (m) => `id=${m.id} kind=${m.kind} created_at=${m.created_at}: ${m.content}`,
   );
   return `${SUPERSEDE_PROMPT}\n\nMemories under review:\n${lines.join("\n")}\n\nReturn JSON only.`;
+}
+
+export function parseSupersedeResponse(text: string): SupersedePair[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripCodeFences(text));
+  } catch {
+    return [];
+  }
+  const pairs = (parsed as { pairs?: unknown }).pairs;
+  if (!Array.isArray(pairs)) return [];
+
+  const result: SupersedePair[] = [];
+  for (const raw of pairs) {
+    if (!raw || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    if (
+      typeof r.old_id !== "string" ||
+      typeof r.new_id !== "string" ||
+      typeof r.reason !== "string"
+    ) {
+      continue;
+    }
+    if (r.old_id === r.new_id) continue;
+    result.push({
+      old_id: r.old_id,
+      new_id: r.new_id,
+      reason: r.reason,
+    });
+  }
+  return result;
 }
 
 // Strip ```json ... ``` fences if present. Older models sometimes wrap
@@ -195,6 +228,15 @@ export const claudeProvider: AgentProvider = {
       throw new Error("claude.distill: failed to parse cluster response");
     }
     return { title: parsed.title, summary: parsed.summary };
+  },
+
+  async findSupersedes(
+    candidates: SupersedeCandidate[],
+  ): Promise<SupersedePair[]> {
+    if (candidates.length < 2) return [];
+    const prompt = buildSupersedePrompt(candidates);
+    const response = await callClaudeSubprocess(prompt);
+    return parseSupersedeResponse(response);
   },
 
   supportsDream(): boolean {

@@ -45,6 +45,18 @@ export type DreamOutput = {
   supersede_pairs?: Array<{ old_id: string; new_id: string; reason: string }>;
 };
 
+export type SupersedePair = { old_id: string; new_id: string; reason: string };
+
+// Memory metadata passed to findSupersedes — needs id + created_at so
+// the model can reason about temporal ordering. Members of a cluster
+// plus their cosine-near neighbors are the typical input.
+export type SupersedeCandidate = {
+  id: string;
+  content: string;
+  kind: string;
+  created_at: string;
+};
+
 export type AvailabilityStatus = {
   available: boolean;
   detail: string;
@@ -55,5 +67,13 @@ export interface AgentProvider {
   isAvailable(): Promise<AvailabilityStatus>;
   extract(input: { captures: Capture[] }): Promise<ExtractedMemory[]>;
   distill?(cluster: Memory[]): Promise<DreamOutput>;
+  /**
+   * Optional supersede pass. Given cluster members + cosine-near
+   * neighbors, return pairs where the newer claim makes the older one
+   * obsolete. Conservative by design: empty array is a valid common
+   * answer. Skipped on providers that opt out (the local-7B path in
+   * the original architecture).
+   */
+  findSupersedes?(candidates: SupersedeCandidate[]): Promise<SupersedePair[]>;
   supportsDream(): boolean;
 }

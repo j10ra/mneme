@@ -14,7 +14,12 @@
 // returns just {title, summary}); a follow-up can wire supersede_pairs
 // once the basic distill cycle is healthy.
 
-import type { DreamOutput, Memory } from "./agents/types.ts";
+import type {
+  DreamOutput,
+  Memory,
+  SupersedeCandidate,
+  SupersedePair,
+} from "./agents/types.ts";
 
 const WINDOW_HOURS = 8;
 const WINDOW_SECONDS = WINDOW_HOURS * 3600;
@@ -92,6 +97,7 @@ export type ClusterSubmission = {
   member_ids: string[];
   title: string;
   summary: string;
+  supersede_pairs?: SupersedePair[];
 };
 
 export type DreamCycleResult = {
@@ -107,6 +113,11 @@ export type DreamDeps = {
   machineId: string;
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   distill: (memories: Memory[]) => Promise<DreamOutput>;
+  /** Optional supersede pass run after each cluster's distill. Skipped
+   *  when omitted (e.g. providers that opt out for safety). */
+  findSupersedes?: (
+    candidates: SupersedeCandidate[],
+  ) => Promise<SupersedePair[]>;
   /** Override the window for tests. Production calls computeWindowKey(). */
   windowKey?: number;
 };
@@ -204,10 +215,38 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
       });
       try {
         const distilled = await deps.distill(memberMemories);
+
+        // Optional supersede pass over cluster members. Adjacent-
+        // neighbor inclusion (the original architecture's pattern) would
+        // require asking the server for cosine-near non-cluster
+        // memories; for Phase 1 we run the pass over members only,
+        // which catches the most common rephrasing-supersedes-prior
+        // case while keeping the daemon's HTTP surface minimal.
+        let supersede_pairs: SupersedePair[] | undefined;
+        if (deps.findSupersedes && memberIds.length >= 2) {
+          try {
+            const candidates: SupersedeCandidate[] = memberIds.map((id) => {
+              const s = seedById.get(id)!;
+              return {
+                id,
+                content: s.content,
+                kind: s.kind,
+                created_at: s.created_at,
+              };
+            });
+            supersede_pairs = await deps.findSupersedes(candidates);
+          } catch (err) {
+            console.error("dream supersede pass failed", { memberIds, err });
+          }
+        }
+
         submissions.push({
           member_ids: memberIds,
           title: distilled.title,
           summary: distilled.summary,
+          ...(supersede_pairs && supersede_pairs.length
+            ? { supersede_pairs }
+            : {}),
         });
       } catch (err) {
         // Per-cluster failure isolation: one bad LLM call does not
