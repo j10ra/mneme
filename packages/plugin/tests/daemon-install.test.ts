@@ -5,14 +5,10 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  binaryAssetName,
-  binaryCachePath,
-  binaryDownloadUrl,
   buildLaunchdPlist,
   buildServiceConfig,
   buildSystemdUnit,
   buildWindowsTaskXml,
-  fetchBinaryIfAvailable,
   pickFreePortDeterministic,
   serviceConfigPath,
   startCommandsFor,
@@ -22,11 +18,6 @@ const cfg = {
   pluginRoot: "/Users/jetz/.claude/plugins/cache/j10ra-mneme/mneme/1.0.45",
   daemonPort: 53121,
   bunPath: "/Users/jetz/.bun/bin/bun",
-};
-
-const binaryCfg = {
-  ...cfg,
-  binaryPath: "/Users/jetz/.mneme/bin/mneme-daemon-v1.0.59",
 };
 
 describe("buildLaunchdPlist", () => {
@@ -91,82 +82,6 @@ describe("startCommandsFor", () => {
   test("win32 uses schtasks", () => {
     const cmds = startCommandsFor("win32");
     expect(cmds.some((c) => c.startsWith("schtasks /Create"))).toBe(true);
-  });
-});
-
-describe("binary mode generators", () => {
-  test("buildLaunchdPlist with binaryPath omits bun + run + daemon.js", () => {
-    const plist = buildLaunchdPlist(binaryCfg);
-    expect(plist).toContain(binaryCfg.binaryPath);
-    expect(plist).not.toContain("daemon.js");
-    expect(plist).not.toMatch(/<string>run<\/string>/);
-  });
-
-  test("buildSystemdUnit with binaryPath uses ExecStart=<binary>", () => {
-    const unit = buildSystemdUnit(binaryCfg);
-    expect(unit).toContain(`ExecStart=${binaryCfg.binaryPath}`);
-    expect(unit).not.toContain("daemon.js");
-  });
-
-  test("buildWindowsTaskXml with binaryPath omits Arguments content", () => {
-    const xml = buildWindowsTaskXml(binaryCfg);
-    expect(xml).toContain(`<Command>${binaryCfg.binaryPath}</Command>`);
-    expect(xml).toContain("<Arguments></Arguments>");
-  });
-});
-
-describe("binary download URL helpers", () => {
-  test("binaryAssetName picks the right name per (platform, arch)", () => {
-    expect(binaryAssetName("darwin", "arm64")).toBe(
-      "mneme-daemon-darwin-arm64",
-    );
-    expect(binaryAssetName("darwin", "x64")).toBe("mneme-daemon-darwin-x64");
-    expect(binaryAssetName("linux", "x64")).toBe("mneme-daemon-linux-x64");
-    expect(binaryAssetName("linux", "arm64")).toBe(
-      "mneme-daemon-linux-arm64",
-    );
-    expect(binaryAssetName("win32", "x64")).toBe(null);
-  });
-
-  test("binaryDownloadUrl normalizes versions with or without v prefix", () => {
-    expect(
-      binaryDownloadUrl("1.0.59", "mneme-daemon-darwin-arm64"),
-    ).toBe(
-      "https://github.com/j10ra/mneme/releases/download/v1.0.59/mneme-daemon-darwin-arm64",
-    );
-    expect(
-      binaryDownloadUrl("v1.0.59", "mneme-daemon-darwin-arm64"),
-    ).toBe(
-      "https://github.com/j10ra/mneme/releases/download/v1.0.59/mneme-daemon-darwin-arm64",
-    );
-  });
-
-  test("binaryCachePath lands under ~/.mneme/bin with a versioned name", () => {
-    const p = binaryCachePath("1.0.59");
-    expect(p).toMatch(/\.mneme\/bin\/mneme-daemon-v1\.0\.59$/);
-  });
-});
-
-describe("fetchBinaryIfAvailable", () => {
-  test("returns null when the GitHub release returns 404", async () => {
-    const fakeFetch = (async () =>
-      new Response("not found", { status: 404 })) as unknown as typeof fetch;
-    const result = await fetchBinaryIfAvailable(
-      "0.0.0-does-not-exist",
-      fakeFetch,
-    );
-    expect(result).toBe(null);
-  });
-
-  test("returns null on network error", async () => {
-    const fakeFetch = (async () => {
-      throw new Error("ECONNREFUSED");
-    }) as unknown as typeof fetch;
-    const result = await fetchBinaryIfAvailable(
-      "0.0.0-net-fail",
-      fakeFetch,
-    );
-    expect(result).toBe(null);
   });
 });
 

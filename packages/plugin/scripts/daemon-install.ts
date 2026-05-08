@@ -3,20 +3,16 @@
 // Scheduler XML on win32) and the install / uninstall procedures that
 // register them with the OS service manager.
 //
-// Two daemon delivery modes:
+// Single delivery mode: bun-run. The plist / systemd unit / Windows
+// Task XML invokes `bun run <pluginRoot>/daemon.js`, with native deps
+// resolved from `<pluginRoot>/node_modules/` (populated by `bun install
+// --production` at install time). Works on macOS, WSL, Linux, and
+// Windows because every platform path goes through the same launcher.
 //
-//   1. Standalone binary (preferred). At install time we fetch the
-//      platform-specific `mneme-daemon-<os>-<arch>` from the matching
-//      GitHub release into `~/.mneme/bin/mneme-daemon-v<version>`. The
-//      service manager invokes that binary directly. Self-contained:
-//      no `bun install`, no `bun run`, no node_modules.
-//
-//   2. Bun-run fallback. When the binary fetch fails (no internet, no
-//      asset published for that platform yet, or stale plugin metadata),
-//      we fall back to the legacy `bun run <pluginRoot>/daemon.js` path.
-//      That path requires bun installed and `bun install --production`
-//      run inside pluginRoot to populate native deps. Slower install,
-//      but it always works on a developer machine.
+// (We had a pre-built standalone-binary path on a previous version but
+// `bun build --compile` doesn't ship native dylibs cleanly and the
+// embedder kept dlopen-failing inside the binary. Reverted to bun-run
+// since every CC plugin host already has bun installed.)
 //
 // All file generators are pure: given a config, they return a string.
 // The execute paths (install / uninstall / start) are isolated so tests
@@ -32,40 +28,18 @@ export type DaemonInstallConfig = {
   pluginRoot: string;
   /** Local TCP port the daemon listens on (127.0.0.1 only) */
   daemonPort: number;
-  /** Path to the user's bun binary (e.g. ~/.bun/bin/bun). Required for
-   *  the bun-run fallback path; ignored when binaryPath is set. */
+  /** Path to the user's bun binary (e.g. ~/.bun/bin/bun) */
   bunPath: string;
   /** Service label / name used by the platform manager */
   serviceLabel?: string;
-  /** When set, the service manager invokes this absolute path directly.
-   *  Skips the bun + daemon.js indirection entirely. */
-  binaryPath?: string;
 };
 
 const DEFAULT_LABEL = "dev.mneme.daemon";
 
-/** Returns the executable + args the service manager should invoke. The
- *  binary path takes precedence when set; otherwise we go through bun. */
-function commandArgsFor(cfg: DaemonInstallConfig): {
-  executable: string;
-  args: string[];
-} {
-  if (cfg.binaryPath) {
-    return { executable: cfg.binaryPath, args: [] };
-  }
-  return {
-    executable: cfg.bunPath,
-    args: ["run", join(cfg.pluginRoot, "daemon.js")],
-  };
-}
-
 export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   const label = cfg.serviceLabel ?? DEFAULT_LABEL;
-  const { executable, args } = commandArgsFor(cfg);
+  const daemonEntry = join(cfg.pluginRoot, "daemon.js");
   const logsDir = join(homedir(), ".mneme", "logs");
-  const programArguments = [executable, ...args]
-    .map((a) => `    <string>${a}</string>`)
-    .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -74,7 +48,9 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-${programArguments}
+    <string>${cfg.bunPath}</string>
+    <string>run</string>
+    <string>${daemonEntry}</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -95,8 +71,7 @@ ${programArguments}
 }
 
 export function buildSystemdUnit(cfg: DaemonInstallConfig): string {
-  const { executable, args } = commandArgsFor(cfg);
-  const execStart = [executable, ...args].join(" ");
+  const daemonEntry = join(cfg.pluginRoot, "daemon.js");
   return `[Unit]
 Description=Mneme daemon (per-machine extract + push)
 After=network-online.target
@@ -104,7 +79,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${execStart}
+ExecStart=${cfg.bunPath} run ${daemonEntry}
 Restart=on-failure
 RestartSec=5
 Environment=HOME=${homedir()}
@@ -115,7 +90,7 @@ WantedBy=default.target
 }
 
 export function buildWindowsTaskXml(cfg: DaemonInstallConfig): string {
-  const { executable, args } = commandArgsFor(cfg);
+  const daemonEntry = join(cfg.pluginRoot, "daemon.js");
   const label = cfg.serviceLabel ?? DEFAULT_LABEL;
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -137,8 +112,8 @@ export function buildWindowsTaskXml(cfg: DaemonInstallConfig): string {
   </Settings>
   <Actions>
     <Exec>
-      <Command>${executable}</Command>
-      <Arguments>${args.join(" ")}</Arguments>
+      <Command>${cfg.bunPath}</Command>
+      <Arguments>run ${daemonEntry}</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -146,89 +121,12 @@ export function buildWindowsTaskXml(cfg: DaemonInstallConfig): string {
 }
 
 export type Platform = "darwin" | "linux" | "win32";
-export type Arch = "arm64" | "x64";
 
 export function detectPlatform(): Platform {
   if (process.platform === "darwin") return "darwin";
   if (process.platform === "linux") return "linux";
   if (process.platform === "win32") return "win32";
   throw new Error(`unsupported platform: ${process.platform}`);
-}
-
-export function detectArch(): Arch {
-  if (process.arch === "arm64") return "arm64";
-  if (process.arch === "x64") return "x64";
-  throw new Error(`unsupported arch: ${process.arch}`);
-}
-
-/** GitHub release asset name for the binary on this (platform, arch).
- *  Mirrors the matrix in .github/workflows/release-daemon.yml. Returns
- *  null for combos we don't ship binaries for yet (e.g. win32). */
-export function binaryAssetName(
-  platform: Platform,
-  arch: Arch,
-): string | null {
-  if (platform === "win32") return null;
-  return `mneme-daemon-${platform}-${arch}`;
-}
-
-/** Public download URL on GitHub releases. The plugin reads its own
- *  version from packages/plugin/.claude-plugin/plugin.json at install
- *  time and substitutes here. */
-export function binaryDownloadUrl(
-  version: string,
-  asset: string,
-  repo = "j10ra/mneme",
-): string {
-  const tag = version.startsWith("v") ? version : `v${version}`;
-  return `https://github.com/${repo}/releases/download/${tag}/${asset}`;
-}
-
-/** Cache path for a downloaded binary. Versioned so a plugin upgrade
- *  triggers a fresh download instead of running stale code. */
-export function binaryCachePath(version: string): string {
-  const tag = version.startsWith("v") ? version : `v${version}`;
-  return join(homedir(), ".mneme", "bin", `mneme-daemon-${tag}`);
-}
-
-/** Best-effort fetch of the platform binary. Returns the cached path on
- *  success, null on any failure (no internet, 404, write error). The
- *  caller falls back to the bun-run path on null. */
-export async function fetchBinaryIfAvailable(
-  version: string,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<string | null> {
-  const platform = detectPlatform();
-  if (platform === "win32") return null; // no win32 binary yet
-  const arch = detectArch();
-  const asset = binaryAssetName(platform, arch);
-  if (!asset) return null;
-
-  const cachePath = binaryCachePath(version);
-  const { existsSync, mkdirSync, chmodSync, writeFileSync, renameSync } =
-    await import("node:fs");
-  const { dirname: dn } = await import("node:path");
-
-  if (existsSync(cachePath)) return cachePath;
-
-  const url = binaryDownloadUrl(version, asset);
-  try {
-    const response = await fetchImpl(url, { redirect: "follow" });
-    if (!response.ok) return null;
-    // arrayBuffer first, then a single write. Using `Bun.write(path,
-    // response)` to stream the body wedges at 100% CPU on Bun 1.3.9
-    // for 65MB responses; the buffered path completes the same 65MB in
-    // ~7s and works on every bun version we've seen.
-    const buf = Buffer.from(await response.arrayBuffer());
-    mkdirSync(dn(cachePath), { recursive: true, mode: 0o755 });
-    const tmp = `${cachePath}.partial`;
-    writeFileSync(tmp, buf, { mode: 0o755 });
-    renameSync(tmp, cachePath);
-    chmodSync(cachePath, 0o755);
-    return cachePath;
-  } catch {
-    return null;
-  }
 }
 
 /** True when running inside Windows Subsystem for Linux. WSL exposes
@@ -305,12 +203,6 @@ export type InstallResult = {
   servicePath: string;
   port: number;
   startedCommands: string[];
-  /** Whether the install resolved to a standalone binary or fell back
-   *  to the bun-run path. Surfaces in the slash output so the user knows
-   *  which delivery mode landed. */
-  mode?: "binary" | "bun-run";
-  /** Absolute path of the binary used (only set when mode === "binary"). */
-  binaryPath?: string;
   error?: string;
 };
 
@@ -348,26 +240,6 @@ async function ensurePluginDeps(
   return { ok: true };
 }
 
-/** Read the plugin's published version so the install knows which
- *  release to fetch a binary from. Tolerates a missing/malformed
- *  plugin.json by returning null — the caller falls back to bun-run. */
-export async function readPluginVersion(
-  pluginRoot: string,
-): Promise<string | null> {
-  try {
-    const { readFile } = await import("node:fs/promises");
-    const { join: jp } = await import("node:path");
-    const text = await readFile(
-      jp(pluginRoot, ".claude-plugin", "plugin.json"),
-      "utf8",
-    );
-    const parsed = JSON.parse(text) as { version?: string };
-    return typeof parsed.version === "string" ? parsed.version : null;
-  } catch {
-    return null;
-  }
-}
-
 // Write the service config and run the start commands. Best-effort: any
 // failure logs a clear message and returns ok=false rather than throwing,
 // so /mneme:setup doesn't bail on a service-manager wrinkle and leave
@@ -377,46 +249,25 @@ export async function installDaemonService(
 ): Promise<InstallResult> {
   const platform = detectPlatform();
   const servicePath = serviceConfigPath(platform);
+  const config = buildServiceConfig(platform, cfg);
 
   const { existsSync, mkdirSync, writeFileSync } = await import("node:fs");
   const { dirname, join: joinPath } = await import("node:path");
   const { spawn } = await import("node:child_process");
 
-  // Try to land a standalone binary for this platform first. On success
-  // the service manager invokes it directly: no bun, no node_modules,
-  // no daemon.js. On failure we fall through to the legacy bun-run path
-  // below — same code as before.
-  let resolvedCfg = cfg;
-  let mode: "binary" | "bun-run" = "bun-run";
-  if (!cfg.binaryPath) {
-    const version = await readPluginVersion(cfg.pluginRoot);
-    if (version) {
-      const binaryPath = await fetchBinaryIfAvailable(version);
-      if (binaryPath) {
-        resolvedCfg = { ...cfg, binaryPath };
-        mode = "binary";
-      }
-    }
-  } else {
-    mode = "binary";
-  }
-
-  const config = buildServiceConfig(platform, resolvedCfg);
-
-  // Bun-run path requires daemon.js + node_modules adjacent. Skip both
-  // checks when we have a self-contained binary.
-  if (mode === "bun-run") {
-    const daemonBundle = joinPath(cfg.pluginRoot, "daemon.js");
-    if (!existsSync(daemonBundle)) {
-      return {
-        ok: false,
-        platform,
-        servicePath,
-        port: cfg.daemonPort,
-        startedCommands: [],
-        error: `daemon bundle missing at ${daemonBundle} (run scripts/build-plugin.ts before tagging)`,
-      };
-    }
+  // Sanity-check the bundle is actually present at the expected path.
+  // Surfacing this early gives a clear error instead of a launchd
+  // failure 30s later when the daemon process can't find its entry.
+  const daemonBundle = joinPath(cfg.pluginRoot, "daemon.js");
+  if (!existsSync(daemonBundle)) {
+    return {
+      ok: false,
+      platform,
+      servicePath,
+      port: cfg.daemonPort,
+      startedCommands: [],
+      error: `daemon bundle missing at ${daemonBundle} (run scripts/build-plugin.ts before tagging)`,
+    };
   }
 
   // WSL guard: linux platform path uses systemctl --user. WSL distros
@@ -446,20 +297,18 @@ export async function installDaemonService(
     }
   }
 
-  // Populate node_modules at pluginRoot before launchctl load — only
-  // matters for the bun-run path. Binaries are fully self-contained.
-  if (mode === "bun-run") {
-    const depsResult = await ensurePluginDeps(cfg.pluginRoot, cfg.bunPath);
-    if (!depsResult.ok) {
-      return {
-        ok: false,
-        platform,
-        servicePath,
-        port: cfg.daemonPort,
-        startedCommands: [],
-        error: depsResult.error,
-      };
-    }
+  // Populate node_modules at pluginRoot before launchctl load, so the
+  // daemon process has its native externals resolvable at startup.
+  const depsResult = await ensurePluginDeps(cfg.pluginRoot, cfg.bunPath);
+  if (!depsResult.ok) {
+    return {
+      ok: false,
+      platform,
+      servicePath,
+      port: cfg.daemonPort,
+      startedCommands: [],
+      error: depsResult.error,
+    };
   }
 
   try {
@@ -515,8 +364,6 @@ export async function installDaemonService(
     servicePath,
     port: cfg.daemonPort,
     startedCommands: ran,
-    mode,
-    binaryPath: resolvedCfg.binaryPath,
   };
 }
 
