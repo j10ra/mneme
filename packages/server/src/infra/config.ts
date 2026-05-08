@@ -10,42 +10,16 @@
 
 // ── Worker scheduling ─────────────────────────────────────────────────
 
-/** Tight-poll interval for the extract worker loop. */
-export const EXTRACT_INTERVAL_MS = 10_000;
-
-/** Tight-poll interval for the embed worker loop. */
-export const EMBED_INTERVAL_MS = 5_000;
-
-/** Scheduler tick rate for time-driven workers (nap, dream, keepalive). */
+/** Scheduler tick rate for time-driven workers (nap, dream, keepalive).
+ *  Server's tight extract+embed polling loops were retired in #29 Phase B
+ *  (the per-machine daemon owns those now); only scheduler-driven jobs
+ *  remain here. EXTRACT_INTERVAL_MS / EMBED_INTERVAL_MS plus the per-
+ *  cycle extract/embed knobs went with them. */
 export const SCHEDULER_TICK_MS = 60_000;
 
-// ── Extract worker ────────────────────────────────────────────────────
-
-/** Per-cycle circuit breaker for the extract worker. After this many
- *  consecutive cycle failures, the entire worker pauses for
- *  EXTRACT_BREAKER_PAUSE_MS so a downed LLM doesn't burn job attempts.
- *  Composes with the per-provider breaker (see PICKER_*): the per-
- *  provider one flips between local and openrouter; this one stops the
- *  worker if both stay unhealthy. */
-export const EXTRACT_BREAKER_THRESHOLD = 3;
-export const EXTRACT_BREAKER_PAUSE_MS = 5 * 60_000;
-
-/** Window for coalescing same-session captures into one extract call. */
-export const EXTRACT_COALESCE_WINDOW = "5 minutes";
-
-/** A `running` extract job older than this is treated as crashed mid-
- *  flight and re-eligible. Bounded by LLM_TIMEOUT_MS plus headroom. */
-export const EXTRACT_STALE_RUNNING = "15 minutes";
-
-// ── Embed worker ──────────────────────────────────────────────────────
-
-export const EMBED_BATCH_SIZE = 32;
-
-/** A `running` embed job older than this is treated as crashed mid-
- *  flight and re-eligible. */
-export const EMBED_STALE_RUNNING = "5 minutes";
-
 // ── Picker (LLM provider primary/fallback breaker) ────────────────────
+// Still used by server-side dream via llm/pick.ts. Will go away if/when
+// the bigger-dream consolidation plan retires the server-side LLM path.
 
 export const PICKER_FAILURE_THRESHOLD = 3;
 export const PICKER_COOLDOWN_MS = 5 * 60_000;
