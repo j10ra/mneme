@@ -43,19 +43,19 @@ async function readStdin(): Promise<string> {
  *  status. Order:
  *    1. MNEME_ADMIN_PASSWORD env var (covers shell-rc and one-shot
  *       overrides without touching disk).
- *    2. cfg.admin.ciphertext — written to ~/.mneme/config.json (mode
- *       600) at /mneme:setup time, encrypted with a key derived from
- *       this machine's hardware fingerprint (see admin-secret.ts).
- *       Fails open: a fingerprint change or corrupt blob falls through
- *       to stdin instead of erroring out.
+ *    2. cfg.admin.secret — written to ~/.mneme/config.json (mode 600)
+ *       at /mneme:setup time, encrypted with a key derived from this
+ *       machine's hardware fingerprint (see admin-secret.ts). Fails
+ *       open: a fingerprint change or corrupt blob falls through to
+ *       stdin instead of erroring out.
  *    3. stdin (legacy interactive flow; still works on machines that
  *       didn't store the password).
  *  Returns null only if all three rungs are empty. */
 async function resolveAdminPassword(cfg: MnemeConfig): Promise<string | null> {
   const fromEnv = process.env.MNEME_ADMIN_PASSWORD;
   if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
-  if (cfg.admin?.ciphertext) {
-    const decrypted = decryptAdminPassword(cfg.admin.ciphertext);
+  if (cfg.admin?.secret) {
+    const decrypted = decryptAdminPassword(cfg.admin.secret);
     if (decrypted) return decrypted;
     process.stderr.write(
       "mneme: admin secret decrypt failed (fingerprint changed?), falling back to stdin\n",
@@ -256,9 +256,9 @@ async function setup(
   // Failure here is non-fatal: setup still works, the operator just
   // keeps typing the password each time. Most likely cause is a
   // platform that machineFingerprint() doesn't support.
-  let adminBlock: { ciphertext: string } | undefined;
+  let adminBlock: { secret: string } | undefined;
   try {
-    adminBlock = { ciphertext: encryptAdminPassword(adminPassword) };
+    adminBlock = { secret: encryptAdminPassword(adminPassword) };
   } catch (e) {
     process.stderr.write(
       `mneme: skipping admin secret persist (${

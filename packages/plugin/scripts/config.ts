@@ -29,7 +29,7 @@ export type MnemeConfig = {
    *
    *  Absence means admin slashes fall back to MNEME_ADMIN_PASSWORD env
    *  var or a one-shot stdin prompt. */
-  admin?: { ciphertext: string };
+  admin?: { secret: string };
 };
 
 export function configPath(): string {

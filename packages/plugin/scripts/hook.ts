@@ -154,8 +154,8 @@ function buildLocalRedactor(cfg: MnemeConfig): (s: string) => string {
   if (cfg.auth?.key) secrets.add(cfg.auth.key);
   const fromEnv = process.env.MNEME_ADMIN_PASSWORD;
   if (fromEnv) secrets.add(fromEnv);
-  if (cfg.admin?.ciphertext) {
-    const pw = decryptAdminPassword(cfg.admin.ciphertext);
+  if (cfg.admin?.secret) {
+    const pw = decryptAdminPassword(cfg.admin.secret);
     if (pw) secrets.add(pw);
   }
   const list = [...secrets].filter((s) => s.length >= 8).sort((a, b) => b.length - a.length);
