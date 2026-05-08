@@ -125,21 +125,48 @@ LIMIT 10;
 Copy and adapt:
 
 ```sql
-SELECT id, content, kind, repo, importance, created_at
+SELECT id, content, kind, repo, importance, meta->'related_to' AS related_to, created_at
 FROM memories
 WHERE archived_at IS NULL
   AND (meta->>'shadow_of') IS NULL
 ORDER BY
   (
     0.6 * (1 - (embedding <=> embed('your query'))) +
-    0.4 * ts_rank(tsv, websearch_to_tsquery('english', 'your query'))
+    0.4 * ts_rank(tsv, websearch_to_tsquery('english', 'your query')) +
+    0.05 * importance
   )
   * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
 DESC
 LIMIT 10;
 ```
 
+Three terms:
+- `0.6 *` cosine similarity (semantic).
+- `0.4 *` BM25 (keyword overlap).
+- `0.05 *` importance — breaks ties between semantically-similar rows in favour of high-importance ones (decisions, constraints, security alerts), without dominating the ranking. Importance is centered ~0.58 with a long tail to 1.0; this contributes 0.03–0.05 to the final score.
+
 The `superseded_by` penalty multiplies the score by 0.3 instead of filtering — superseded memories still surface for queries like "what did we used to do?", just rank below the current truth unless overwhelmingly relevant. To see only current memories explicitly, add `AND meta->>'superseded_by' IS NULL`. To find historical context only, flip to `AND meta->>'superseded_by' IS NOT NULL`.
+
+### Co-rendering related memories
+
+The query above selects `meta->'related_to'` so you have the neighbour ids alongside each hit. When the user asks a broad recall question and a top hit has neighbours (`related_to` is a JSON array of uuids), surface them too:
+
+```sql
+-- Pull the related neighbours for ONE specific top hit, in one round-trip.
+SELECT id, kind, importance,
+       substring(content, 1, 200) AS preview
+FROM memories
+WHERE id = ANY (
+        ARRAY(SELECT jsonb_array_elements_text(
+                       (SELECT meta->'related_to' FROM memories WHERE id = '<top-hit-uuid>')
+                     )::uuid)
+      )
+  AND archived_at IS NULL
+ORDER BY importance DESC, created_at DESC
+LIMIT 5;
+```
+
+When summarising for the user, group neighbours under the parent ("X — also see related: A, B, C") rather than as separate top results. Don't fan out neighbours-of-neighbours; one hop is enough to give the user the surrounding context without burying the actual answer.
 
 ## Common patterns
 

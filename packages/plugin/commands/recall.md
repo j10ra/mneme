@@ -13,20 +13,24 @@ Use the `mneme_sql` MCP tool with the default hybrid recall pattern from the `us
 Run a query like this (substitute the query text into both `embed(...)` and `websearch_to_tsquery(...)`; escape single quotes by doubling them if needed):
 
 ```sql
-SELECT id, content, kind, repo, importance, created_at
+SELECT id, content, kind, repo, importance, meta->'related_to' AS related_to, created_at
 FROM memories
 WHERE archived_at IS NULL
   AND (meta->>'shadow_of') IS NULL
   AND (meta->>'superseded_by') IS NULL
 ORDER BY
-  0.55 * (1 - (embedding <=> embed('the user query'))) +
+  0.50 * (1 - (embedding <=> embed('the user query'))) +
   0.35 * ts_rank(tsv, websearch_to_tsquery('english', 'the user query')) +
-  0.10 * exp(-extract(epoch from (now() - created_at)) / 86400.0 / 7)
+  0.10 * exp(-extract(epoch from (now() - created_at)) / 86400.0 / 7) +
+  0.05 * importance
 DESC
 LIMIT 8;
 ```
 
-The third term is a recency boost — recent memories get up to +0.10, decaying with a 7-day half-life-ish curve. Old strongly-relevant memories still win on topic, but recent context stops getting buried under matches from weeks ago.
+Four terms:
+- semantic similarity, keyword overlap, recency boost (up to +0.10 with a ~7-day decay), and a small importance tiebreaker so high-signal memories (decisions, constraints) rank above incidental ones at the same similarity.
+
+If a top hit has `related_to` neighbours, follow up with the co-render query in `using-mneme` and group them under the parent ("X — also see related: A, B, C") rather than as separate top results.
 
 Then **read the rows and answer the user's question naturally**, like a colleague who just looked something up. The user wants understanding, not a database dump.
 
