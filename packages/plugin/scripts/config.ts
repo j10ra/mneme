@@ -14,6 +14,22 @@ export type MnemeConfig = {
    *  service. The hook checks for this and, when present, posts captures
    *  to the daemon at 127.0.0.1:port instead of the cloud server. */
   daemon?: { port: number; agent_provider: string };
+  /** Optional admin block. Present only on machines where the operator
+   *  ran /mneme:setup with the admin password and wants admin slash
+   *  commands (machines/revoke/status) to run without re-prompting.
+   *
+   *  Stored as ciphertext, not plaintext: AES-256-GCM with the key
+   *  derived from this machine's hardware fingerprint (the same
+   *  IOPlatformUUID / machine-id / MachineGuid we already use to
+   *  re-attach machine_id on re-setup). The blob is useless if exfil'd
+   *  without the machine — main defense against backup / cloud-sync
+   *  leaks of ~/.mneme/. Same 600 file as auth.key.
+   *
+   *  Format: base64( iv[12] | tag[16] | ciphertext ).
+   *
+   *  Absence means admin slashes fall back to MNEME_ADMIN_PASSWORD env
+   *  var or a one-shot stdin prompt. */
+  admin?: { ciphertext: string };
 };
 
 export function configPath(): string {

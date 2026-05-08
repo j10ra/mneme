@@ -22,6 +22,10 @@ import {
   serverUrl,
 } from "./config.ts";
 import {
+  decryptAdminPassword,
+  encryptAdminPassword,
+} from "./admin-secret.ts";
+import {
   installDaemonService,
   pickFreePortDeterministic,
 } from "./daemon-install.ts";
@@ -33,6 +37,33 @@ async function readStdin(): Promise<string> {
     buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
   }
   return buf.trim();
+}
+
+/** Resolution ladder for the admin password used by machines / revoke /
+ *  status. Order:
+ *    1. MNEME_ADMIN_PASSWORD env var (covers shell-rc and one-shot
+ *       overrides without touching disk).
+ *    2. cfg.admin.ciphertext — written to ~/.mneme/config.json (mode
+ *       600) at /mneme:setup time, encrypted with a key derived from
+ *       this machine's hardware fingerprint (see admin-secret.ts).
+ *       Fails open: a fingerprint change or corrupt blob falls through
+ *       to stdin instead of erroring out.
+ *    3. stdin (legacy interactive flow; still works on machines that
+ *       didn't store the password).
+ *  Returns null only if all three rungs are empty. */
+async function resolveAdminPassword(cfg: MnemeConfig): Promise<string | null> {
+  const fromEnv = process.env.MNEME_ADMIN_PASSWORD;
+  if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
+  if (cfg.admin?.ciphertext) {
+    const decrypted = decryptAdminPassword(cfg.admin.ciphertext);
+    if (decrypted) return decrypted;
+    process.stderr.write(
+      "mneme: admin secret decrypt failed (fingerprint changed?), falling back to stdin\n",
+    );
+  }
+  if (process.stdin.isTTY) return null;
+  const fromStdin = await readStdin();
+  return fromStdin || null;
 }
 
 type CaptureResult = { id: string; deduped: boolean };
@@ -219,6 +250,23 @@ async function setup(
   // a leftover daemon block from a failed install is harmless: the
   // daemon writes captures into outbox/capture/pending/ on disk and
   // the next successful daemon launch picks them up.
+  // Encrypt the admin password with a key derived from this machine's
+  // hardware fingerprint so the slash commands that need admin scope
+  // (status / machines / revoke) don't have to re-prompt every call.
+  // Failure here is non-fatal: setup still works, the operator just
+  // keeps typing the password each time. Most likely cause is a
+  // platform that machineFingerprint() doesn't support.
+  let adminBlock: { ciphertext: string } | undefined;
+  try {
+    adminBlock = { ciphertext: encryptAdminPassword(adminPassword) };
+  } catch (e) {
+    process.stderr.write(
+      `mneme: skipping admin secret persist (${
+        e instanceof Error ? e.message : e
+      })\n`,
+    );
+  }
+
   const config: MnemeConfig = {
     server: { url: baseUrl },
     auth: { key: reg.token },
@@ -227,6 +275,7 @@ async function setup(
       port: daemonPort,
       agent_provider: existing.daemon?.agent_provider ?? "claude",
     },
+    ...(adminBlock ? { admin: adminBlock } : {}),
     ...(existing.projects ? { projects: existing.projects } : {}),
   };
 
@@ -253,6 +302,11 @@ async function setup(
     );
   }
   console.log("✓ wrote ~/.mneme/config.json (mode 600)");
+  if (adminBlock) {
+    console.log(
+      "  admin:   stored encrypted (AES-GCM, machine-fingerprint-derived key)",
+    );
+  }
 
   // Daemon install. Plugin root is the parent of this script's
   // directory: slash.ts lives at <pluginRoot>/scripts/slash.ts, so
@@ -338,11 +392,13 @@ function fmtAge(ms: number | null): string {
 }
 
 /** Status: GET /api/_ops/status, render as compact markdown.
- *  Admin password from stdin (matches /machines pattern). */
+ *  Admin password resolved via env → encrypted config → stdin ladder
+ *  (resolveAdminPassword). Most operator machines have it cached after
+ *  /mneme:setup; the stdin rung is the legacy fallback. */
 async function status(): Promise<void> {
-  const adminPassword = await readStdin();
-  if (!adminPassword) throw new Error("admin password required on stdin");
   const cfg = loadConfig();
+  const adminPassword = await resolveAdminPassword(cfg);
+  if (!adminPassword) throw new Error("admin password required");
   const resp = await fetch(serverUrl(cfg, "/api/_ops/status"), {
     headers: { Authorization: `Bearer ${adminPassword}` },
   });
@@ -422,11 +478,12 @@ type MachineRow = {
   revoked_at: string | null;
 };
 
-/** List registered machines. Admin password read from stdin to keep it off argv. */
+/** List registered machines. Admin password resolved via env →
+ *  encrypted config → stdin ladder. */
 async function machines(): Promise<void> {
-  const adminPassword = await readStdin();
-  if (!adminPassword) throw new Error("admin password required on stdin");
   const cfg = loadConfig();
+  const adminPassword = await resolveAdminPassword(cfg);
+  if (!adminPassword) throw new Error("admin password required");
   const resp = await fetch(serverUrl(cfg, "/api/auth/machines"), {
     headers: { Authorization: `Bearer ${adminPassword}` },
   });
@@ -486,12 +543,13 @@ async function rename(machineName: string): Promise<void> {
   console.log(`✓ synced ~/.mneme/config.json (machine.name = "${r.machine_name}")`);
 }
 
-/** Revoke a machine. machine_id on argv; admin password on stdin. */
+/** Revoke a machine. machine_id on argv; admin password resolved via
+ *  env → encrypted config → stdin ladder. */
 async function revoke(machineId: string): Promise<void> {
   if (!machineId) throw new Error("machine_id required");
-  const adminPassword = await readStdin();
-  if (!adminPassword) throw new Error("admin password required on stdin");
   const cfg = loadConfig();
+  const adminPassword = await resolveAdminPassword(cfg);
+  if (!adminPassword) throw new Error("admin password required");
   const resp = await fetch(serverUrl(cfg, "/api/auth/revoke"), {
     method: "POST",
     headers: {
