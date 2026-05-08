@@ -3,12 +3,16 @@
 // path (launchctl / systemctl / schtasks) is exercised manually during
 // install on each machine.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildLaunchdPlist,
   buildServiceConfig,
   buildSystemdUnit,
   buildWindowsTaskXml,
+  findReusableNodeModules,
   isDaemonConfigStale,
   pickFreePortDeterministic,
   serviceConfigPath,
@@ -201,6 +205,80 @@ describe("isDaemonConfigStale", () => {
     expect(
       isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(polluted), "darwin"),
     ).toBe(true);
+  });
+});
+
+describe("findReusableNodeModules", () => {
+  let cacheRoot: string;
+
+  beforeEach(() => {
+    // Simulate Claude Code's plugin cache layout:
+    //   <cacheRoot>/<version>/{package.json, node_modules?}
+    cacheRoot = mkdtempSync(join(tmpdir(), "mneme-cache-"));
+  });
+
+  afterEach(() => {
+    rmSync(cacheRoot, { recursive: true, force: true });
+  });
+
+  function makeVersionDir(
+    version: string,
+    pkg: string,
+    withNodeModules: boolean,
+  ): string {
+    const dir = join(cacheRoot, version);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), pkg);
+    if (withNodeModules) {
+      mkdirSync(join(dir, "node_modules"));
+      writeFileSync(join(dir, "node_modules", ".keep"), "");
+    }
+    return dir;
+  }
+
+  test("returns null when no sibling versions exist", async () => {
+    const me = makeVersionDir("1.0.65", '{"name":"mneme"}', false);
+    expect(await findReusableNodeModules(me)).toBe(null);
+  });
+
+  test("returns null when sibling has different package.json", async () => {
+    makeVersionDir("1.0.64", '{"name":"mneme","deps":"different"}', true);
+    const me = makeVersionDir("1.0.65", '{"name":"mneme","deps":"newer"}', false);
+    expect(await findReusableNodeModules(me)).toBe(null);
+  });
+
+  test("returns null when sibling has matching pkg but no node_modules", async () => {
+    const pkg = '{"name":"mneme","deps":"same"}';
+    makeVersionDir("1.0.64", pkg, false);
+    const me = makeVersionDir("1.0.65", pkg, false);
+    expect(await findReusableNodeModules(me)).toBe(null);
+  });
+
+  test("returns the sibling node_modules path when pkg matches and nm exists", async () => {
+    const pkg = '{"name":"mneme","deps":"same"}';
+    const sib = makeVersionDir("1.0.64", pkg, true);
+    const me = makeVersionDir("1.0.65", pkg, false);
+    expect(await findReusableNodeModules(me)).toBe(
+      join(sib, "node_modules"),
+    );
+  });
+
+  test("ignores own version dir (would be a self-reference)", async () => {
+    const pkg = '{"name":"mneme"}';
+    const me = makeVersionDir("1.0.65", pkg, true);
+    // Only sibling is ourselves — should still return null
+    expect(await findReusableNodeModules(me)).toBe(null);
+  });
+
+  test("picks the first matching sibling (any version is fine)", async () => {
+    const pkg = '{"name":"mneme","deps":"locked"}';
+    makeVersionDir("1.0.62", pkg, true);
+    makeVersionDir("1.0.64", pkg, true);
+    const me = makeVersionDir("1.0.65", pkg, false);
+    const picked = await findReusableNodeModules(me);
+    expect(picked).toMatch(/node_modules$/);
+    // Either 1.0.62 or 1.0.64 — readdir order isn't guaranteed across platforms
+    expect(picked).toMatch(/1\.0\.6(2|4)/);
   });
 });
 

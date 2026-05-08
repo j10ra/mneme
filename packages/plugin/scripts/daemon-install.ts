@@ -268,21 +268,99 @@ export type InstallResult = {
   error?: string;
 };
 
+/** Locate a sibling plugin-cache version dir whose package.json is
+ *  byte-identical to ours and whose node_modules is fully populated.
+ *  Two adjacent plugin versions usually have identical deps (only the
+ *  daemon.js bundle changes between patch releases), so we can reuse
+ *  the older version's node_modules instead of re-downloading ~2GB
+ *  of native deps on every plugin update — which on a throttled corp
+ *  network just hangs forever.
+ *
+ *  Returns the absolute node_modules path of a matching sibling, or
+ *  null when no reuse opportunity exists. */
+export async function findReusableNodeModules(
+  pluginRoot: string,
+): Promise<string | null> {
+  const { existsSync, readFileSync, readdirSync, statSync } = await import(
+    "node:fs"
+  );
+  const { dirname: dn, join: jp, basename: bn } = await import("node:path");
+
+  const myPkgPath = jp(pluginRoot, "package.json");
+  if (!existsSync(myPkgPath)) return null;
+  let myPkg: string;
+  try {
+    myPkg = readFileSync(myPkgPath, "utf8");
+  } catch {
+    return null;
+  }
+
+  const versionsDir = dn(pluginRoot);
+  const myVersion = bn(pluginRoot);
+  let entries: string[];
+  try {
+    entries = readdirSync(versionsDir);
+  } catch {
+    return null;
+  }
+  for (const name of entries) {
+    if (name === myVersion) continue;
+    const sibPath = jp(versionsDir, name);
+    try {
+      if (!statSync(sibPath).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    const sibPkg = jp(sibPath, "package.json");
+    const sibNm = jp(sibPath, "node_modules");
+    if (!existsSync(sibPkg) || !existsSync(sibNm)) continue;
+    let theirPkg: string;
+    try {
+      theirPkg = readFileSync(sibPkg, "utf8");
+    } catch {
+      continue;
+    }
+    if (theirPkg !== myPkg) continue;
+    return sibNm;
+  }
+  return null;
+}
+
 // Run `bun install --production` inside pluginRoot to populate
 // node_modules adjacent to daemon.js. Bun resolves the bundle's
 // externals from there at runtime. Skips if node_modules already
 // exists (idempotent re-setup) unless force=true.
+//
+// Before falling through to `bun install`, we look for a sibling
+// plugin-cache version with identical package.json + populated
+// node_modules. If found, junction/symlink that node_modules into
+// our own pluginRoot — sub-second vs. minutes (or hours, on the
+// corp networks where bun install gets throttled to a crawl).
 async function ensurePluginDeps(
   pluginRoot: string,
   bunPath: string,
   force = false,
 ): Promise<{ ok: boolean; error?: string }> {
-  const { existsSync } = await import("node:fs");
+  const { existsSync, symlinkSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { spawn } = await import("node:child_process");
   const nm = join(pluginRoot, "node_modules");
   if (!force && existsSync(nm)) {
     return { ok: true };
+  }
+  // Try the cheap path first.
+  const reusable = await findReusableNodeModules(pluginRoot);
+  if (reusable) {
+    try {
+      // 'junction' is the cross-platform-safe choice: on win32 it's
+      // a directory junction (no admin needed); on darwin/linux node
+      // ignores the type and creates a symlink.
+      symlinkSync(reusable, nm, "junction");
+      return { ok: true };
+    } catch {
+      // Fall through to bun install if the link couldn't be created
+      // (filesystem doesn't support symlinks, permission denied, etc).
+    }
   }
   const result = await new Promise<{ code: number | null; stderr: string }>(
     (resolve) => {
