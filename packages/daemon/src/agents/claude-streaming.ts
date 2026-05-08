@@ -76,6 +76,20 @@ function findClaudeExecutable(): string {
     `${homedir()}/.local/bin/claude`,
     `${homedir()}/.bun/bin/claude`,
   ];
+  // Sweep nvm versions: ~/.nvm/versions/node/<v>/bin/claude. systemd's
+  // user PATH excludes these by default, so the daemon under systemd
+  // can't find an npm-installed claude unless we look here.
+  try {
+    const { readdirSync } = require("node:fs") as typeof import("node:fs");
+    const nvmRoot = `${homedir()}/.nvm/versions/node`;
+    if (existsSync(nvmRoot)) {
+      for (const v of readdirSync(nvmRoot)) {
+        fallbacks.push(`${nvmRoot}/${v}/bin/claude`);
+      }
+    }
+  } catch {
+    // ignore
+  }
   for (const candidate of fallbacks) {
     if (existsSync(candidate)) return candidate;
   }

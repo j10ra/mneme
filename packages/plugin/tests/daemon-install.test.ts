@@ -34,6 +34,24 @@ describe("buildLaunchdPlist", () => {
     expect(plist).toContain("<key>KeepAlive</key>");
     expect(plist).toContain("dev.mneme.daemon");
   });
+
+  test("omits CLAUDE_EXECUTABLE_PATH when no claudePath provided", () => {
+    const plist = buildLaunchdPlist(cfg);
+    expect(plist).not.toContain("CLAUDE_EXECUTABLE_PATH");
+  });
+
+  test("injects CLAUDE_EXECUTABLE_PATH inside EnvironmentVariables when set", () => {
+    const claudePath = "/Users/jetz/.bun/bin/claude";
+    const plist = buildLaunchdPlist({ ...cfg, claudePath });
+    expect(plist).toContain("<key>CLAUDE_EXECUTABLE_PATH</key>");
+    expect(plist).toContain(`<string>${claudePath}</string>`);
+    // Sanity check it's inside the EnvironmentVariables dict, not floating elsewhere
+    const envBlock = plist.slice(
+      plist.indexOf("<key>EnvironmentVariables</key>"),
+      plist.indexOf("</dict>\n</dict>"),
+    );
+    expect(envBlock).toContain("CLAUDE_EXECUTABLE_PATH");
+  });
 });
 
 describe("buildSystemdUnit", () => {
@@ -42,6 +60,18 @@ describe("buildSystemdUnit", () => {
     expect(unit).toContain(`ExecStart=${cfg.bunPath} run`);
     expect(unit).toContain("Restart=on-failure");
     expect(unit).toContain("WantedBy=default.target");
+  });
+
+  test("omits CLAUDE_EXECUTABLE_PATH when no claudePath provided", () => {
+    const unit = buildSystemdUnit(cfg);
+    expect(unit).not.toContain("CLAUDE_EXECUTABLE_PATH");
+  });
+
+  test("injects Environment=CLAUDE_EXECUTABLE_PATH=… when set", () => {
+    const claudePath =
+      "/home/jetz/.nvm/versions/node/v24.11.1/bin/claude";
+    const unit = buildSystemdUnit({ ...cfg, claudePath });
+    expect(unit).toContain(`Environment=CLAUDE_EXECUTABLE_PATH=${claudePath}`);
   });
 });
 

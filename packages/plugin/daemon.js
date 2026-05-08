@@ -470,6 +470,15 @@ function findClaudeExecutable() {
     `${homedir()}/.local/bin/claude`,
     `${homedir()}/.bun/bin/claude`
   ];
+  try {
+    const { readdirSync } = __require("fs");
+    const nvmRoot = `${homedir()}/.nvm/versions/node`;
+    if (existsSync(nvmRoot)) {
+      for (const v of readdirSync(nvmRoot)) {
+        fallbacks.push(`${nvmRoot}/${v}/bin/claude`);
+      }
+    }
+  } catch {}
   for (const candidate of fallbacks) {
     if (existsSync(candidate))
       return candidate;
@@ -919,6 +928,15 @@ function findClaudeExecutable2() {
     `${homedir2()}/.local/bin/claude`,
     `${homedir2()}/.bun/bin/claude`
   ];
+  try {
+    const { readdirSync } = __require("fs");
+    const nvmRoot = `${homedir2()}/.nvm/versions/node`;
+    if (existsSync2(nvmRoot)) {
+      for (const v of readdirSync(nvmRoot)) {
+        fallbacks.push(`${nvmRoot}/${v}/bin/claude`);
+      }
+    }
+  } catch {}
   for (const candidate of fallbacks) {
     if (existsSync2(candidate))
       return candidate;

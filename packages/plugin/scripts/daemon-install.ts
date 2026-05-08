@@ -18,8 +18,77 @@
 // The execute paths (install / uninstall / start) are isolated so tests
 // can cover the generators without touching the real service manager.
 
+import { existsSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+/** Resolve an absolute path to the `claude` CLI at install time so it
+ *  can be baked into the service config. Without this, the daemon
+ *  inherits whatever PATH the service manager hands it (systemd's
+ *  default user PATH excludes ~/.nvm/versions/node/<v>/bin, where
+ *  npm-installed claude often lives). The daemon's runtime resolver
+ *  reads CLAUDE_EXECUTABLE_PATH first, so injecting an absolute path
+ *  here makes the daemon claude-find regardless of the service
+ *  manager's PATH conventions.
+ *
+ *  Returns null when nothing found — the runtime resolver still has
+ *  its own fallback list and may resolve at runtime via `which` if
+ *  the daemon's process happens to have a usable PATH.
+ */
+export function findClaudeBinary(): string | null {
+  // 1. Honor an explicitly set env var (operator override).
+  if (process.env.CLAUDE_EXECUTABLE_PATH) {
+    if (existsSync(process.env.CLAUDE_EXECUTABLE_PATH)) {
+      return process.env.CLAUDE_EXECUTABLE_PATH;
+    }
+  }
+  // 2. Walk the install-time shell PATH (`which`/`where`). Slash
+  //    commands run inside CC's spawn context, which has the user's
+  //    interactive PATH — so this catches nvm / asdf / pyenv-shimmed
+  //    install locations.
+  const probe = process.platform === "win32" ? "where" : "which";
+  try {
+    const r = spawnSync(probe, ["claude"], { encoding: "utf8" });
+    if (r.status === 0) {
+      const first = (r.stdout ?? "")
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .find((s) => s.length > 0);
+      if (first && existsSync(first)) return first;
+    }
+  } catch {
+    // probe missing or PATH lookup failed; fall through to fallbacks
+  }
+  // 3. Well-known install locations — same set as the runtime
+  //    fallback in agents/claude.ts plus the nvm sweep that catches
+  //    the most common Linux install path that the runtime list
+  //    misses.
+  const candidates: string[] = [
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+    `${homedir()}/.local/bin/claude`,
+    `${homedir()}/.bun/bin/claude`,
+  ];
+  const nvmRoot = `${homedir()}/.nvm/versions/node`;
+  try {
+    if (existsSync(nvmRoot)) {
+      for (const v of readdirSync(nvmRoot)) {
+        candidates.push(`${nvmRoot}/${v}/bin/claude`);
+      }
+    }
+  } catch {
+    // ignore
+  }
+  for (const c of candidates) {
+    try {
+      if (existsSync(c)) return c;
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
 
 export type DaemonInstallConfig = {
   /** Absolute path to the plugin's root inside CC's plugin cache (or a
@@ -32,6 +101,12 @@ export type DaemonInstallConfig = {
   bunPath: string;
   /** Service label / name used by the platform manager */
   serviceLabel?: string;
+  /** Absolute path to the `claude` CLI; baked into the service's
+   *  CLAUDE_EXECUTABLE_PATH env so the daemon can find it under
+   *  service-manager-managed PATHs that don't include nvm/bun/.local.
+   *  When omitted, generators omit the env var and the daemon falls
+   *  back to its runtime resolver. */
+  claudePath?: string;
 };
 
 const DEFAULT_LABEL = "dev.mneme.daemon";
@@ -40,6 +115,9 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   const label = cfg.serviceLabel ?? DEFAULT_LABEL;
   const daemonEntry = join(cfg.pluginRoot, "daemon.js");
   const logsDir = join(homedir(), ".mneme", "logs");
+  const claudeEnv = cfg.claudePath
+    ? `\n    <key>CLAUDE_EXECUTABLE_PATH</key>\n    <string>${cfg.claudePath}</string>`
+    : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -63,7 +141,7 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>${homedir()}</string>
+    <string>${homedir()}</string>${claudeEnv}
   </dict>
 </dict>
 </plist>
@@ -72,6 +150,14 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
 
 export function buildSystemdUnit(cfg: DaemonInstallConfig): string {
   const daemonEntry = join(cfg.pluginRoot, "daemon.js");
+  // CLAUDE_EXECUTABLE_PATH gets baked in only when the install path
+  // resolved an absolute claude binary. systemd's default user PATH
+  // doesn't include ~/.nvm/versions/node/*/bin, where npm-installed
+  // claude often lives — so without this env, findClaudeExecutable in
+  // the daemon throws on every extract attempt.
+  const claudeLine = cfg.claudePath
+    ? `\nEnvironment=CLAUDE_EXECUTABLE_PATH=${cfg.claudePath}`
+    : "";
   return `[Unit]
 Description=Mneme daemon (per-machine extract + push)
 After=network-online.target
@@ -82,7 +168,7 @@ Type=simple
 ExecStart=${cfg.bunPath} run ${daemonEntry}
 Restart=on-failure
 RestartSec=5
-Environment=HOME=${homedir()}
+Environment=HOME=${homedir()}${claudeLine}
 
 [Install]
 WantedBy=default.target
@@ -449,7 +535,13 @@ export async function installDaemonService(
 ): Promise<InstallResult> {
   const platform = detectPlatform();
   const servicePath = serviceConfigPath(platform);
-  const config = buildServiceConfig(platform, cfg);
+  // Auto-resolve the claude binary when the caller didn't pin one. The
+  // install-time PATH (the slash-command's interactive shell) usually
+  // has nvm/asdf/bun shims that the runtime daemon's PATH lacks.
+  const resolvedCfg: DaemonInstallConfig = cfg.claudePath
+    ? cfg
+    : { ...cfg, claudePath: findClaudeBinary() ?? undefined };
+  const config = buildServiceConfig(platform, resolvedCfg);
 
   const { existsSync, mkdirSync, writeFileSync } = await import("node:fs");
   const { dirname, join: joinPath } = await import("node:path");
