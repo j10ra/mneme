@@ -30,6 +30,20 @@ export const PICKER_COOLDOWN_MS = 5 * 60_000;
  *  yields τ=30 days for unpinned memories. */
 export const NAP_DECAY_PER_CYCLE = Math.exp(-1 / 120);
 
+/** Per-cycle seed cap for nap's relate-pass + supersede-rule pass.
+ *  Round-robin gating happens via `meta.last_napped_at`: the cycle
+ *  picks the N least-recently-napped memories, runs both passes on
+ *  them, and stamps the timestamp at the end. With N=500 and 4 cycles
+ *  a day, the full corpus refreshes every ~3.5 days at 7k memories,
+ *  scaling linearly. The cap exists because Postgres' Railway-default
+ *  `statement_timeout = 2min` was killing the relate-pass when the
+ *  seed set was the entire 7-day window (effectively the whole table
+ *  for fresh corpora). Inner LATERAL still scans the full memories
+ *  table for HNSW lookups, so a seed in this cycle can still link
+ *  to non-seed neighbours — pagination only limits which rows we
+ *  examine *as* seeds. */
+export const NAP_PER_CYCLE_CAP = 500;
+
 /** Floor for unpinned memories' importance after decay. */
 export const NAP_FLOOR = 0.05;
 
