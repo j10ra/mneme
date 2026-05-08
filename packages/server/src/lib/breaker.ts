@@ -37,6 +37,12 @@ export type BreakerOptions = {
   clock?: () => number;
 };
 
+export type BreakerState = {
+  open: boolean;
+  failures: number;
+  reopensInMs: number;
+};
+
 export class Breaker {
   private readonly threshold: number;
   private readonly pauseMs: number;
@@ -56,6 +62,15 @@ export class Breaker {
       return { open: true, pauseMs: this.openUntil - now };
     }
     return { open: false };
+  }
+
+  inspect(): BreakerState {
+    const now = this.clock();
+    return {
+      open: now < this.openUntil,
+      failures: this.failures,
+      reopensInMs: Math.max(0, this.openUntil - now),
+    };
   }
 
   report(outcome: "success" | "failure"): BreakerReport {

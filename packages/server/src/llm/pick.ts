@@ -26,7 +26,7 @@
 //   - blank / unset                  → auto
 
 import { Logger } from "@mneme/core";
-import { Breaker } from "../lib/breaker.ts";
+import { Breaker, type BreakerState } from "../lib/breaker.ts";
 import { PICKER_COOLDOWN_MS, PICKER_FAILURE_THRESHOLD } from "../infra/config.ts";
 import { env } from "../infra/env.ts";
 import * as local from "./providers/local.ts";
@@ -119,6 +119,17 @@ export type DreamInstance = {
     candidates: SupersedeCandidate[],
   ) => Promise<SupersedePair[]>;
 };
+
+/** Snapshot of every per-provider breaker. Used by /api/_ops/status so the
+ *  operator sees breaker state alongside worker / daemon health without
+ *  shelling into the server. In-process state — fine here because the
+ *  endpoint runs in the same process. */
+export function inspectBreakers(): Record<ProviderName, BreakerState> {
+  return {
+    local: breakers.local.inspect(),
+    openrouter: breakers.openrouter.inspect(),
+  };
+}
 
 export function pickExtract(): ExtractInstance {
   const name = pickProviderName();

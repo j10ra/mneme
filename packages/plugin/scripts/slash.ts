@@ -294,6 +294,124 @@ async function setup(
   console.log("\n  next step: /reload-plugins");
 }
 
+type StatusResponse = {
+  generated_at: string;
+  workers: Array<{
+    name: string;
+    schedule_ms: number;
+    last_run_at: string | null;
+    last_status: "ok" | "failed" | null;
+    last_error: string | null;
+    last_duration_ms: number | null;
+    next_run_at: string;
+    overdue_ms: number;
+    since_last_run_ms: number | null;
+  }>;
+  daemons: Array<{
+    machine_id: string;
+    machine_name: string | null;
+    outbox_pending: number;
+    outbox_extracted: number;
+    outbox_embedded: number;
+    outbox_failed: number;
+    last_processed_at: string | null;
+    posted_at: string;
+    stale: boolean;
+    since_posted_ms: number;
+  }>;
+  dream: {
+    last_window_at: string | null;
+    last_cluster_count: number | null;
+    in_flight: number;
+    stuck: number;
+    stuck_after_ms: number;
+  };
+  breakers: Record<string, { open: boolean; failures: number; reopensInMs: number }>;
+};
+
+function fmtAge(ms: number | null): string {
+  if (ms === null) return "never";
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
+}
+
+/** Status: GET /api/_ops/status, render as compact markdown.
+ *  Admin password from stdin (matches /machines pattern). */
+async function status(): Promise<void> {
+  const adminPassword = await readStdin();
+  if (!adminPassword) throw new Error("admin password required on stdin");
+  const cfg = loadConfig();
+  const resp = await fetch(serverUrl(cfg, "/api/_ops/status"), {
+    headers: { Authorization: `Bearer ${adminPassword}` },
+  });
+  if (!resp.ok) {
+    throw new Error(
+      `GET /api/_ops/status failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
+    );
+  }
+  const r = (await resp.json()) as StatusResponse;
+
+  console.log(`# /mneme:status — ${r.generated_at}`);
+  console.log("");
+  console.log("## Workers");
+  if (!r.workers.length) {
+    console.log("(none registered)");
+  } else {
+    console.log("| job | last run | status | duration | next | overdue |");
+    console.log("|---|---|---|---|---|---|");
+    for (const w of r.workers) {
+      const dur = w.last_duration_ms !== null ? `${w.last_duration_ms}ms` : "-";
+      const overdue = w.overdue_ms > 0 ? fmtAge(w.overdue_ms) : "-";
+      const status = w.last_status ?? "-";
+      const err = w.last_error ? ` (${w.last_error.slice(0, 40)})` : "";
+      console.log(
+        `| ${w.name} | ${fmtAge(w.since_last_run_ms)} ago | ${status}${err} | ${dur} | in ${fmtAge(Math.max(0, new Date(w.next_run_at).getTime() - Date.now()))} | ${overdue} |`,
+      );
+    }
+  }
+
+  console.log("");
+  console.log("## Daemons");
+  if (!r.daemons.length) {
+    console.log("(no heartbeats)");
+  } else {
+    console.log("| machine | pending | extracted | embedded | failed | last processed | last seen |");
+    console.log("|---|---|---|---|---|---|---|");
+    for (const d of r.daemons) {
+      const label = d.machine_name ?? d.machine_id.slice(0, 8);
+      const lastProc = d.last_processed_at
+        ? fmtAge(Date.now() - new Date(d.last_processed_at).getTime())
+        : "never";
+      const seen = `${fmtAge(d.since_posted_ms)} ago${d.stale ? " ⚠ stale" : ""}`;
+      console.log(
+        `| ${label} | ${d.outbox_pending} | ${d.outbox_extracted} | ${d.outbox_embedded} | ${d.outbox_failed} | ${lastProc} ago | ${seen} |`,
+      );
+    }
+  }
+
+  console.log("");
+  console.log("## Dream");
+  const lastWin = r.dream.last_window_at
+    ? `${fmtAge(Date.now() - new Date(r.dream.last_window_at).getTime())} ago`
+    : "never";
+  console.log(`- last window: ${lastWin}`);
+  console.log(`- last cluster count: ${r.dream.last_cluster_count ?? "-"}`);
+  console.log(`- in-flight claims: ${r.dream.in_flight}${r.dream.stuck > 0 ? ` (⚠ ${r.dream.stuck} stuck > 30m)` : ""}`);
+
+  console.log("");
+  console.log("## Breakers");
+  for (const [name, b] of Object.entries(r.breakers)) {
+    const state = b.open
+      ? `⚠ open (reopens in ${fmtAge(b.reopensInMs)})`
+      : b.failures > 0
+        ? `closed (${b.failures} recent failures)`
+        : "closed";
+    console.log(`- ${name}: ${state}`);
+  }
+}
+
 type MachineRow = {
   id: string;
   name: string;
@@ -438,6 +556,9 @@ async function main(): Promise<void> {
     case "machines":
       await machines();
       return;
+    case "status":
+      await status();
+      return;
     case "revoke":
       await revoke(process.argv[3] ?? "");
       return;
@@ -447,7 +568,7 @@ async function main(): Promise<void> {
     default:
       console.error(`unknown subcommand: ${cmd}`);
       console.error(
-        "usage: slash.ts <setup|memory|pin|unpin|machines|revoke|rename> [args]",
+        "usage: slash.ts <setup|memory|pin|unpin|machines|status|revoke|rename> [args]",
       );
       process.exit(1);
   }

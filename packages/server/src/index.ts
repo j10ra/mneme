@@ -14,6 +14,7 @@ import { mountDreamRoutes } from "./routes/dream.ts";
 import { mountHeartbeatRoute } from "./routes/heartbeat.ts";
 import { mountIngestRoutes } from "./routes/ingest.ts";
 import { mountMcpRoutes } from "./routes/mcp.ts";
+import { mountOpsRoutes } from "./routes/ops.ts";
 import { mountSessionRoutes } from "./routes/session.ts";
 import { sql } from "./infra/db.ts";
 import { scrubData } from "@mneme/shared";
@@ -41,6 +42,7 @@ mountBundleRoute(app);
 mountDreamRoutes(app);
 mountHeartbeatRoute(app);
 mountIngestRoutes(app);
+mountOpsRoutes(app);
 mountSessionRoutes(app);
 mountMcpRoutes(app);
 
