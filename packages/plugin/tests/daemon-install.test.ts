@@ -12,6 +12,7 @@ import {
   buildServiceConfig,
   buildSystemdUnit,
   buildWindowsTaskXml,
+  depsSignature,
   findReusableNodeModules,
   isDaemonConfigStale,
   pickFreePortDeterministic,
@@ -208,6 +209,48 @@ describe("isDaemonConfigStale", () => {
   });
 });
 
+describe("depsSignature", () => {
+  test("ignores version field changes", () => {
+    const a = depsSignature(
+      '{"name":"x","version":"1.0.64","dependencies":{"hono":"4"}}',
+    );
+    const b = depsSignature(
+      '{"name":"x","version":"1.0.65","dependencies":{"hono":"4"}}',
+    );
+    expect(a).toBe(b);
+  });
+
+  test("differs when a dependency version changes", () => {
+    const a = depsSignature('{"dependencies":{"hono":"4.12"}}');
+    const b = depsSignature('{"dependencies":{"hono":"5.0"}}');
+    expect(a).not.toBe(b);
+  });
+
+  test("differs when an optionalDependency is added", () => {
+    const a = depsSignature('{"dependencies":{"hono":"4"}}');
+    const b = depsSignature(
+      '{"dependencies":{"hono":"4"},"optionalDependencies":{"sharp":"^0.32"}}',
+    );
+    expect(a).not.toBe(b);
+  });
+
+  test("differs when trustedDependencies changes", () => {
+    const a = depsSignature('{"trustedDependencies":["sharp"]}');
+    const b = depsSignature(
+      '{"trustedDependencies":["sharp","onnxruntime-node"]}',
+    );
+    expect(a).not.toBe(b);
+  });
+
+  test("falls back to raw bytes on malformed JSON", () => {
+    const a = depsSignature("{this is not json");
+    const b = depsSignature("{this is not json");
+    const c = depsSignature("{neither is this");
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+  });
+});
+
 describe("findReusableNodeModules", () => {
   let cacheRoot: string;
 
@@ -241,10 +284,36 @@ describe("findReusableNodeModules", () => {
     expect(await findReusableNodeModules(me)).toBe(null);
   });
 
-  test("returns null when sibling has different package.json", async () => {
-    makeVersionDir("1.0.64", '{"name":"mneme","deps":"different"}', true);
-    const me = makeVersionDir("1.0.65", '{"name":"mneme","deps":"newer"}', false);
+  test("returns null when sibling deps signature differs", async () => {
+    makeVersionDir(
+      "1.0.64",
+      '{"name":"mneme","dependencies":{"hono":"4.12.18"}}',
+      true,
+    );
+    const me = makeVersionDir(
+      "1.0.65",
+      '{"name":"mneme","dependencies":{"hono":"5.0.0"}}',
+      false,
+    );
     expect(await findReusableNodeModules(me)).toBe(null);
+  });
+
+  test("matches when only the version field differs (deps unchanged)", async () => {
+    // Real-world case: every plugin patch bumps `version` but keeps
+    // `dependencies` identical. The reuse path should still kick in.
+    const sib = makeVersionDir(
+      "1.0.64",
+      '{"name":"mneme","version":"1.0.64","dependencies":{"hono":"4.12.18"}}',
+      true,
+    );
+    const me = makeVersionDir(
+      "1.0.65",
+      '{"name":"mneme","version":"1.0.65","dependencies":{"hono":"4.12.18"}}',
+      false,
+    );
+    expect(await findReusableNodeModules(me)).toBe(
+      join(sib, "node_modules"),
+    );
   });
 
   test("returns null when sibling has matching pkg but no node_modules", async () => {

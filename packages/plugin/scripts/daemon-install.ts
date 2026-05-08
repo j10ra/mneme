@@ -268,13 +268,48 @@ export type InstallResult = {
   error?: string;
 };
 
-/** Locate a sibling plugin-cache version dir whose package.json is
- *  byte-identical to ours and whose node_modules is fully populated.
- *  Two adjacent plugin versions usually have identical deps (only the
- *  daemon.js bundle changes between patch releases), so we can reuse
- *  the older version's node_modules instead of re-downloading ~2GB
- *  of native deps on every plugin update — which on a throttled corp
- *  network just hangs forever.
+/** A stable signature derived from the dep-relevant fields of a
+ *  package.json. Used by findReusableNodeModules to decide whether two
+ *  plugin versions resolve to the same node_modules tree.
+ *
+ *  Plugin patch bumps change the `"version"` field of the package.json
+ *  itself but never touch deps, so a byte-equality compare would
+ *  invalidate every reuse opportunity. Compare only the fields that
+ *  actually drive what `bun install` materializes:
+ *
+ *    - dependencies, optionalDependencies, peerDependencies — direct
+ *      drivers of resolution
+ *    - trustedDependencies — affects which install scripts run
+ *
+ *  Falls back to the raw bytes if parsing fails so a malformed file
+ *  is treated conservatively (no reuse).
+ */
+export function depsSignature(pkgJson: string): string {
+  try {
+    const pkg = JSON.parse(pkgJson) as Record<string, unknown>;
+    const sig = {
+      dependencies: pkg.dependencies ?? {},
+      optionalDependencies: pkg.optionalDependencies ?? {},
+      peerDependencies: pkg.peerDependencies ?? {},
+      trustedDependencies: pkg.trustedDependencies ?? [],
+    };
+    return JSON.stringify(sig);
+  } catch {
+    return pkgJson;
+  }
+}
+
+/** Locate a sibling plugin-cache version dir whose package.json deps
+ *  match ours and whose node_modules is fully populated. Two adjacent
+ *  plugin versions usually have identical deps (only the daemon.js
+ *  bundle and version field change between patch releases), so we can
+ *  reuse the older version's node_modules instead of re-downloading
+ *  ~2GB of native deps on every plugin update — which on a throttled
+ *  corp network hangs forever.
+ *
+ *  Comparison uses depsSignature() so a `"version"` bump alone doesn't
+ *  break reuse. A real dep change (added or upgraded package, changed
+ *  range) is correctly detected and falls through to a fresh install.
  *
  *  Returns the absolute node_modules path of a matching sibling, or
  *  null when no reuse opportunity exists. */
@@ -294,6 +329,7 @@ export async function findReusableNodeModules(
   } catch {
     return null;
   }
+  const mySig = depsSignature(myPkg);
 
   const versionsDir = dn(pluginRoot);
   const myVersion = bn(pluginRoot);
@@ -320,7 +356,7 @@ export async function findReusableNodeModules(
     } catch {
       continue;
     }
-    if (theirPkg !== myPkg) continue;
+    if (depsSignature(theirPkg) !== mySig) continue;
     return sibNm;
   }
   return null;
@@ -362,6 +398,13 @@ async function ensurePluginDeps(
       // (filesystem doesn't support symlinks, permission denied, etc).
     }
   }
+  // Hard timeout on the install. Without this, a corporate proxy that
+  // mishandles TLS to the npm registry / Bun CDN (Zscaler is the
+  // observed offender) can hang the spawn indefinitely, which in turn
+  // traps the refresh-daemon's pidfile lock until the 30-min stale
+  // timeout. Five minutes is generous for a real install on a healthy
+  // network and short enough that a wedge surfaces early.
+  const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
   const result = await new Promise<{ code: number | null; stderr: string }>(
     (resolve) => {
       const proc = spawn(bunPath, ["install", "--production"], {
@@ -370,8 +413,25 @@ async function ensurePluginDeps(
       });
       let stderr = "";
       proc.stderr.on("data", (b) => (stderr += b.toString()));
-      proc.on("close", (code) => resolve({ code, stderr }));
-      proc.on("error", () => resolve({ code: -1, stderr: "spawn failed" }));
+      const timer = setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+        resolve({
+          code: -1,
+          stderr: `bun install timed out after ${INSTALL_TIMEOUT_MS / 1000}s (corp proxy / network issue?)`,
+        });
+      }, INSTALL_TIMEOUT_MS);
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ code, stderr });
+      });
+      proc.on("error", () => {
+        clearTimeout(timer);
+        resolve({ code: -1, stderr: "spawn failed" });
+      });
     },
   );
   if (result.code !== 0) {
