@@ -205,7 +205,8 @@ export async function fetchBinaryIfAvailable(
   if (!asset) return null;
 
   const cachePath = binaryCachePath(version);
-  const { existsSync, mkdirSync, chmodSync } = await import("node:fs");
+  const { existsSync, mkdirSync, chmodSync, writeFileSync, renameSync } =
+    await import("node:fs");
   const { dirname: dn } = await import("node:path");
 
   if (existsSync(cachePath)) return cachePath;
@@ -214,10 +215,14 @@ export async function fetchBinaryIfAvailable(
   try {
     const response = await fetchImpl(url, { redirect: "follow" });
     if (!response.ok) return null;
+    // arrayBuffer first, then a single write. Using `Bun.write(path,
+    // response)` to stream the body wedges at 100% CPU on Bun 1.3.9
+    // for 65MB responses; the buffered path completes the same 65MB in
+    // ~7s and works on every bun version we've seen.
+    const buf = Buffer.from(await response.arrayBuffer());
     mkdirSync(dn(cachePath), { recursive: true, mode: 0o755 });
     const tmp = `${cachePath}.partial`;
-    await Bun.write(tmp, response);
-    const { renameSync } = await import("node:fs");
+    writeFileSync(tmp, buf, { mode: 0o755 });
     renameSync(tmp, cachePath);
     chmodSync(cachePath, 0o755);
     return cachePath;
