@@ -13,11 +13,7 @@
 // SDK regardless. The mode just shifts which credential the SDK picks
 // up - subprocess mode pulls Claude Code's own login under the hood.
 
-import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import { streamingCallClaude, streamingEnabled } from "./claude-streaming.ts";
+import { streamingCallClaude } from "./claude-streaming.ts";
 import { CLUSTER_PROMPT, SUPERSEDE_PROMPT, SYSTEM_PROMPT } from "./prompts.ts";
 import type {
   AgentProvider,
@@ -221,63 +217,6 @@ export function parseClusterResponse(text: string): {
   return { title: p.title.trim(), summary: p.summary.trim() };
 }
 
-// Locate the local `claude` binary. Used for SDK's
-// pathToClaudeCodeExecutable so the SDK spawns the existing CLI (which
-// has the user's OAuth) instead of trying to use ANTHROPIC_API_KEY.
-function findClaudeExecutable(): string {
-  if (process.env.CLAUDE_EXECUTABLE_PATH) {
-    return process.env.CLAUDE_EXECUTABLE_PATH;
-  }
-  const which = spawnSync("which", ["claude"], { encoding: "utf8" });
-  const fromPath = which.stdout?.trim();
-  if (fromPath && existsSync(fromPath)) return fromPath;
-
-  const fallbacks = [
-    "/usr/local/bin/claude",
-    "/opt/homebrew/bin/claude",
-    `${homedir()}/.local/bin/claude`,
-    `${homedir()}/.bun/bin/claude`,
-  ];
-  // Sweep nvm versions: ~/.nvm/versions/node/<v>/bin/claude. systemd's
-  // user PATH excludes these by default, so the daemon under systemd
-  // can't find an npm-installed claude unless we look here.
-  try {
-    const { readdirSync } = require("node:fs") as typeof import("node:fs");
-    const nvmRoot = `${homedir()}/.nvm/versions/node`;
-    if (existsSync(nvmRoot)) {
-      for (const v of readdirSync(nvmRoot)) {
-        fallbacks.push(`${nvmRoot}/${v}/bin/claude`);
-      }
-    }
-  } catch {
-    // ignore
-  }
-  for (const candidate of fallbacks) {
-    if (existsSync(candidate)) return candidate;
-  }
-  throw new Error(
-    "claude executable not found. Install Claude Code or set CLAUDE_EXECUTABLE_PATH.",
-  );
-}
-
-// SDK-restricted tools. The extractor produces text only; it has no
-// reason to read files, run Bash, or query the web. Blocking them is
-// a defense-in-depth measure (the prompts are not strictly adversarial,
-// but a model with tool access can hallucinate detours that waste
-// quota). Same shape as claude-mem's restriction list.
-const DISALLOWED_TOOLS = [
-  "Bash",
-  "Read",
-  "Write",
-  "Edit",
-  "Grep",
-  "Glob",
-  "WebFetch",
-  "WebSearch",
-  "Task",
-  "TodoWrite",
-];
-
 // Per-pipeline model selection. Extract is high-volume (every coalesced
 // batch of captures, many per session) so Haiku is the right fit:
 // fast, cheap, plenty smart for "summarize this conversation into atomic
@@ -287,87 +226,22 @@ const DISALLOWED_TOOLS = [
 export const EXTRACT_MODEL = "haiku";
 export const DREAM_MODEL = "sonnet";
 
-// Run a one-shot prompt through the Agent SDK, collect the assistant's
-// final text response. Throws on non-success terminal results so the
-// caller can decide whether to retry / mark failed.
+// All model calls go through the long-lived streaming SDK session — one
+// persistent `claude` subprocess per (model, systemPrompt) tuple, reused
+// across every extract / distill / supersede call. Subprocess startup
+// overhead (~10s) pays once per daemon lifetime instead of once per
+// batch; per-call latency drops to the inference path (~3-5s on Haiku).
 //
-// systemPrompt is passed as a raw string to fully replace Claude Code's
-// default coding-assistant preset. Without this override, our extract /
-// cluster / supersede instructions sit under "you are a coding
-// assistant" and the model responds in coding-help style instead of
-// returning the JSON we asked for.
-async function callClaude(
+// systemPrompt is passed as a raw string to the SDK so it replaces
+// Claude Code's default coding-assistant preset — without that override
+// our JSON-output instructions sit under "you are a coding assistant"
+// and the model responds in coding-help style instead.
+function callClaude(
   prompt: string,
   model: string,
   systemPrompt: string,
 ): Promise<string> {
-  // Default path: long-lived streaming session reuses one subprocess
-  // across many calls. Fall back to one-shot when the operator opts
-  // out via MNEME_DISABLE_STREAMING_SDK=1.
-  if (streamingEnabled()) {
-    return streamingCallClaude(prompt, model, systemPrompt);
-  }
-  return callClaudeOneShot(prompt, model, systemPrompt);
-}
-
-async function callClaudeOneShot(
-  prompt: string,
-  model: string,
-  systemPrompt: string,
-): Promise<string> {
-  const messages = query({
-    prompt,
-    options: {
-      model,
-      systemPrompt,
-      pathToClaudeCodeExecutable: findClaudeExecutable(),
-      disallowedTools: DISALLOWED_TOOLS,
-      mcpServers: {},
-      settingSources: [],
-      strictMcpConfig: true,
-      includePartialMessages: false,
-    } as never,
-  });
-
-  let response = "";
-  let errorReason: string | null = null;
-
-  for await (const msg of messages) {
-    if (msg.type === "assistant") {
-      if (msg.error) {
-        errorReason = msg.error;
-        continue;
-      }
-      const content = (msg.message as { content?: unknown }).content;
-      if (typeof content === "string") {
-        response += content;
-      } else if (Array.isArray(content)) {
-        for (const block of content) {
-          if (
-            block &&
-            typeof block === "object" &&
-            (block as { type?: string }).type === "text" &&
-            typeof (block as { text?: unknown }).text === "string"
-          ) {
-            response += (block as { text: string }).text;
-          }
-        }
-      }
-    } else if (msg.type === "result") {
-      if (msg.subtype !== "success") {
-        const detail = (msg as { error?: unknown }).error ?? msg.subtype;
-        throw new Error(
-          `claude SDK result not success: ${typeof detail === "string" ? detail : JSON.stringify(detail).slice(0, 200)}`,
-        );
-      }
-      break;
-    }
-  }
-
-  if (errorReason && !response.trim()) {
-    throw new Error(`claude SDK assistant error: ${errorReason}`);
-  }
-  return response;
+  return streamingCallClaude(prompt, model, systemPrompt);
 }
 
 function authDetail(mode: AuthMode): string {

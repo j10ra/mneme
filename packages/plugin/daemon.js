@@ -2,9 +2,8 @@
 var __require = import.meta.require;
 
 // packages/daemon/src/index.ts
-import { mkdir as mkdir5, readFile as readFile4, readdir as readdir3, rename as rename4 } from "fs/promises";
-import { existsSync as existsSync5 } from "fs";
-import { homedir as homedir5 } from "os";
+import { readFile as readFile4 } from "fs/promises";
+import { homedir as homedir4 } from "os";
 import { join as join5 } from "path";
 
 // packages/core/src/context.ts
@@ -431,31 +430,13 @@ function mnemeFn(name, fn) {
 // packages/daemon/src/index.ts
 import { Hono } from "hono";
 
-// packages/daemon/src/agents/claude.ts
-import { existsSync as existsSync2 } from "fs";
-import { spawnSync as spawnSync2 } from "child_process";
-import { homedir as homedir2 } from "os";
-import { query as query2 } from "@anthropic-ai/claude-agent-sdk";
-
 // packages/daemon/src/agents/claude-streaming.ts
-import { existsSync } from "fs";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+
+// packages/daemon/src/agents/claude-path.ts
+import { existsSync, readdirSync } from "fs";
 import { spawnSync } from "child_process";
 import { homedir } from "os";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-var DISALLOWED_TOOLS = [
-  "Bash",
-  "Read",
-  "Write",
-  "Edit",
-  "Grep",
-  "Glob",
-  "WebFetch",
-  "WebSearch",
-  "Task",
-  "TodoWrite"
-];
-var RECYCLE_MS = 30 * 60 * 1000;
-var TURN_TIMEOUT_MS = 90 * 1000;
 function findClaudeExecutable() {
   if (process.env.CLAUDE_EXECUTABLE_PATH) {
     return process.env.CLAUDE_EXECUTABLE_PATH;
@@ -471,7 +452,6 @@ function findClaudeExecutable() {
     `${homedir()}/.bun/bin/claude`
   ];
   try {
-    const { readdirSync } = __require("fs");
     const nvmRoot = `${homedir()}/.nvm/versions/node`;
     if (existsSync(nvmRoot)) {
       for (const v of readdirSync(nvmRoot)) {
@@ -485,6 +465,22 @@ function findClaudeExecutable() {
   }
   throw new Error("claude executable not found. Install Claude Code or set CLAUDE_EXECUTABLE_PATH.");
 }
+
+// packages/daemon/src/agents/claude-streaming.ts
+var DISALLOWED_TOOLS = [
+  "Bash",
+  "Read",
+  "Write",
+  "Edit",
+  "Grep",
+  "Glob",
+  "WebFetch",
+  "WebSearch",
+  "Task",
+  "TodoWrite"
+];
+var RECYCLE_MS = 30 * 60 * 1000;
+var TURN_TIMEOUT_MS = 90 * 1000;
 
 class StreamingClaudeSession {
   model;
@@ -648,9 +644,6 @@ function sessionFor(model, systemPrompt) {
 }
 async function streamingCallClaude(prompt, model, systemPrompt) {
   return sessionFor(model, systemPrompt).ask(prompt);
-}
-function streamingEnabled() {
-  return process.env.MNEME_DISABLE_STREAMING_SDK !== "1";
 }
 
 // packages/daemon/src/agents/prompts.ts
@@ -914,99 +907,10 @@ function parseClusterResponse(text) {
     return null;
   return { title: p.title.trim(), summary: p.summary.trim() };
 }
-function findClaudeExecutable2() {
-  if (process.env.CLAUDE_EXECUTABLE_PATH) {
-    return process.env.CLAUDE_EXECUTABLE_PATH;
-  }
-  const which = spawnSync2("which", ["claude"], { encoding: "utf8" });
-  const fromPath = which.stdout?.trim();
-  if (fromPath && existsSync2(fromPath))
-    return fromPath;
-  const fallbacks = [
-    "/usr/local/bin/claude",
-    "/opt/homebrew/bin/claude",
-    `${homedir2()}/.local/bin/claude`,
-    `${homedir2()}/.bun/bin/claude`
-  ];
-  try {
-    const { readdirSync } = __require("fs");
-    const nvmRoot = `${homedir2()}/.nvm/versions/node`;
-    if (existsSync2(nvmRoot)) {
-      for (const v of readdirSync(nvmRoot)) {
-        fallbacks.push(`${nvmRoot}/${v}/bin/claude`);
-      }
-    }
-  } catch {}
-  for (const candidate of fallbacks) {
-    if (existsSync2(candidate))
-      return candidate;
-  }
-  throw new Error("claude executable not found. Install Claude Code or set CLAUDE_EXECUTABLE_PATH.");
-}
-var DISALLOWED_TOOLS2 = [
-  "Bash",
-  "Read",
-  "Write",
-  "Edit",
-  "Grep",
-  "Glob",
-  "WebFetch",
-  "WebSearch",
-  "Task",
-  "TodoWrite"
-];
 var EXTRACT_MODEL = "haiku";
 var DREAM_MODEL = "sonnet";
-async function callClaude(prompt, model, systemPrompt) {
-  if (streamingEnabled()) {
-    return streamingCallClaude(prompt, model, systemPrompt);
-  }
-  return callClaudeOneShot(prompt, model, systemPrompt);
-}
-async function callClaudeOneShot(prompt, model, systemPrompt) {
-  const messages = query2({
-    prompt,
-    options: {
-      model,
-      systemPrompt,
-      pathToClaudeCodeExecutable: findClaudeExecutable2(),
-      disallowedTools: DISALLOWED_TOOLS2,
-      mcpServers: {},
-      settingSources: [],
-      strictMcpConfig: true,
-      includePartialMessages: false
-    }
-  });
-  let response = "";
-  let errorReason = null;
-  for await (const msg of messages) {
-    if (msg.type === "assistant") {
-      if (msg.error) {
-        errorReason = msg.error;
-        continue;
-      }
-      const content = msg.message.content;
-      if (typeof content === "string") {
-        response += content;
-      } else if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block && typeof block === "object" && block.type === "text" && typeof block.text === "string") {
-            response += block.text;
-          }
-        }
-      }
-    } else if (msg.type === "result") {
-      if (msg.subtype !== "success") {
-        const detail = msg.error ?? msg.subtype;
-        throw new Error(`claude SDK result not success: ${typeof detail === "string" ? detail : JSON.stringify(detail).slice(0, 200)}`);
-      }
-      break;
-    }
-  }
-  if (errorReason && !response.trim()) {
-    throw new Error(`claude SDK assistant error: ${errorReason}`);
-  }
-  return response;
+function callClaude(prompt, model, systemPrompt) {
+  return streamingCallClaude(prompt, model, systemPrompt);
 }
 function authDetail(mode) {
   switch (mode) {
@@ -1531,7 +1435,7 @@ async function embedBatch(texts) {
 }
 
 // packages/daemon/src/outbox.ts
-import { existsSync as existsSync3 } from "fs";
+import { existsSync as existsSync2 } from "fs";
 import {
   mkdir as mkdir2,
   readFile as readFile2,
@@ -1567,9 +1471,9 @@ function createOutbox(rootPath) {
     for (const { from, to } of LEGACY_MOVES) {
       const oldDir = join2(rootPath, from);
       const newDir = join2(rootPath, to);
-      if (!existsSync3(oldDir))
+      if (!existsSync2(oldDir))
         continue;
-      if (!existsSync3(newDir)) {
+      if (!existsSync2(newDir)) {
         await rename2(oldDir, newDir);
       } else {
         const entries = await readdir2(oldDir);
@@ -1691,9 +1595,9 @@ function mountOpsRoutes(app, runtime) {
 }
 
 // packages/daemon/src/runtime.ts
-import { existsSync as existsSync4 } from "fs";
+import { existsSync as existsSync3 } from "fs";
 import { appendFile, mkdir as mkdir3, readFile as fsReadFile } from "fs/promises";
-import { homedir as homedir3 } from "os";
+import { homedir as homedir2 } from "os";
 import { join as join3 } from "path";
 
 // packages/shared/src/scrub.ts
@@ -1904,13 +1808,13 @@ function createRuntime(deps) {
       }));
     }
   }
-  const SHAS_DIR = deps.shasDir ?? join3(homedir3(), ".mneme", "shas");
+  const SHAS_DIR = deps.shasDir ?? join3(homedir2(), ".mneme", "shas");
   function shasFile(sessionId) {
     return join3(SHAS_DIR, `${sessionId}.txt`);
   }
   async function loadSessionLedger(sessionId) {
     const file = shasFile(sessionId);
-    if (!existsSync4(file))
+    if (!existsSync3(file))
       return new Set;
     try {
       const buf = await fsReadFile(file, "utf8");
@@ -1924,7 +1828,7 @@ function createRuntime(deps) {
     if (keys.length === 0)
       return;
     try {
-      if (!existsSync4(SHAS_DIR)) {
+      if (!existsSync3(SHAS_DIR)) {
         await mkdir3(SHAS_DIR, { recursive: true, mode: 448 });
       }
       await appendFile(shasFile(sessionId), `${keys.join(`
@@ -2166,10 +2070,10 @@ function createRuntime(deps) {
 
 // packages/daemon/src/scheduler.ts
 import { mkdir as mkdir4, readFile as readFile3, rename as rename3, writeFile as writeFile3 } from "fs/promises";
-import { homedir as homedir4 } from "os";
+import { homedir as homedir3 } from "os";
 import { dirname, join as join4 } from "path";
 var TICK_MS = 60000;
-var STATE_PATH = join4(homedir4(), ".mneme", "schedule.json");
+var STATE_PATH = join4(homedir3(), ".mneme", "schedule.json");
 var STALE_NEW_JOB_SLACK_MS = 5 * 60000;
 var registry = new Map;
 var state = {};
@@ -2568,7 +2472,7 @@ var DREAM_SCHEDULE_MS = 8 * 3600000;
 var HEARTBEAT_SCHEDULE_MS = 60000;
 var EMBEDDER_REAP_SCHEDULE_MS = 60000;
 async function readConfig() {
-  const path = join5(homedir5(), ".mneme", "config.json");
+  const path = join5(homedir4(), ".mneme", "config.json");
   const raw = await readFile4(path, "utf8");
   const shaped = JSON.parse(raw);
   if (!shaped.daemon) {
@@ -2602,55 +2506,10 @@ function pushBundleViaServer(serverUrl, token) {
     }
   };
 }
-async function migrateLegacyCaptureOutbox() {
-  const root = join5(homedir5(), ".mneme", "outbox");
-  const captureRoot = join5(root, "capture");
-  if (existsSync5(captureRoot))
-    return;
-  const stages = ["pending", "extracted", "embedded", "failed"];
-  const present = stages.filter((s) => existsSync5(join5(root, s)));
-  if (present.length === 0)
-    return;
-  Logger.info("outbox: migrating legacy capture layout", { stages: present });
-  await mkdir5(captureRoot, { recursive: true });
-  for (const s of present) {
-    await rename4(join5(root, s), join5(captureRoot, s));
-  }
-}
-async function reclaimLegacyPluginOutbox() {
-  const root = join5(homedir5(), ".mneme", "outbox");
-  const pluginDir = join5(root, "plugin");
-  if (!existsSync5(pluginDir))
-    return;
-  let entries;
-  try {
-    entries = await readdir3(pluginDir);
-  } catch {
-    return;
-  }
-  const stranded = entries.filter((e) => e.endsWith(".json"));
-  const captureDir = join5(root, "capture", "pending");
-  await mkdir5(captureDir, { recursive: true });
-  for (const f of stranded) {
-    const id = `${Date.now()}-${f.slice(0, 8)}.json`;
-    await rename4(join5(pluginDir, f), join5(captureDir, id));
-  }
-  if (stranded.length > 0) {
-    Logger.info("outbox: reclaimed stranded plugin captures into pending/", {
-      count: stranded.length
-    });
-  }
-  try {
-    const { rmdir: rmdir2 } = await import("fs/promises");
-    await rmdir2(pluginDir);
-  } catch {}
-}
 async function startDaemon() {
   const config = await readConfig();
-  await migrateLegacyCaptureOutbox();
-  await reclaimLegacyPluginOutbox();
-  const captureOutboxRoot = join5(homedir5(), ".mneme", "outbox", "capture");
-  const dreamOutboxRoot = join5(homedir5(), ".mneme", "outbox", "dream");
+  const captureOutboxRoot = join5(homedir4(), ".mneme", "outbox", "capture");
+  const dreamOutboxRoot = join5(homedir4(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
   const agent = pickAgent(config.agent_provider);

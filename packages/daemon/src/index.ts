@@ -12,8 +12,7 @@
 // outbox files) stays as a tight setInterval since it's polling
 // filesystem state, not a cron-shape job.
 
-import { mkdir, readFile, readdir, rename } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -121,67 +120,8 @@ function pushBundleViaServer(serverUrl: string, token: string) {
   };
 }
 
-// One-time migration from the pre-restructure layout
-// (~/.mneme/outbox/{pending,extracted,embedded,failed}) to the new
-// layout under outbox/capture/. Runs on every startup but no-ops once
-// the move has been done.
-async function migrateLegacyCaptureOutbox(): Promise<void> {
-  const root = join(homedir(), ".mneme", "outbox");
-  const captureRoot = join(root, "capture");
-  if (existsSync(captureRoot)) return; // already migrated
-
-  const stages = ["pending", "extracted", "embedded", "failed"] as const;
-  const present = stages.filter((s) => existsSync(join(root, s)));
-  if (present.length === 0) return; // fresh daemon, nothing to migrate
-
-  Logger.info("outbox: migrating legacy capture layout", { stages: present });
-  await mkdir(captureRoot, { recursive: true });
-  for (const s of present) {
-    await rename(join(root, s), join(captureRoot, s));
-  }
-}
-
-// One-shot cleanup of the now-defunct outbox/plugin/ namespace. The
-// plugin no longer keeps its own fallback queue; the hook writes
-// directly into outbox/capture/pending/ when the daemon is briefly
-// unreachable. Any pre-existing files there are stranded captures
-// from older plugin versions; move them into capture/pending/ so the
-// daemon picks them up, then remove the empty plugin/ dir.
-async function reclaimLegacyPluginOutbox(): Promise<void> {
-  const root = join(homedir(), ".mneme", "outbox");
-  const pluginDir = join(root, "plugin");
-  if (!existsSync(pluginDir)) return;
-  let entries: string[];
-  try {
-    entries = await readdir(pluginDir);
-  } catch {
-    return;
-  }
-  const stranded = entries.filter((e) => e.endsWith(".json"));
-  const captureDir = join(root, "capture", "pending");
-  await mkdir(captureDir, { recursive: true });
-  for (const f of stranded) {
-    const id = `${Date.now()}-${f.slice(0, 8)}.json`;
-    await rename(join(pluginDir, f), join(captureDir, id));
-  }
-  if (stranded.length > 0) {
-    Logger.info("outbox: reclaimed stranded plugin captures into pending/", {
-      count: stranded.length,
-    });
-  }
-  // rmdir is best-effort; only succeeds if dir is empty.
-  try {
-    const { rmdir } = await import("node:fs/promises");
-    await rmdir(pluginDir);
-  } catch {
-    // not empty (unexpected file types) - leave it alone
-  }
-}
-
 export async function startDaemon(): Promise<void> {
   const config = await readConfig();
-  await migrateLegacyCaptureOutbox();
-  await reclaimLegacyPluginOutbox();
   const captureOutboxRoot = join(homedir(), ".mneme", "outbox", "capture");
   const dreamOutboxRoot = join(homedir(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);

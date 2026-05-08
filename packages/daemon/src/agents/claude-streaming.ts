@@ -1,10 +1,10 @@
 // Long-lived Claude SDK session.
 //
-// The plain claude.ts provider spawns a fresh `claude` subprocess via the
-// Agent SDK on every extract / distill / supersede call. Subprocess
-// startup is ~10s; actual Haiku inference for a 20-capture extract is
-// only ~3-5s. So per-batch overhead dominates when extract is the high-
-// frequency call (every coalesced batch during an active session).
+// The Agent SDK's default `query()` shape spawns a fresh `claude`
+// subprocess per call. Subprocess startup is ~10s; actual Haiku
+// inference for a 20-capture extract is only ~3-5s. So per-batch
+// overhead dominates when extract is the high-frequency call (every
+// coalesced batch during an active session).
 //
 // This module keeps ONE persistent Agent SDK query() per (model,
 // systemPrompt) tuple. The SDK accepts an AsyncIterable<SDKUserMessage>
@@ -23,15 +23,10 @@
 //   - Periodic recycle: each session is killed and re-spawned every
 //     RECYCLE_MS (30 min) as a defense against memory creep in long-
 //     running CLI subprocesses.
-//   - Disable via env: MNEME_DISABLE_STREAMING_SDK=1 makes the public
-//     entrypoint fall back to one-shot callClaude semantics. Useful as
-//     an emergency escape hatch if the streaming path misbehaves.
 
-import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
 import { Logger } from "@mneme/core";
 import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
+import { findClaudeExecutable } from "./claude-path.ts";
 
 // Tools the extractor / distiller / supersede pass should never invoke.
 // Same list as the one-shot path.
@@ -60,43 +55,6 @@ const RECYCLE_MS = 30 * 60 * 1000;
 // positives.
 const TURN_TIMEOUT_MS = 90 * 1000;
 
-// Same path lookup as claude.ts. Duplicated here to keep this module
-// self-contained; if the binary moves between the lookup and the call,
-// the SDK throws and the next call re-resolves.
-function findClaudeExecutable(): string {
-  if (process.env.CLAUDE_EXECUTABLE_PATH) {
-    return process.env.CLAUDE_EXECUTABLE_PATH;
-  }
-  const which = spawnSync("which", ["claude"], { encoding: "utf8" });
-  const fromPath = which.stdout?.trim();
-  if (fromPath && existsSync(fromPath)) return fromPath;
-  const fallbacks = [
-    "/usr/local/bin/claude",
-    "/opt/homebrew/bin/claude",
-    `${homedir()}/.local/bin/claude`,
-    `${homedir()}/.bun/bin/claude`,
-  ];
-  // Sweep nvm versions: ~/.nvm/versions/node/<v>/bin/claude. systemd's
-  // user PATH excludes these by default, so the daemon under systemd
-  // can't find an npm-installed claude unless we look here.
-  try {
-    const { readdirSync } = require("node:fs") as typeof import("node:fs");
-    const nvmRoot = `${homedir()}/.nvm/versions/node`;
-    if (existsSync(nvmRoot)) {
-      for (const v of readdirSync(nvmRoot)) {
-        fallbacks.push(`${nvmRoot}/${v}/bin/claude`);
-      }
-    }
-  } catch {
-    // ignore
-  }
-  for (const candidate of fallbacks) {
-    if (existsSync(candidate)) return candidate;
-  }
-  throw new Error(
-    "claude executable not found. Install Claude Code or set CLAUDE_EXECUTABLE_PATH.",
-  );
-}
 
 type SDKUserMessage = {
   type: "user";
@@ -304,18 +262,12 @@ function sessionFor(model: string, systemPrompt: string): StreamingClaudeSession
   return s;
 }
 
-/** Public entrypoint: same shape as one-shot callClaude. Falls through
- *  to whatever the caller wants if MNEME_DISABLE_STREAMING_SDK=1. */
+/** Public entrypoint. Returns the assistant text for one prompt-turn
+ *  through the long-lived session keyed by (model, systemPrompt). */
 export async function streamingCallClaude(
   prompt: string,
   model: string,
   systemPrompt: string,
 ): Promise<string> {
   return sessionFor(model, systemPrompt).ask(prompt);
-}
-
-/** Whether streaming is enabled. Lets the provider route to one-shot
- *  in disabled mode without importing both modules. */
-export function streamingEnabled(): boolean {
-  return process.env.MNEME_DISABLE_STREAMING_SDK !== "1";
 }
