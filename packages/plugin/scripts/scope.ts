@@ -3,7 +3,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import type { MnemeConfig } from "./config.ts";
 
 /**
@@ -41,6 +41,39 @@ export function canonicalRepo(cwd?: string): string | null {
   const name = basename(workdir);
   if (!name || name === "/" || name === ".") return null;
   return `dir:${name}`;
+}
+
+/**
+ * Walk up from a file path to the canonical URL of its containing git
+ * repo. Used by the capture hook on tool calls that touch a file
+ * (Read/Edit/Write/NotebookEdit) so a capture from a multi-repo
+ * workspace ("Pinnacle"-style: a non-git container with sub-repos
+ * checked out under it) tags with the actual sub-repo it was about,
+ * instead of the workspace's `dir:Pinnacle` basename.
+ *
+ * Returns null when:
+ *   - filePath isn't an absolute path (relative paths are ambiguous;
+ *     caller should fall back to the workspace cwd).
+ *   - No `.git` exists on the way up to root (file is outside any git
+ *     repo — also fall back to cwd).
+ *   - The containing repo's canonicalRepo resolves to a `dir:*` (no
+ *     `origin` remote) — that's strictly worse than the cwd fallback.
+ *
+ * Walk is bounded to 32 levels for safety against pathological inputs.
+ */
+export function repoForFile(filePath: string): string | null {
+  if (!filePath || !isAbsolute(filePath)) return null;
+  let dir = dirname(filePath);
+  for (let i = 0; i < 32 && dir; i++) {
+    if (existsSync(join(dir, ".git"))) {
+      const repo = canonicalRepo(dir);
+      return repo && !repo.startsWith("dir:") ? repo : null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
 }
 
 /**

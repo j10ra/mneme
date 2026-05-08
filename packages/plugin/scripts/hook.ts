@@ -24,7 +24,7 @@ import {
   serverUrl,
 } from "./config.ts";
 import { isDaemonConfigStale } from "./daemon-install.ts";
-import { baseScope as buildScope, discoverRepos } from "./scope.ts";
+import { baseScope as buildScope, discoverRepos, repoForFile } from "./scope.ts";
 import { scrubData } from "./scrub.ts";
 
 const event = process.argv[2] ?? "unknown";
@@ -479,6 +479,18 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Per-sub-repo tagging: when the tool call touches a file (Read,
+      // Edit, Write, NotebookEdit), walk up to its containing git repo
+      // and tag the capture with that repo's canonical URL. Without
+      // this, captures from a multi-repo workspace ("Pinnacle"-style)
+      // tag with the workspace basename (`dir:Pinnacle`) instead of
+      // the actual sub-repo, losing provenance.
+      const ti = toolInput as Record<string, unknown> | undefined;
+      const filePath =
+        typeof ti?.file_path === "string" ? ti.file_path : null;
+      const fileRepo = filePath ? repoForFile(filePath) : null;
+      const scope = fileRepo ? { ...baseScope, repo: fileRepo } : baseScope;
+
       const observation = JSON.stringify({
         tool: toolName,
         input: toolInput,
@@ -486,7 +498,7 @@ async function main(): Promise<void> {
       });
       if (observation.length > 64 * 1024) return;
       const body = {
-        ...baseScope,
+        ...scope,
         content: observation,
         raw_meta: { event, tool: toolName },
       };
