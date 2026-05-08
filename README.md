@@ -30,13 +30,15 @@ flowchart LR
         direction TB
         CC["Claude Code<br/>+ Mneme plugin"]
         Hooks["hooks · slashes · MCP proxy"]
+        Daemon["per-machine daemon:<br/>dedup · extract (Haiku)<br/>embed (bge-large) · push"]
         CC --- Hooks
+        Hooks --- Daemon
     end
 
     subgraph Server["server (one Bun process)"]
         direction TB
-        API["capture API<br/>read API<br/>MCP endpoint"]
-        Workers["workers:<br/>extract · embed · nap · dream"]
+        API["bundle ingest<br/>read API<br/>MCP endpoint"]
+        Workers["workers:<br/>nap · dream"]
         API --- Workers
     end
 
@@ -44,7 +46,7 @@ flowchart LR
         Tables["captures · memories · ingest_jobs"]
     end
 
-    Machines -- HTTPS --> Server
+    Machines -- HTTPS bundle --> Server
     Server -- TCP --> DB
 
     classDef m fill:#1e3a8a,stroke:#3b82f6,color:#fff
@@ -55,13 +57,13 @@ flowchart LR
     class DB d
 ```
 
-**Your machines** run a small plugin. Hooks send what you do (prompts, tool calls, session summaries) to the server. A panel of slash commands (`/mneme:memory`, `/mneme:pin`, `/mneme:recall`, …) lets you write or query memory by hand.
+**Your machines** run a small plugin plus a local daemon. Hooks fire on every prompt / tool call / session boundary and write to a local outbox in milliseconds. The daemon coalesces those captures, dedups them per session, runs Haiku for atomic observations, embeds with bge-large, and posts pre-built bundles to the server. A panel of slash commands (`/mneme:memory`, `/mneme:pin`, `/mneme:recall`, …) lets you write or query memory by hand.
 
-**The server** is one Bun process. It receives captures, stores them raw, and runs four background workers that turn them into structured, searchable memories. It exposes a single MCP tool (`mneme_sql`) so any AI agent on any harness can read.
+**The server** is one Bun process. It receives pre-built bundles, stores captures + memories atomically, and runs two background workers — **nap** (decay, shadow-mark exact dupes, link semantically related memories) and **dream** (cluster + distil into one-paragraph summaries). Dream is coordinated across machines via a Postgres advisory lock so only one daemon owns each window. The server exposes a single MCP tool (`mneme_sql`) so any AI agent on any harness can read.
 
 **The database** holds everything. Three small tables in plain Postgres. The vector index makes semantic search fast; the text index makes keyword search fast; the rest is JSON.
 
-One database. One server. N machines.
+One database. One server. N machines, each with its own daemon.
 
 ---
 
@@ -79,15 +81,26 @@ One database. One server. N machines.
 
 ## How it actually works
 
-The plugin's hooks fire as you work and `POST /api/capture` to the server. The server scrubs secrets, deduplicates, and queues the capture. An **extract** worker picks up a small batch of captures from the same session and asks an LLM to pull out atomic observations (a decision, a bugfix, a constraint, a discovery, …). An **embed** worker turns each observation into a vector.
+The plugin's hooks fire on every prompt / tool call / Stop / SessionEnd and write the event into a local outbox under `~/.mneme/outbox/capture/captured/`. Hooks are intentionally dumb: scrub strings, hash content, write a JSON file, exit. Sub-millisecond, fire-and-forget.
 
-**Nap** runs every 6 hours to decay importance, mark exact duplicates, and link semantically related memories. **Dream** runs every 24 hours to cluster related memories and write a one-paragraph summary that surfaces above the raw rows for broad questions.
+The **per-machine daemon** is where the work happens. It runs as a launchd / systemd-user / Task Scheduler service that the plugin installs at `/mneme:setup` time. Three independent stage workers tick every two seconds:
+
+- **capture** runs dedup against the per-session sha + uuid ledger at `~/.mneme/shas/`, then coalesces same-session captures and calls Haiku via a long-lived streaming SDK session for atomic observations (a decision, a bugfix, a constraint, a discovery, …)
+- **embed** runs bge-large-en-v1.5 (quantized int8, ONNX) in-process across whatever's queued in `observations/`
+- **push** posts pre-built `{capture, memories[]}` bundles to `/api/bundle`, four-wide concurrent
+
+The server is the dedup wall — `UNIQUE (content_sha256, machine_id)` on captures means duplicate work is harmless even when the local ledger is empty. The bge-large model auto-downloads on first run (~1.3GB, one-time per machine) and reaps from RAM after 60s idle.
+
+Two server-side workers turn the steady stream of memories into something useful over time:
+
+- **Nap** runs every 6 hours to decay importance, mark exact duplicates, and link semantically related memories.
+- **Dream** runs every 24 hours to cluster related memories and write a one-paragraph summary that surfaces above the raw rows for broad questions. Dream is coordinated across machines via a Postgres advisory lock keyed on the time window — so when three daemons simultaneously think it's dream-time, exactly one wins the lock and does the work; the others see a held lock and skip.
 
 When you start a new session anywhere, the plugin asks the server for the relevant slice for the repos you have open, and the server returns a compact markdown digest that lands directly in the agent's context.
 
 ---
 
-## Install in three steps
+## Setup in three steps
 
 You need a Postgres database, a host that runs Bun, and Claude Code on at least one machine. Mneme is host-agnostic: Postgres can be Supabase / Neon / RDS / a $5 VPS / your own box; the Bun process can run on Railway / Fly.io / Render / a VPS / your homelab.
 
@@ -149,7 +162,16 @@ In Claude Code:
 /reload-plugins
 ```
 
-`/mneme:setup` mints a per-machine token, writes it to `~/.mneme/config.json` (mode `0600`), and you're done. Repeat the last two lines on every other machine.
+`/mneme:setup` does the per-machine work in one shot:
+
+- registers the machine (hardware-fingerprint upsert; re-running on the same box rotates the token but reuses the existing `machine_id`)
+- writes `~/.mneme/config.json` (mode `0600`)
+- installs a per-user service (launchd on macOS, systemd-user on Linux + WSL, Task Scheduler on Windows) that runs the local extract / embed / push daemon at `127.0.0.1:<deterministic-port>`
+- `bun install --production` for native deps once per plugin version (or symlink-reuses the prior version's `node_modules` when deps are unchanged)
+
+The daemon owns extract + embed + push on this box. Hooks fire fast and hand off to a local outbox; the daemon coalesces, calls Haiku for observations, embeds with bge-large, and posts bundles to the server.
+
+Repeat the last two lines on every other machine.
 
 To update later:
 
@@ -158,13 +180,15 @@ To update later:
 /reload-plugins
 ```
 
+The plugin's SessionStart hook detects the new version and self-heals the service config — no manual re-run of `/mneme:setup` after a plugin update.
+
 ---
 
 ## Daily use
 
 | Command | Effect |
 |---|---|
-| `/mneme:memory <text>` | Save a fact in your own words. The extract worker turns it into structured observations. |
+| `/mneme:memory <text>` | Save a fact in your own words. The local daemon turns it into structured observations. |
 | `/mneme:pin <text-or-id>` | Pin a one-liner so it surfaces every session, on every machine. |
 | `/mneme:unpin <text-or-id>` | Stop a memory from surfacing. (It still exists; recall can still find it.) |
 | `/mneme:pinned [scope]` | List what's currently pinned. |
