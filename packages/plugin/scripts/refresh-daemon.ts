@@ -52,9 +52,14 @@ const PIDFILE = join(homedir(), ".mneme", "refresh.pid");
 //
 // Stale pidfile (process gone) is treated as no lock — overwrite and
 // proceed. The pidfile is removed on graceful exit.
-const STALE_LOCK_AGE_MS = 30 * 60 * 1000; // 30 min — if a refresh has
-// been "running" longer than that, the install probably wedged and we
-// should let a fresh attempt take over.
+// Sized just above ensurePluginDeps' 5-min bun install hard timeout.
+// A legitimate install on a healthy network completes in seconds; the
+// long tail (corp Zscaler throttling the npm registry) hits the 5-min
+// SIGKILL inside ensurePluginDeps and then the holder exits, releasing
+// the lock. So a 6-minute stale-lock window means: legitimate runs are
+// never stolen, hung holders surface fast and get superseded by the
+// next SessionStart's refresh attempt.
+const STALE_LOCK_AGE_MS = 6 * 60 * 1000;
 
 function isProcessAlive(pid: number): boolean {
   try {
