@@ -26,6 +26,7 @@ import {
 import { isDaemonConfigStale } from "./daemon-install.ts";
 import { baseScope as buildScope, discoverRepos, repoForFile } from "./scope.ts";
 import { scrubData } from "./scrub.ts";
+import { decryptAdminPassword } from "./admin-secret.ts";
 
 const event = process.argv[2] ?? "unknown";
 
@@ -138,12 +139,70 @@ async function writeToDaemonOutbox(
   }
 }
 
+/** Build a per-machine literal redactor: any time one of THIS machine's
+ *  secrets (per-machine bearer + admin password, when stored) appears
+ *  verbatim in capture content, strip it. Belt for the shared scrubber's
+ *  pattern braces — admin passwords are arbitrary user-chosen strings
+ *  with no fixed shape, so they'd otherwise sail past every regex.
+ *
+ *  Run AFTER scrubData so we operate on already-pattern-redacted text.
+ *  Sort longest-first to handle prefix-collision cases safely. Skip
+ *  secrets shorter than 8 chars to avoid pathological replaces against
+ *  common substrings. */
+function buildLocalRedactor(cfg: MnemeConfig): (s: string) => string {
+  const secrets = new Set<string>();
+  if (cfg.auth?.key) secrets.add(cfg.auth.key);
+  const fromEnv = process.env.MNEME_ADMIN_PASSWORD;
+  if (fromEnv) secrets.add(fromEnv);
+  if (cfg.admin?.ciphertext) {
+    const pw = decryptAdminPassword(cfg.admin.ciphertext);
+    if (pw) secrets.add(pw);
+  }
+  const list = [...secrets].filter((s) => s.length >= 8).sort((a, b) => b.length - a.length);
+  if (list.length === 0) return (s) => s;
+  return (s) => {
+    let out = s;
+    for (const sec of list) {
+      if (out.includes(sec)) {
+        out = out.split(sec).join("[REDACTED:mneme_secret]");
+      }
+    }
+    return out;
+  };
+}
+
+function redactInPlace(
+  obj: Record<string, unknown>,
+  redact: (s: string) => string,
+): void {
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === "string") {
+      obj[k] = redact(v);
+    } else if (v && typeof v === "object" && !Array.isArray(v)) {
+      redactInPlace(v as Record<string, unknown>, redact);
+    } else if (Array.isArray(v)) {
+      obj[k] = v.map((item) =>
+        typeof item === "string"
+          ? redact(item)
+          : item && typeof item === "object"
+            ? (redactInPlace(item as Record<string, unknown>, redact), item)
+            : item,
+      );
+    }
+  }
+}
+
 async function postCapture(
   cfg: MnemeConfig,
   body: Record<string, unknown>,
 ): Promise<boolean> {
   // Scrub here so every event funnels through one redaction point.
   const cleaned = scrubData(body) as Record<string, unknown>;
+  // Second pass: machine-specific literal secrets (admin password,
+  // per-machine token). The shared scrubber catches well-shaped tokens;
+  // this catches user-chosen passwords that have no fixed pattern.
+  const redact = buildLocalRedactor(cfg);
+  redactInPlace(cleaned, redact);
 
   // Hook is a dumb writer. Dedup happens daemon-side at the captured/
   // boundary (runDedup()) so all dedup logic lives in one place and
@@ -458,6 +517,24 @@ async function main(): Promise<void> {
       const toolResp = payload.tool_response;
 
       if (shouldSkipTool(toolName)) return;
+
+      // Skip bash invocations of our own admin slash subcommands. Their
+      // command lines tend to carry the admin password verbatim (passed
+      // on argv at first /mneme:setup, or via `echo -n <pw> |` on
+      // legacy admin slashes), and these calls produce zero project
+      // signal. Layer A's literal-redactor catches the password AFTER
+      // the first setup; this skip is the protection FOR that first
+      // setup and a belt against accidental capture afterward.
+      if (
+        toolName === "Bash" &&
+        toolInput &&
+        typeof (toolInput as Record<string, unknown>).command === "string" &&
+        /scripts\/slash\.ts["']?\s+(setup|status|machines|revoke)\b/.test(
+          (toolInput as Record<string, unknown>).command as string,
+        )
+      ) {
+        return;
+      }
 
       const memPath = memoryWritePath(toolName, toolInput);
       if (memPath) {
