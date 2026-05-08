@@ -9,11 +9,10 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
-  readFileSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, platform } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -24,6 +23,7 @@ import {
   registerProject,
   serverUrl,
 } from "./config.ts";
+import { isDaemonConfigStale } from "./daemon-install.ts";
 import { baseScope as buildScope, discoverRepos } from "./scope.ts";
 import { scrubData } from "./scrub.ts";
 
@@ -51,35 +51,24 @@ async function readStdin(): Promise<Record<string, unknown>> {
 //
 // On every SessionStart, derive the current plugin root from this
 // script's own location (works because every CC instance loads hooks
-// from the active plugin cache version). If the plist's daemon path
-// no longer matches, spawn a detached refresh that re-runs the
-// install scaffolding. Detached so SessionStart doesn't pay the
-// 5-30s cost of `bun install --production` on plugin update day.
+// from the active plugin cache version). If the platform's service
+// config (launchd plist on darwin / systemd unit on linux+WSL / Task
+// Scheduler XML on win32) points at a stale daemon.js, spawn a
+// detached refresh that re-runs the install scaffolding. Detached so
+// SessionStart doesn't pay the 5-30s cost of `bun install --production`
+// on plugin update day.
 //
-// `darwin` only for now: linux systemd and win32 Task Scheduler hold
-// their target paths the same way, but their refresh story can be
-// added once a second machine reports the same friction.
+// Until 1.0.65 this short-circuited on `platform() !== "darwin"`, so
+// linux/WSL/win32 never auto-refreshed and users had to manually kill
+// the running daemon to migrate to a new plugin version. The cross-
+// platform staleness predicate now lives in daemon-install.ts as
+// `isDaemonConfigStale`.
 function refreshDaemonIfStale(): void {
-  if (platform() !== "darwin") return;
-  const plistPath = join(
-    homedir(),
-    "Library/LaunchAgents/dev.mneme.daemon.plist",
-  );
-  if (!existsSync(plistPath)) return;
   const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  const expectedTarget = `${pluginRoot}/daemon.js`;
-  let plistContent: string;
-  try {
-    plistContent = readFileSync(plistPath, "utf8");
-  } catch {
-    return;
-  }
-  if (plistContent.includes(`<string>${expectedTarget}</string>`)) {
-    return; // already up-to-date — fast path
-  }
-  // Stale plist. Spawn detached refresh; don't block SessionStart.
+  if (!isDaemonConfigStale(pluginRoot)) return;
+  // Stale config. Spawn detached refresh; don't block SessionStart.
   process.stderr.write(
-    `mneme: plist points at stale plugin cache, refreshing daemon to ${pluginRoot}\n`,
+    `mneme: service config points at stale plugin cache, refreshing daemon to ${pluginRoot}\n`,
   );
   try {
     const refreshScript = join(pluginRoot, "scripts/refresh-daemon.ts");

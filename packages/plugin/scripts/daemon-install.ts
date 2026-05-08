@@ -129,6 +129,68 @@ export function detectPlatform(): Platform {
   throw new Error(`unsupported platform: ${process.platform}`);
 }
 
+/** True when the on-disk service config (plist / systemd unit / Task XML)
+ *  points at a daemon.js path that no longer matches the current
+ *  pluginRoot. The hook calls this on every SessionStart and spawns
+ *  refresh-daemon.ts when it returns true.
+ *
+ *  Returns false when:
+ *    - The service config doesn't exist (no daemon installed yet — the
+ *      caller is expected to have its own bootstrap flow, /mneme:setup)
+ *    - The config exists and references the current pluginRoot
+ *
+ *  Pure function modulo `existsSync` + `readFileSync` so it's easy to
+ *  unit-test against fixture content without touching real install paths.
+ */
+export function isDaemonConfigStale(
+  pluginRoot: string,
+  fs: {
+    existsSync: (p: string) => boolean;
+    readFileSync: (p: string, enc: "utf8") => string;
+  } = { existsSync: requireFs().existsSync, readFileSync: requireFs().readFileSync },
+  platform: Platform = detectPlatform(),
+): boolean {
+  // Use the platform-correct path separator so the comparison matches
+  // what `installDaemonService` actually wrote — `join()` does this for
+  // us (forward slash on darwin/linux, backslash on win32).
+  const expectedDaemonEntry = join(pluginRoot, "daemon.js");
+  const cfgPath = serviceConfigPath(platform);
+  if (!fs.existsSync(cfgPath)) return false;
+  let content: string;
+  try {
+    content = fs.readFileSync(cfgPath, "utf8");
+  } catch {
+    return false;
+  }
+  switch (platform) {
+    case "darwin":
+      // launchd plist: `<string>{daemonEntry}</string>` is the third
+      // ProgramArguments element. Match the wrapper so we don't get
+      // false positives from substring matches in another tag.
+      return !content.includes(`<string>${expectedDaemonEntry}</string>`);
+    case "linux":
+      // systemd unit: `ExecStart={bunPath} run {daemonEntry}` — the
+      // bunPath might also have changed between bun upgrades, so we
+      // only assert on the daemon path, which is what determines code
+      // version.
+      return !content.includes(expectedDaemonEntry);
+    case "win32":
+      // Task Scheduler XML: `<Arguments>run {daemonEntry}</Arguments>`.
+      // Same reasoning as linux — assert on the daemon path.
+      return !content.includes(expectedDaemonEntry);
+  }
+}
+
+// Defer the node:fs require so this module is still importable in
+// environments that lazy-load fs (test runners with custom resolvers).
+function requireFs(): {
+  existsSync: (p: string) => boolean;
+  readFileSync: (p: string, enc: "utf8") => string;
+} {
+  const fs = require("node:fs");
+  return { existsSync: fs.existsSync, readFileSync: fs.readFileSync };
+}
+
 /** True when running inside Windows Subsystem for Linux. WSL exposes
  *  itself via env vars set by the WSL launcher, plus the kernel string
  *  in /proc/version. We use it to gate the linux/systemd install path:

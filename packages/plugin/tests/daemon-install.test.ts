@@ -9,6 +9,7 @@ import {
   buildServiceConfig,
   buildSystemdUnit,
   buildWindowsTaskXml,
+  isDaemonConfigStale,
   pickFreePortDeterministic,
   serviceConfigPath,
   startCommandsFor,
@@ -82,6 +83,124 @@ describe("startCommandsFor", () => {
   test("win32 uses schtasks", () => {
     const cmds = startCommandsFor("win32");
     expect(cmds.some((c) => c.startsWith("schtasks /Create"))).toBe(true);
+  });
+});
+
+describe("isDaemonConfigStale", () => {
+  // Build a fake fs that returns a fixed config string, so each test can
+  // assert what the predicate does against a known service-config layout
+  // without writing real files.
+  function fakeFs(content: string | null) {
+    return {
+      existsSync: (_p: string) => content !== null,
+      readFileSync: (_p: string, _enc: "utf8") =>
+        content !== null ? content : "",
+    };
+  }
+
+  const PLUGIN_ROOT_NEW =
+    "/Users/jetz/.claude/plugins/cache/j10ra-mneme/mneme/1.0.65";
+  const PLUGIN_ROOT_OLD =
+    "/Users/jetz/.claude/plugins/cache/j10ra-mneme/mneme/1.0.62";
+
+  test("missing service config returns false (not stale, not installed)", () => {
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(null), "darwin"),
+    ).toBe(false);
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(null), "linux"),
+    ).toBe(false);
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(null), "win32"),
+    ).toBe(false);
+  });
+
+  test("darwin: detects stale plist, ignores fresh plist", () => {
+    const stalePlist = buildLaunchdPlist({
+      pluginRoot: PLUGIN_ROOT_OLD,
+      daemonPort: 53121,
+      bunPath: "/Users/jetz/.bun/bin/bun",
+    });
+    const freshPlist = buildLaunchdPlist({
+      pluginRoot: PLUGIN_ROOT_NEW,
+      daemonPort: 53121,
+      bunPath: "/Users/jetz/.bun/bin/bun",
+    });
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(stalePlist), "darwin"),
+    ).toBe(true);
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshPlist), "darwin"),
+    ).toBe(false);
+  });
+
+  test("linux: detects stale systemd unit, ignores fresh unit", () => {
+    const staleUnit = buildSystemdUnit({
+      pluginRoot: PLUGIN_ROOT_OLD,
+      daemonPort: 53121,
+      bunPath: "/home/jetz/.bun/bin/bun",
+    });
+    const freshUnit = buildSystemdUnit({
+      pluginRoot: PLUGIN_ROOT_NEW,
+      daemonPort: 53121,
+      bunPath: "/home/jetz/.bun/bin/bun",
+    });
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(staleUnit), "linux"),
+    ).toBe(true);
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshUnit), "linux"),
+    ).toBe(false);
+  });
+
+  test("linux: matches even when bunPath has changed (only daemon path matters)", () => {
+    // simulate a bun upgrade: same pluginRoot in ExecStart, different bun
+    const unit = buildSystemdUnit({
+      pluginRoot: PLUGIN_ROOT_NEW,
+      daemonPort: 53121,
+      bunPath: "/home/jetz/.bun/bin/bun-old-version",
+    });
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(unit), "linux"),
+    ).toBe(false);
+  });
+
+  test("win32: detects stale Task XML, ignores fresh", () => {
+    const staleXml = buildWindowsTaskXml({
+      pluginRoot: PLUGIN_ROOT_OLD,
+      daemonPort: 53121,
+      bunPath: "C:\\Users\\jetz\\.bun\\bin\\bun.exe",
+    });
+    const freshXml = buildWindowsTaskXml({
+      pluginRoot: PLUGIN_ROOT_NEW,
+      daemonPort: 53121,
+      bunPath: "C:\\Users\\jetz\\.bun\\bin\\bun.exe",
+    });
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(staleXml), "win32"),
+    ).toBe(true);
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshXml), "win32"),
+    ).toBe(false);
+  });
+
+  test("darwin: substring of pluginRoot inside another tag doesn't false-match", () => {
+    // A plist where the new pluginRoot path appears in some other place
+    // (e.g. a comment) but NOT inside <string>...</string> — should still
+    // be flagged stale because the actual ProgramArguments still points
+    // at the old path.
+    const stalePlist = buildLaunchdPlist({
+      pluginRoot: PLUGIN_ROOT_OLD,
+      daemonPort: 53121,
+      bunPath: "/Users/jetz/.bun/bin/bun",
+    });
+    const polluted = stalePlist.replace(
+      "</plist>",
+      `  <!-- ${PLUGIN_ROOT_NEW}/daemon.js earlier ran here -->\n</plist>`,
+    );
+    expect(
+      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(polluted), "darwin"),
+    ).toBe(true);
   });
 });
 
