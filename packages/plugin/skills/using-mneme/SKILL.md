@@ -20,7 +20,7 @@ Mneme stores your memories in Postgres + pgvector. The agent talks to it through
 | `topics` | text[] | optional tags |
 | `private` | bool | true rows are invisible via `mneme_sql`. The MCP reader role has an RLS policy of `USING (private = false)`, so private rows are physically unreachable from this tool — no `WHERE private = false` is needed and no filter you write can surface them. The SessionStart surface uses a separate server-side path that applies a machine-aware filter. |
 | `raw_meta` | jsonb | source-specific extras |
-| `captured_at`, `archived_at` | timestamptz | |
+| `captured_at`, `created_at`, `archived_at` | timestamptz | `created_at` is a generated alias of `captured_at` — both columns work, query with whichever feels natural. |
 | `UNIQUE(content_sha256, machine_id)` | | |
 
 ### `memories` — chunked, embedded, BM25-indexed
@@ -70,7 +70,6 @@ These are real failure patterns observed in production. Don't repeat them:
 |---|---|---|
 | `SELECT title FROM ...` | No `title` column exists on any table | Memory/capture content is in `content`. Cluster summaries also use `content`. |
 | `FROM observations` | No `observations` table — that's claude-mem's schema, not Mneme | Use `memories` (chunked + embedded) or `captures` (raw events) |
-| `captures.created_at` | `captures` uses **`captured_at`**; only `memories` uses `created_at` | Match the column to the table: captures → `captured_at`, memories → `created_at` |
 | `captures.kind` / `captures.embedding` / `captures.tsv` | These columns are **only on `memories`**, not `captures` | If you need kind filtering / embeddings / BM25, you need the `memories` table. If `memories` is empty, fall back to keyword `ILIKE` on `captures.content` |
 | `WHERE source = 'note'` | `source` is the *event source* (`claude_hook`, `claude_summary`, `manual:/memory`, etc.). `note` is a `kind`. | Use `kind = 'note'` on memories, or `source = 'manual:/memory'` on captures |
 
