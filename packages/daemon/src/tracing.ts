@@ -58,7 +58,7 @@ export async function withRootTrace<T>(
     }
 
     if (errorMessage) {
-      Logger.warn(`${name} failed`, { error: errorMessage, durationMs });
+      Logger.warn(`${name} failed`, errorMessage, { durationMs });
     }
   }
 }

@@ -2259,6 +2259,50 @@ async function startScheduler() {
   }, TICK_MS);
 }
 
+// packages/daemon/src/net.ts
+var NETWORK_ERROR_CODES = new Set([
+  "ConnectionRefused",
+  "ConnectionTimedOut",
+  "ConnectionReset",
+  "FailedToOpenSocket",
+  "UnknownError",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH"
+]);
+var NETWORK_ERROR_MESSAGE_PATTERNS = [
+  /unable to connect/i,
+  /typo in the url or port/i,
+  /network is unreachable/i,
+  /no such host/i,
+  /fetch failed/i
+];
+function isNetworkOfflineError(err) {
+  if (!err || typeof err !== "object")
+    return false;
+  const e = err;
+  if (typeof e.code === "string" && NETWORK_ERROR_CODES.has(e.code))
+    return true;
+  if (e.cause && typeof e.cause === "object") {
+    const c = e.cause;
+    if (typeof c.code === "string" && NETWORK_ERROR_CODES.has(c.code)) {
+      return true;
+    }
+  }
+  if (typeof e.message === "string") {
+    for (const re of NETWORK_ERROR_MESSAGE_PATTERNS) {
+      if (re.test(e.message))
+        return true;
+    }
+  }
+  return false;
+}
+
 // packages/daemon/src/trace-forwarder.ts
 var MAX_PENDING_SPANS_PER_TRACE2 = 1000;
 var MAX_PENDING_TRACES2 = 200;
@@ -2397,7 +2441,7 @@ class TraceForwarder {
       });
       if (!response.ok) {
         const text = await response.text().catch(() => "");
-        Logger.warn("trace-forwarder: server rejected batch", {
+        Logger.warn("trace-forwarder: server rejected batch", undefined, {
           status: response.status,
           detail: text.slice(0, 200),
           traces: traces.length,
@@ -2406,12 +2450,19 @@ class TraceForwarder {
         });
       }
     } catch (err) {
-      Logger.warn("trace-forwarder: flush failed", {
-        error: err instanceof Error ? err.message : String(err),
+      const meta = {
         traces: traces.length,
         spans: spans.length,
         logs: logs.length
-      });
+      };
+      if (isNetworkOfflineError(err)) {
+        Logger.debug("trace-forwarder: flush skipped (offline)", {
+          ...meta,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      } else {
+        Logger.warn("trace-forwarder: flush failed", err, meta);
+      }
     }
   }
 }
@@ -2453,7 +2504,7 @@ async function withRootTrace(name, source, fn) {
       });
     }
     if (errorMessage) {
-      Logger.warn(`${name} failed`, { error: errorMessage, durationMs });
+      Logger.warn(`${name} failed`, errorMessage, { durationMs });
     }
   }
 }
@@ -2660,20 +2711,31 @@ async function startDaemon() {
       outbox.list("embedded"),
       outbox.list("failed")
     ]);
-    const response = await fetch(`${config.server_url}/api/heartbeat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.token}`
-      },
-      body: JSON.stringify({
-        outbox_pending: captured.length,
-        outbox_extracted: observations.length,
-        outbox_embedded: embedded.length,
-        outbox_failed: failed.length,
-        last_processed_at: lastProcessedAt?.toISOString() ?? null
-      })
-    });
+    let response;
+    try {
+      response = await fetch(`${config.server_url}/api/heartbeat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.token}`
+        },
+        body: JSON.stringify({
+          outbox_pending: captured.length,
+          outbox_extracted: observations.length,
+          outbox_embedded: embedded.length,
+          outbox_failed: failed.length,
+          last_processed_at: lastProcessedAt?.toISOString() ?? null
+        })
+      });
+    } catch (err) {
+      if (isNetworkOfflineError(err)) {
+        Logger.debug("heartbeat: skipped (offline)", {
+          error: err instanceof Error ? err.message : String(err)
+        });
+        return;
+      }
+      throw err;
+    }
     if (!response.ok) {
       throw new Error(`heartbeat ${response.status}`);
     }

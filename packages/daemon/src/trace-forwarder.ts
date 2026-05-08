@@ -18,6 +18,7 @@ import type {
   TraceRecord,
   TraceSink,
 } from "@mneme/core";
+import { isNetworkOfflineError } from "./net.ts";
 
 // Same ceilings as TraceStore. Daemon runs alone on a personal box,
 // not under multi-tenant load, but the bounds protect against a
@@ -186,7 +187,7 @@ export class TraceForwarder implements TraceSink {
       );
       if (!response.ok) {
         const text = await response.text().catch(() => "");
-        Logger.warn("trace-forwarder: server rejected batch", {
+        Logger.warn("trace-forwarder: server rejected batch", undefined, {
           status: response.status,
           detail: text.slice(0, 200),
           traces: traces.length,
@@ -195,14 +196,24 @@ export class TraceForwarder implements TraceSink {
         });
       }
     } catch (err) {
-      // Network error: drop the batch and move on. Tracing must never
-      // wedge the daemon.
-      Logger.warn("trace-forwarder: flush failed", {
-        error: err instanceof Error ? err.message : String(err),
+      // Drop the batch and move on. Tracing must never wedge the daemon.
+      // Classify the failure: network-level errors (sleep, brief offline,
+      // tunnel flap) get logged at debug since they're transient and
+      // self-recover; everything else stays at warn so genuine bugs and
+      // misconfigurations are visible.
+      const meta = {
         traces: traces.length,
         spans: spans.length,
         logs: logs.length,
-      });
+      };
+      if (isNetworkOfflineError(err)) {
+        Logger.debug("trace-forwarder: flush skipped (offline)", {
+          ...meta,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } else {
+        Logger.warn("trace-forwarder: flush failed", err, meta);
+      }
     }
   }
 }

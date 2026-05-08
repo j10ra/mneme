@@ -35,6 +35,7 @@ import { mountEmbedRoute } from "./routes/embed.ts";
 import { mountOpsRoutes } from "./routes/ops.ts";
 import { type Bundle, createRuntime } from "./runtime.ts";
 import { register, startScheduler } from "./scheduler.ts";
+import { isNetworkOfflineError } from "./net.ts";
 import { TraceForwarder } from "./trace-forwarder.ts";
 import { withRootTrace } from "./tracing.ts";
 
@@ -351,6 +352,12 @@ export async function startDaemon(): Promise<void> {
 
   // ── Time-driven jobs (scheduler-managed; ~/.mneme/schedule.json) ─────
   // Heartbeat: outbox depth + last-processed-at posted to the server.
+  // Best-effort: a missed heartbeat just means the server's "last seen"
+  // for this daemon stays stale until the next tick. So we swallow
+  // network-offline errors quietly here (sleep/wake, tunnel flap)
+  // rather than letting them surface as scheduler ERRORs every minute.
+  // Genuine HTTP failures (500, auth) still throw and the scheduler
+  // logs them.
   const postHeartbeat = async (): Promise<void> => {
     const [captured, observations, embedded, failed] = await Promise.all([
       outbox.list("captured"),
@@ -358,22 +365,33 @@ export async function startDaemon(): Promise<void> {
       outbox.list("embedded"),
       outbox.list("failed"),
     ]);
-    // Server's heartbeat API still uses the legacy field names so older
-    // server versions stay compatible. The mapping is just a rename.
-    const response = await fetch(`${config.server_url}/api/heartbeat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.token}`,
-      },
-      body: JSON.stringify({
-        outbox_pending: captured.length,
-        outbox_extracted: observations.length,
-        outbox_embedded: embedded.length,
-        outbox_failed: failed.length,
-        last_processed_at: lastProcessedAt?.toISOString() ?? null,
-      }),
-    });
+    let response: Response;
+    try {
+      // Server's heartbeat API still uses the legacy field names so older
+      // server versions stay compatible. The mapping is just a rename.
+      response = await fetch(`${config.server_url}/api/heartbeat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.token}`,
+        },
+        body: JSON.stringify({
+          outbox_pending: captured.length,
+          outbox_extracted: observations.length,
+          outbox_embedded: embedded.length,
+          outbox_failed: failed.length,
+          last_processed_at: lastProcessedAt?.toISOString() ?? null,
+        }),
+      });
+    } catch (err) {
+      if (isNetworkOfflineError(err)) {
+        Logger.debug("heartbeat: skipped (offline)", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+      throw err;
+    }
     if (!response.ok) {
       throw new Error(`heartbeat ${response.status}`);
     }
