@@ -219,6 +219,97 @@ describe("runWorkerTick", () => {
     expect(await outbox.list("failed")).toContain(id);
   });
 
+  test("transient extract errors escalate to failed/ after the retry budget", async () => {
+    // Without this budget, the daemon would silently retry the same
+    // wedged file forever. Captured/ pile up, no log, no failed/, no
+    // surface — exactly the qube-laptop wedge.
+    const outbox = createOutbox(root);
+    let extractCalls = 0;
+    const mocks = createMocks({
+      extract: async () => {
+        extractCalls++;
+        // Every call throws transient (not marked permanent).
+        throw new Error("LLM out");
+      },
+    });
+    const runtime = createRuntime({
+      outbox,
+      extract: mocks.extract,
+      embed: mocks.embed,
+      push: mocks.push,
+      shasDir: join(root, "shas"),
+      extractMaxRetries: 3, // tighter budget for the test
+    });
+
+    const { id } = (await runtime.handleCapture(validBody)) as {
+      ok: true;
+      id: string;
+    };
+
+    // Tick 1: counter 1, file stays in captured/
+    await runtime.runWorkerTick();
+    expect(await outbox.list("captured")).toContain(id);
+    expect(await outbox.list("failed")).toHaveLength(0);
+
+    // Tick 2: counter 2, still under budget
+    await runtime.runWorkerTick();
+    expect(await outbox.list("captured")).toContain(id);
+    expect(await outbox.list("failed")).toHaveLength(0);
+
+    // Tick 3: counter hits maxRetries, file moves to failed/
+    await runtime.runWorkerTick();
+    expect(await outbox.list("captured")).not.toContain(id);
+    expect(await outbox.list("failed")).toContain(id);
+    expect(extractCalls).toBe(3);
+
+    // Tick 4: nothing left in captured/ to drive another extract call
+    await runtime.runWorkerTick();
+    expect(extractCalls).toBe(3);
+  });
+
+  test("a successful retry clears the transient counter", async () => {
+    // If extract throws once then succeeds on retry, the file should
+    // flow through normally and not consume budget on the next failure.
+    const outbox = createOutbox(root);
+    let extractCalls = 0;
+    const mocks = createMocks({
+      extract: async (captures) => {
+        extractCalls++;
+        if (extractCalls === 1) throw new Error("transient flake");
+        return captures.map((c) => ({
+          content: `summary of: ${c.content.slice(0, 30)}`,
+          kind: "decision" as const,
+          importance: 0.7,
+          topics: [],
+        }));
+      },
+    });
+    const runtime = createRuntime({
+      outbox,
+      extract: mocks.extract,
+      embed: mocks.embed,
+      push: mocks.push,
+      shasDir: join(root, "shas"),
+      extractMaxRetries: 2,
+    });
+
+    const { id } = (await runtime.handleCapture(validBody)) as {
+      ok: true;
+      id: string;
+    };
+
+    // First tick: throws, counter = 1, file stays in captured/.
+    await runtime.runWorkerTick();
+    expect(await outbox.list("captured")).toContain(id);
+    expect(await outbox.list("failed")).toHaveLength(0);
+
+    // Second tick: succeeds, file pushes through, counter cleared.
+    await runtime.runWorkerTick();
+    expect(await outbox.list("captured")).toHaveLength(0);
+    expect(await outbox.list("failed")).toHaveLength(0);
+    expect(mocks.pushed).toHaveLength(1);
+  });
+
   test("returns cleanly when the outbox is empty", async () => {
     const outbox = createOutbox(root);
     const mocks = createMocks();

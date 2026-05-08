@@ -72,6 +72,11 @@ export type DaemonDeps = {
   extractIdleMs?: number;
   /** Force extract once the oldest captured capture is older than this. */
   extractForceMs?: number;
+  /** Number of consecutive transient extract failures before a captured
+   *  file gets escalated to failed/. Defaults to 5 — at ~2s ticks +
+   *  claude-streaming's 90s per-turn timeout, that's roughly 7-8 minutes
+   *  of repeated failure before we give up rather than retrying forever. */
+  extractMaxRetries?: number;
   /** Test seam for `now()`. Defaults to Date.now. */
   now?: () => number;
   /** Override the dedup ledger directory. Defaults to ~/.mneme/shas/. */
@@ -98,6 +103,7 @@ const MAX_BATCH_SIZE = 20;
 const DEFAULT_EXTRACT_BATCH_FULL = 1;
 const DEFAULT_EXTRACT_IDLE_MS = 0;
 const DEFAULT_EXTRACT_FORCE_MS = 0;
+const DEFAULT_EXTRACT_MAX_RETRIES = 5;
 
 export async function sha256Hex(input: string): Promise<string> {
   const buf = new TextEncoder().encode(input);
@@ -136,7 +142,21 @@ export function createRuntime(deps: DaemonDeps) {
   const batchFull = deps.extractBatchFull ?? DEFAULT_EXTRACT_BATCH_FULL;
   const idleMs = deps.extractIdleMs ?? DEFAULT_EXTRACT_IDLE_MS;
   const forceMs = deps.extractForceMs ?? DEFAULT_EXTRACT_FORCE_MS;
+  const maxRetries = deps.extractMaxRetries ?? DEFAULT_EXTRACT_MAX_RETRIES;
   const now = deps.now ?? (() => Date.now());
+
+  // Per-file transient-extract retry counter. Lives for the daemon's
+  // lifetime (resets on restart, which is fine — a file that's been
+  // stuck across restarts gets a fresh budget, but the underlying SDK
+  // session also got a fresh start so it has a real chance to succeed).
+  // Keys are captured/ file ids. Entries are deleted on success,
+  // permanent failure, or when the budget is exhausted.
+  //
+  // Without this, runCoalescedExtract used to silently `continue` on
+  // every transient extract throw — files trapped in captured/, no log,
+  // no failed/ row, heartbeat reporting OK. A wedged streaming-claude
+  // subprocess could stall the entire pipeline indefinitely.
+  const transientRetries = new Map<string, number>();
 
   // Initialised to now() so the idle gate doesn't trip on the first
   // tick after startup just because the variable was 0 (epoch). Real
@@ -529,20 +549,59 @@ export function createRuntime(deps: DaemonDeps) {
           observations: memories.length,
           captures: batch.length,
         });
+        // Successful extract: clear any retry counter the batch members
+        // accumulated from previous transient failures.
+        for (const entry of batch) transientRetries.delete(entry.id);
       } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+
         if (asPermanent(err)) {
           // Permanent failure: every member of the batch goes to failed/.
-          const reason = err instanceof Error ? err.message : String(err);
           for (const entry of batch) {
             try {
               await deps.outbox.markFailed(entry.id, "captured", reason);
               processed.add(entry.id);
+              transientRetries.delete(entry.id);
             } catch {
               // Don't fail the rest of the batch on a single move error.
             }
           }
+          continue;
         }
-        // Transient: leave batch in captured for next tick.
+
+        // Transient failure: bump per-file counters, escalate any that
+        // crossed the budget to failed/, leave the rest in captured/
+        // for the next tick. Always log so a sustained failure is
+        // visible in stderr long before any escalation fires.
+        const exhausted: typeof entries = [];
+        const stillRetrying: typeof entries = [];
+        for (const entry of batch) {
+          const next = (transientRetries.get(entry.id) ?? 0) + 1;
+          transientRetries.set(entry.id, next);
+          if (next >= maxRetries) exhausted.push(entry);
+          else stillRetrying.push(entry);
+        }
+        Logger.warn("extract batch transient failure", err, {
+          size: batch.length,
+          retrying: stillRetrying.length,
+          exhausted: exhausted.length,
+          max_retries: maxRetries,
+          session: seed.capture.session_id ?? null,
+          repo: seed.capture.repo ?? null,
+        });
+        for (const entry of exhausted) {
+          try {
+            await deps.outbox.markFailed(
+              entry.id,
+              "captured",
+              `transient retry budget (${maxRetries}) exhausted: ${reason}`,
+            );
+            processed.add(entry.id);
+            transientRetries.delete(entry.id);
+          } catch {
+            // best-effort
+          }
+        }
         continue;
       }
 

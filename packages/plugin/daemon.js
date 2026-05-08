@@ -1735,6 +1735,7 @@ var MAX_BATCH_SIZE = 20;
 var DEFAULT_EXTRACT_BATCH_FULL = 1;
 var DEFAULT_EXTRACT_IDLE_MS = 0;
 var DEFAULT_EXTRACT_FORCE_MS = 0;
+var DEFAULT_EXTRACT_MAX_RETRIES = 5;
 async function sha256Hex(input) {
   const buf = new TextEncoder().encode(input);
   const digest = await crypto.subtle.digest("SHA-256", buf);
@@ -1766,7 +1767,9 @@ function createRuntime(deps) {
   const batchFull = deps.extractBatchFull ?? DEFAULT_EXTRACT_BATCH_FULL;
   const idleMs = deps.extractIdleMs ?? DEFAULT_EXTRACT_IDLE_MS;
   const forceMs = deps.extractForceMs ?? DEFAULT_EXTRACT_FORCE_MS;
+  const maxRetries = deps.extractMaxRetries ?? DEFAULT_EXTRACT_MAX_RETRIES;
   const now = deps.now ?? (() => Date.now());
+  const transientRetries = new Map;
   let lastCapturedWriteAt = now();
   async function handleCapture(body) {
     for (const field of REQUIRED_STRING_FIELDS) {
@@ -2046,15 +2049,44 @@ function createRuntime(deps) {
           observations: memories.length,
           captures: batch.length
         });
+        for (const entry of batch)
+          transientRetries.delete(entry.id);
       } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
         if (asPermanent(err)) {
-          const reason = err instanceof Error ? err.message : String(err);
           for (const entry of batch) {
             try {
               await deps.outbox.markFailed(entry.id, "captured", reason);
               processed.add(entry.id);
+              transientRetries.delete(entry.id);
             } catch {}
           }
+          continue;
+        }
+        const exhausted = [];
+        const stillRetrying = [];
+        for (const entry of batch) {
+          const next = (transientRetries.get(entry.id) ?? 0) + 1;
+          transientRetries.set(entry.id, next);
+          if (next >= maxRetries)
+            exhausted.push(entry);
+          else
+            stillRetrying.push(entry);
+        }
+        Logger.warn("extract batch transient failure", err, {
+          size: batch.length,
+          retrying: stillRetrying.length,
+          exhausted: exhausted.length,
+          max_retries: maxRetries,
+          session: seed.capture.session_id ?? null,
+          repo: seed.capture.repo ?? null
+        });
+        for (const entry of exhausted) {
+          try {
+            await deps.outbox.markFailed(entry.id, "captured", `transient retry budget (${maxRetries}) exhausted: ${reason}`);
+            processed.add(entry.id);
+            transientRetries.delete(entry.id);
+          } catch {}
         }
         continue;
       }
