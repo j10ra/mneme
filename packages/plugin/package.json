@@ -1,6 +1,6 @@
 {
   "name": "@mneme/plugin",
-  "version": "1.0.61",
+  "version": "1.0.62",
   "private": true,
   "type": "module",
   "main": "daemon.js",
@@ -11,8 +11,7 @@
   },
   "trustedDependencies": [
     "sharp",
-    "onnxruntime-node",
-    "@anthropic-ai/claude-code"
+    "onnxruntime-node"
   ]
 }
 
