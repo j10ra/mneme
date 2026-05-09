@@ -1,6 +1,7 @@
 ---
 description: Register this machine with the Mneme server — mint a token + write ~/.mneme/config.json
 argument-hint: <server-url> <admin-password> [machine-name]
+scope: admin
 allowed-tools: Bash
 ---
 

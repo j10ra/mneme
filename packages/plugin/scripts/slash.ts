@@ -7,11 +7,12 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
@@ -348,6 +349,113 @@ async function setup(
   console.log("\n  next step: /reload-plugins");
 }
 
+/** Help: walk the plugin's commands/ directory, parse each file's
+ *  YAML frontmatter, and render a single markdown table.
+ *
+ *  Single source of truth: each commands/*.md owns its own metadata
+ *  (description + scope), so adding a new slash auto-updates help on
+ *  the next render — nothing to keep in sync manually.
+ *
+ *  Frontmatter schema (loose, only these three keys are surfaced):
+ *    description: <one-line>
+ *    argument-hint: <optional usage hint>     (omit for no-args slashes)
+ *    scope: <admin|user>                       (defaults to "user")
+ *
+ *  Plugin root resolves the same way setup() does — via
+ *  CLAUDE_PLUGIN_ROOT env var when CC sets it, falling back to
+ *  derivation from this script's own path. */
+type SlashEntry = {
+  name: string;
+  description: string;
+  argHint: string;
+  scope: string;
+};
+
+function pluginRoot(): string {
+  return (
+    process.env.CLAUDE_PLUGIN_ROOT ??
+    dirname(dirname(fileURLToPath(import.meta.url)))
+  );
+}
+
+function parseFrontmatter(raw: string): Record<string, string> {
+  // Minimal YAML frontmatter parser — only handles the leading `---`
+  // block with `key: value` pairs (no nested objects, no lists). Good
+  // enough for the metadata our slashes carry. Any value past the first
+  // `:` becomes the string, trimmed.
+  if (!raw.startsWith("---")) return {};
+  const close = raw.indexOf("\n---", 4);
+  if (close === -1) return {};
+  const body = raw.slice(4, close);
+  const out: Record<string, string> = {};
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const colon = trimmed.indexOf(":");
+    if (colon === -1) continue;
+    const key = trimmed.slice(0, colon).trim();
+    const value = trimmed.slice(colon + 1).trim();
+    if (key) out[key] = value;
+  }
+  return out;
+}
+
+async function help(): Promise<void> {
+  const root = pluginRoot();
+  const dir = join(root, "commands");
+  if (!existsSync(dir)) {
+    throw new Error(`commands directory not found: ${dir}`);
+  }
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith(".md"))
+    .sort();
+
+  const entries: SlashEntry[] = [];
+  for (const file of files) {
+    const raw = readFileSync(join(dir, file), "utf8");
+    const fm = parseFrontmatter(raw);
+    const name = basename(file, ".md");
+    entries.push({
+      name,
+      description: fm.description ?? "(no description)",
+      argHint: fm["argument-hint"] ?? "",
+      scope: fm.scope ?? "user",
+    });
+  }
+
+  // Group by scope so the table reads as "user-facing first, then ops".
+  const byScope = (s: string) => entries.filter((e) => e.scope === s);
+  const groups: Array<{ label: string; rows: SlashEntry[] }> = [
+    { label: "User", rows: byScope("user") },
+    { label: "Admin", rows: byScope("admin") },
+  ];
+  // Catch any custom scope so future additions surface even without
+  // updating this groupings list.
+  const handled = new Set(["user", "admin"]);
+  const other = entries.filter((e) => !handled.has(e.scope));
+  if (other.length > 0) groups.push({ label: "Other", rows: other });
+
+  console.log("# Mneme slash commands");
+  console.log("");
+  for (const g of groups) {
+    if (g.rows.length === 0) continue;
+    console.log(`## ${g.label}`);
+    console.log("");
+    console.log("| command | what it does | usage |");
+    console.log("|---|---|---|");
+    for (const e of g.rows) {
+      const usage = e.argHint
+        ? `\`/mneme:${e.name} ${e.argHint}\``
+        : `\`/mneme:${e.name}\``;
+      console.log(`| \`/mneme:${e.name}\` | ${e.description} | ${usage} |`);
+    }
+    console.log("");
+  }
+  console.log(
+    "Tip: every slash (except `/mneme:setup` on a fresh machine) reads `~/.mneme/config.json` for the per-machine token.",
+  );
+}
+
 type StatusResponse = {
   generated_at: string;
   workers: Array<{
@@ -617,6 +725,9 @@ async function main(): Promise<void> {
     case "status":
       await status();
       return;
+    case "help":
+      await help();
+      return;
     case "revoke":
       await revoke(process.argv[3] ?? "");
       return;
@@ -626,7 +737,7 @@ async function main(): Promise<void> {
     default:
       console.error(`unknown subcommand: ${cmd}`);
       console.error(
-        "usage: slash.ts <setup|memory|pin|unpin|machines|status|revoke|rename> [args]",
+        "usage: slash.ts <setup|memory|pin|unpin|machines|status|help|revoke|rename> [args]",
       );
       process.exit(1);
   }

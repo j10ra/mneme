@@ -1,5 +1,6 @@
 ---
 description: Mneme queue health — workers, daemons, dream, breakers
+scope: admin
 allowed-tools: Bash
 ---
 

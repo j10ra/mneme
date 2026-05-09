@@ -1,6 +1,7 @@
 ---
 description: Unpin a Mneme memory
 argument-hint: <description or memory uuid>
+scope: user
 allowed-tools: Bash, mcp__plugin_mneme_mneme__mneme_sql
 ---
 

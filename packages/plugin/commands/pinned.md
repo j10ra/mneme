@@ -1,6 +1,7 @@
 ---
 description: List currently pinned Mneme memories
 argument-hint: [optional scope filter]
+scope: user
 allowed-tools: mcp__plugin_mneme_mneme__mneme_sql
 ---
 

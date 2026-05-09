@@ -1,6 +1,7 @@
 ---
 description: Summarise recent Mneme memories
 argument-hint: [scope hint, optional]
+scope: user
 allowed-tools: mcp__plugin_mneme_mneme__mneme_sql
 ---
 

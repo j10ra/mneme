@@ -1,6 +1,7 @@
 ---
 description: Save text as a Mneme memory (LLM extracts atomic observations)
 argument-hint: <text or context reference>
+scope: user
 allowed-tools: Bash
 ---
 

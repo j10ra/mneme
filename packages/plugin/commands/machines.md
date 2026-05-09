@@ -1,5 +1,6 @@
 ---
 description: List all machines registered with the Mneme server
+scope: admin
 allowed-tools: Bash
 ---
 

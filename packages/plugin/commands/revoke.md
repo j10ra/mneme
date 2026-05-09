@@ -1,6 +1,7 @@
 ---
 description: Revoke a machine's Mneme token
 argument-hint: <machine-name-or-id>
+scope: admin
 allowed-tools: Bash
 ---
 

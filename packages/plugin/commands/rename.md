@@ -1,6 +1,7 @@
 ---
 description: Rename THIS machine in Mneme (in place, no token reissue)
 argument-hint: <new-name>
+scope: user
 allowed-tools: Bash
 ---
 

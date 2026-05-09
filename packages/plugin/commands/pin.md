@@ -1,6 +1,7 @@
 ---
 description: Pin a Mneme memory so it surfaces in every session
 argument-hint: <fact text or memory uuid>
+scope: user
 allowed-tools: Bash, mcp__plugin_mneme_mneme__mneme_sql
 ---
 

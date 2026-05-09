@@ -1,6 +1,7 @@
 ---
 description: Recall memories from Mneme
 argument-hint: <query>
+scope: user
 allowed-tools: mcp__plugin_mneme_mneme__mneme_sql
 ---
 
