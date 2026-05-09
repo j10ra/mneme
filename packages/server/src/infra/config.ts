@@ -118,3 +118,27 @@ export const SUPERSEDE_LLM_BATCH_MAX_MEMBERS = 30;
  *  than its successor to outrank it. Tunable here; recall query
  *  templates / using-mneme skill read this. */
 export const SUPERSEDE_RECALL_PENALTY = 0.3;
+
+// ── Ascend (cross-cluster consolidator, weekly) ───────────────────────
+// Issue #30. Third worker in the brain trio (nap → dream → ascend).
+// Where dream synthesises clusters from one window's memories, ascend
+// rises above the per-cluster view to merge duplicate clusters and
+// reconcile contradicting facts across cluster boundaries.
+
+/** Cosine-distance ceiling for treating two cluster summaries as
+ *  candidate "same topic". Tighter than DREAM_CLUSTER_DISTANCE because
+ *  the input is already-distilled cluster summaries — near-duplicates
+ *  merit the LLM call; loose adjacency does not. */
+export const ASCEND_MERGE_DISTANCE = 0.10;
+
+/** Max merge candidate pairs per ascend cycle. Bounds Sonnet call
+ *  count. At ~50 clusters steady state and a tight cosine ceiling,
+ *  real candidate pairs are rare (~5/week) — the cap is defensive,
+ *  mostly relevant during the first few cycles after a data wipe when
+ *  many fresh clusters cover overlapping topics. */
+export const ASCEND_MAX_MERGE_PAIRS = 20;
+
+/** Max cross-cluster supersede candidate memories pulled per cycle.
+ *  Each batch of SUPERSEDE_LLM_BATCH_MAX_MEMBERS goes to one Sonnet
+ *  call. 200 candidates ≈ 7 batches ≈ 7 LLM calls per cycle. */
+export const ASCEND_MAX_SUPERSEDE_CANDIDATES = 200;

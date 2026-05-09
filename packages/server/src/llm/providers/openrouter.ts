@@ -18,9 +18,16 @@
 
 import { Logger, mnemeFn } from "@mneme/core";
 import { env } from "../../infra/env.ts";
-import { CLUSTER_PROMPT, SUPERSEDE_PROMPT, SYSTEM_PROMPT } from "../prompt.ts";
+import {
+  CLUSTER_MERGE_PROMPT,
+  CLUSTER_PROMPT,
+  SUPERSEDE_PROMPT,
+  SYSTEM_PROMPT,
+} from "../prompt.ts";
 import {
   type ClusterDistillation,
+  type ClusterMergeJudgment,
+  type ClusterSummary,
   type DreamLimits,
   type ExtractLimits,
   KINDS,
@@ -301,5 +308,71 @@ export const findSupersedes = mnemeFn(
         typeof (p as SupersedePair).new_id === "string" &&
         typeof (p as SupersedePair).reason === "string",
     );
+  },
+);
+
+/** Cluster-merge judgment for the ascend worker (#30). Same wire
+ *  shape as distillCluster + findSupersedes (SSE, json_object, low
+ *  temperature). Caller in worker/ascend.ts
+ *  decides identity (winner = higher importance) — this function only
+ *  judges whether the two summaries describe the same topic. */
+export const judgeClusterMerge = mnemeFn(
+  "llm.openrouter.merge",
+  async (
+    a: ClusterSummary,
+    b: ClusterSummary,
+  ): Promise<ClusterMergeJudgment> => {
+    if (!env.HAS_OPENROUTER) throw new Error("OPENROUTER_API_KEY not set");
+
+    const userBody = `CLUSTER A\ntitle: ${a.title}\nsummary: ${a.summary}\n\n---\n\nCLUSTER B\ntitle: ${b.title}\nsummary: ${b.summary}`;
+
+    const resp = await fetch(URL, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        model: env.OPENROUTER_DREAM_MODEL,
+        // Same low-creativity setting as supersede — we want
+        // conservative judgment, not invention.
+        temperature: 0.1,
+        max_tokens: 256,
+        stream: true,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: CLUSTER_MERGE_PROMPT },
+          { role: "user", content: userBody },
+        ],
+      }),
+      signal: AbortSignal.timeout(env.OPENROUTER_TIMEOUT_MS),
+    });
+
+    Logger.info("llm.openrouter.merge: response", {
+      status: resp.status,
+      model: env.OPENROUTER_DREAM_MODEL,
+    });
+
+    if (!resp.ok) {
+      const err = cleanErrorBody(await resp.text());
+      throw new Error(
+        `llm.openrouter merge failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`,
+      );
+    }
+
+    const raw = await consumeStream(resp);
+    if (!raw.trim()) throw new Error("llm.openrouter merge: empty response");
+
+    let parsed: { same_topic?: unknown; reason?: unknown };
+    try {
+      parsed = JSON.parse(raw) as { same_topic?: unknown; reason?: unknown };
+    } catch {
+      throw new Error(`llm.openrouter merge: bad JSON: ${raw.slice(0, 200)}`);
+    }
+
+    if (typeof parsed.same_topic !== "boolean") {
+      throw new Error("llm.openrouter merge: missing same_topic");
+    }
+    return {
+      same_topic: parsed.same_topic,
+      reason: typeof parsed.reason === "string" ? parsed.reason : "",
+    };
   },
 );

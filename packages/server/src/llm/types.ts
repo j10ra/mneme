@@ -28,6 +28,19 @@ export type ClusterDistillation = {
   summary: string;
 };
 
+/** Inputs for the cluster-merge judgment used by the ascend worker
+ *  (#30). Two cluster summaries → "are these the same underlying
+ *  topic, or topically adjacent but distinct?" */
+export type ClusterSummary = {
+  title: string;
+  summary: string;
+};
+
+export type ClusterMergeJudgment = {
+  same_topic: boolean;
+  reason: string;
+};
+
 /** Per-pipeline batching/output ceilings the extract worker must respect.
  *  Each provider declares its own values — local stays conservative under
  *  the CF Tunnel 100s no-data window; cloud providers can be much more
@@ -75,6 +88,14 @@ export type LLMProvider = {
   findSupersedes?: (
     candidates: SupersedeCandidate[],
   ) => Promise<SupersedePair[]>;
+  /** Cross-cluster merge judgment for the ascend worker (#30). Like
+   *  `findSupersedes`, only providers we trust to make this call
+   *  implement it (today: openrouter only). Local omits to keep the
+   *  7B/3B path off a high-stakes decision. */
+  judgeClusterMerge?: (
+    a: ClusterSummary,
+    b: ClusterSummary,
+  ) => Promise<ClusterMergeJudgment>;
   extractLimits: ExtractLimits;
   dreamLimits: DreamLimits;
   extractModel: string;

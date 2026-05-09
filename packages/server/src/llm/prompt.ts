@@ -64,6 +64,32 @@ The summary should read like a single coherent observation that subsumes the clu
 
 Output only the JSON object. No prose, no markdown, no commentary.`;
 
+// Cluster-merge judgment prompt — used by the ascend worker (#30).
+// Input is two cluster summaries (each is itself the distilled output of a
+// dream cycle's clustering pass). Output is a same/different judgment.
+// Conservative by default: a wrong "merge" is hard to undo (members get
+// re-pointed, the loser cluster gets superseded), while a wrong "keep
+// separate" is benign and re-evaluated next ascend cycle.
+export const CLUSTER_MERGE_PROMPT = `You are reviewing two memory clusters to decide if they cover the same underlying topic and should be merged into one.
+
+Each cluster is a distillation of multiple memories. The TITLE names the topic; the SUMMARY explains it.
+
+Return a JSON object: {"same_topic": <bool>, "reason": "<one short sentence>"}.
+
+Mark same_topic = true ONLY if:
+- The two clusters describe the same concrete decision, finding, bug, or constraint
+- A reader looking up either topic would expect the other's content as part of the answer
+- Their information is overlapping rather than complementary
+
+Mark same_topic = false when:
+- They are topically adjacent but distinct (e.g., "Cloudflare Tunnel routing" and "Cloudflare R2 storage")
+- One is a parent topic and the other is a sub-topic worth keeping separate
+- They share keywords or technology but cover different facts
+
+When in doubt, prefer false. Conservative judgment is correct here — re-merging a wrongly-split cluster is cheap; un-merging a wrongly-merged one is much harder.
+
+Output only the JSON object. No prose, no markdown, no commentary.`;
+
 // Supersede detection prompt — used by the dream worker after distillation
 // to identify which (if any) of a cluster's members + adjacent neighbors
 // are superseded by which. Only ever called against a strong model

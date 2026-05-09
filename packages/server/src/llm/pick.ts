@@ -33,6 +33,8 @@ import * as local from "./providers/local.ts";
 import * as openrouter from "./providers/openrouter.ts";
 import type {
   ClusterDistillation,
+  ClusterMergeJudgment,
+  ClusterSummary,
   DreamLimits,
   ExtractLimits,
   LLMProvider,
@@ -106,10 +108,11 @@ export type ExtractInstance = {
   extractObservations: (text: string) => Promise<Observation[]>;
 };
 
-// findSupersedes is OPTIONAL: only providers we trust to make this
-// judgement implement it (today: openrouter only). Local providers omit
-// the method entirely; callers do `if (!instance.findSupersedes) return`
-// — a typed presence check, no runtime name comparison required.
+// findSupersedes + judgeClusterMerge are OPTIONAL: only providers we
+// trust to make these judgements implement them (today: openrouter only).
+// Local providers omit the methods entirely; callers do
+// `if (!instance.findSupersedes) return` — a typed presence check, no
+// runtime name comparison required.
 export type DreamInstance = {
   name: ProviderName;
   limits: DreamLimits;
@@ -118,6 +121,10 @@ export type DreamInstance = {
   findSupersedes?: (
     candidates: SupersedeCandidate[],
   ) => Promise<SupersedePair[]>;
+  judgeClusterMerge?: (
+    a: ClusterSummary,
+    b: ClusterSummary,
+  ) => Promise<ClusterMergeJudgment>;
 };
 
 /** Snapshot of every per-provider breaker. Used by /api/_ops/status so the
@@ -153,6 +160,9 @@ export function pickDream(): DreamInstance {
   };
   if (p.findSupersedes) {
     base.findSupersedes = reportingCall(name, p.findSupersedes);
+  }
+  if (p.judgeClusterMerge) {
+    base.judgeClusterMerge = reportingCall(name, p.judgeClusterMerge);
   }
   return base;
 }

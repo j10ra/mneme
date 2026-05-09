@@ -1,0 +1,351 @@
+// Ascend — third worker in the brain trio (nap → dream → ascend).
+// Cross-cluster consolidator (issue #30).
+//
+// Where nap maintains and dream synthesises, ascend rises above the
+// per-cluster view to stitch the global graph: cluster pairs that
+// turned out to be the same topic get merged, and contradicting facts
+// that span different clusters get reconciled into supersede chains.
+//
+// Gated by MNEME_ASCEND_ENABLED (default off). The worker is new and
+// the operator opts in by flipping the env var and restarting. When
+// disabled, register() is skipped entirely so the row never lands in
+// _ops.worker_runs and /mneme:status stays clean.
+//
+// The per-machine daemon dream forms clusters from one 8h window's worth
+// of new memories at a time and locks each member to its cluster via
+// meta.in_cluster. That works well for stable cluster identity but
+// leaves two real correctness gaps:
+//   1. Two cycles can form two clusters about the same topic (fresh
+//      memories, formed at different times).
+//   2. Supersede only fires within a cluster's members + tight cosine
+//      neighbours. A newer fact in Cluster B that replaces an older
+//      fact in Cluster A is invisible to the daemon — it never sees
+//      them together.
+//
+// This worker runs weekly (Sunday cron), takes a global view of the
+// cluster graph, and does two things:
+//
+//   Operation 1 — Cluster merge.
+//     Find pairs of cluster summaries at cosine < ASCEND_MERGE_DISTANCE.
+//     Ask Sonnet "are these the same topic?". If yes, merge: keep the
+//     higher-importance cluster as canonical, append the loser's
+//     member_ids onto the winner's, mark the loser as superseded_by
+//     the winner, and re-point all loser members' meta.in_cluster
+//     from loser → winner.
+//
+//     Identity rule: PRESERVE QUALITY SIGNAL. Higher importance wins
+//     over older tenure. A fresher cluster that turned out to matter
+//     more displaces an established one that didn't.
+//
+//   Operation 2 — Cross-cluster supersede.
+//     Pull memory pairs that span different in_cluster values, are
+//     cosine-near, and are age-gapped. Feed batches to Sonnet's
+//     existing findSupersedes prompt; validate returned pairs against
+//     the candidate set + chronology; write meta.superseded_by.
+//
+// Conservative refinement (decision baked into #30): we DO NOT
+// re-evaluate borderline cluster memberships based on cosine drift.
+// The follow-through update of meta.in_cluster during Operation 1
+// is the only re-classification we do. Aligns with how sleep
+// consolidation works in biology — strengthens existing traces and
+// resolves contradictions, doesn't dissolve+reform clusters.
+//
+// Idempotency: every write is a no-op if the target value is already
+// what we'd write (filters on superseded_by IS NULL, in_cluster
+// rewrites are a deterministic function of the merge graph). Re-
+// running the cycle on the same data produces no additional changes.
+
+import { Logger, mnemeFn } from "@mneme/core";
+import {
+  ASCEND_MAX_MERGE_PAIRS,
+  ASCEND_MAX_SUPERSEDE_CANDIDATES,
+  ASCEND_MERGE_DISTANCE,
+  SUPERSEDE_LLM_ADJACENT_COSINE_MAX,
+  SUPERSEDE_LLM_BATCH_MAX_MEMBERS,
+} from "../infra/config.ts";
+import { sql } from "../infra/db.ts";
+import { pickDream } from "../llm/pick.ts";
+import type { Kind, SupersedeCandidate, SupersedePair } from "../llm/types.ts";
+
+export type AscendResult = {
+  merge_pairs_evaluated: number;
+  merges_applied: number;
+  supersede_batches: number;
+  supersedes_applied: number;
+};
+
+type MergePairRow = { a_id: string; b_id: string };
+
+type ClusterRow = {
+  id: string;
+  title: string;
+  summary: string;
+  importance: number;
+  member_ids: string[];
+};
+
+async function findMergePairs(): Promise<MergePairRow[]> {
+  // (a.id < b.id) bound dedups (A,B) vs (B,A). repo IS NOT DISTINCT
+  // FROM matches NULL-to-NULL (two no-repo clusters), unlike =. Excludes
+  // already-superseded clusters so we don't keep proposing the same
+  // merges every cycle.
+  return (await sql<MergePairRow[]>`
+    SELECT a.id::text AS a_id, b.id::text AS b_id
+    FROM memories a
+    JOIN memories b
+      ON b.id > a.id
+        AND b.kind = 'cluster' AND b.archived_at IS NULL
+        AND b.embedding IS NOT NULL
+        AND b.repo IS NOT DISTINCT FROM a.repo
+        AND (b.meta->>'superseded_by') IS NULL
+        AND a.embedding <=> b.embedding < ${ASCEND_MERGE_DISTANCE}
+    WHERE a.kind = 'cluster' AND a.archived_at IS NULL
+      AND a.embedding IS NOT NULL
+      AND (a.meta->>'superseded_by') IS NULL
+    ORDER BY a.embedding <=> b.embedding ASC
+    LIMIT ${ASCEND_MAX_MERGE_PAIRS}
+  `) as MergePairRow[];
+}
+
+async function loadCluster(id: string): Promise<ClusterRow | null> {
+  const rows = (await sql<ClusterRow[]>`
+    SELECT
+      id::text AS id,
+      COALESCE(meta->>'cluster_title', '') AS title,
+      content AS summary,
+      importance::real AS importance,
+      COALESCE(
+        ARRAY(SELECT jsonb_array_elements_text(meta->'member_ids')),
+        ARRAY[]::text[]
+      ) AS member_ids
+    FROM memories
+    WHERE id = ${id} AND kind = 'cluster' AND archived_at IS NULL
+    LIMIT 1
+  `) as ClusterRow[];
+  return rows[0] ?? null;
+}
+
+async function applyMerge(winner: ClusterRow, loser: ClusterRow): Promise<void> {
+  // Union member_ids on the winner. Mark loser superseded by winner.
+  // Re-point every memory whose in_cluster was the loser to the winner.
+  const merged = Array.from(new Set([...winner.member_ids, ...loser.member_ids]));
+  await sql.begin(async (tx) => {
+    await tx`
+      UPDATE memories
+      SET meta = jsonb_set(meta, '{member_ids}', ${sql.json(merged) as never})
+      WHERE id = ${winner.id}
+    `;
+    await tx`
+      UPDATE memories
+      SET meta = meta || jsonb_build_object('superseded_by', ${winner.id}::text)
+      WHERE id = ${loser.id}
+        AND (meta->>'superseded_by') IS NULL
+    `;
+    await tx`
+      UPDATE memories
+      SET meta = meta || jsonb_build_object('in_cluster', ${winner.id}::text)
+      WHERE (meta->>'in_cluster') = ${loser.id}
+    `;
+  });
+}
+
+type CrossClusterCandidateRow = {
+  id: string;
+  kind: Kind;
+  content: string;
+  created_at: Date;
+};
+
+async function findCrossClusterSupersedeCandidates(): Promise<
+  CrossClusterCandidateRow[]
+> {
+  // Pull memories that have at least one cosine-near neighbour in a
+  // DIFFERENT cluster. Returns the union of both sides — the LLM scans
+  // the batch for actual supersede pairs (existing prompt expects a
+  // flat candidate list, not pre-paired tuples). Caller validates each
+  // returned pair against the candidate set + chronology.
+  return (await sql<CrossClusterCandidateRow[]>`
+    SELECT DISTINCT
+      a.id::text AS id,
+      a.kind::text AS kind,
+      a.content,
+      a.created_at
+    FROM memories a
+    JOIN memories b
+      ON b.archived_at IS NULL
+        AND b.embedding IS NOT NULL
+        AND b.kind <> 'cluster'
+        AND b.repo IS NOT DISTINCT FROM a.repo
+        AND (b.meta->>'in_cluster') IS NOT NULL
+        AND (a.meta->>'in_cluster') <> (b.meta->>'in_cluster')
+        AND (b.meta->>'superseded_by') IS NULL
+        AND NOT COALESCE((b.meta->>'pinned')::boolean, false)
+        AND a.embedding <=> b.embedding < ${SUPERSEDE_LLM_ADJACENT_COSINE_MAX}
+    WHERE a.archived_at IS NULL
+      AND a.embedding IS NOT NULL
+      AND a.kind <> 'cluster'
+      AND (a.meta->>'in_cluster') IS NOT NULL
+      AND (a.meta->>'superseded_by') IS NULL
+      AND NOT COALESCE((a.meta->>'pinned')::boolean, false)
+    LIMIT ${ASCEND_MAX_SUPERSEDE_CANDIDATES}
+  `) as CrossClusterCandidateRow[];
+}
+
+async function applySupersede(oldId: string, newId: string): Promise<boolean> {
+  const r = await sql`
+    UPDATE memories
+    SET meta = meta || jsonb_build_object('superseded_by', ${newId}::text)
+    WHERE id = ${oldId}
+      AND (meta->>'superseded_by') IS NULL
+  `;
+  return r.count > 0;
+}
+
+function chunk<T>(arr: T[], n: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+export const runAscendOnce = mnemeFn(
+  "worker.ascend.once",
+  async (): Promise<AscendResult> => {
+    const dr = pickDream();
+    if (!dr.judgeClusterMerge || !dr.findSupersedes) {
+      Logger.info(
+        "ascend: skipped (provider lacks judgeClusterMerge or findSupersedes)",
+        { provider: dr.name },
+      );
+      return {
+        merge_pairs_evaluated: 0,
+        merges_applied: 0,
+        supersede_batches: 0,
+        supersedes_applied: 0,
+      };
+    }
+    const judgeClusterMerge = dr.judgeClusterMerge;
+    const findSupersedes = dr.findSupersedes;
+
+    // ─── Operation 1: cluster merge ─────────────────────────────────
+    const mergePairs = await findMergePairs();
+    let mergesApplied = 0;
+    for (const pair of mergePairs) {
+      const a = await loadCluster(pair.a_id);
+      const b = await loadCluster(pair.b_id);
+      if (!a || !b) continue;
+
+      let judgment: Awaited<ReturnType<typeof judgeClusterMerge>>;
+      try {
+        judgment = await judgeClusterMerge(
+          { title: a.title, summary: a.summary },
+          { title: b.title, summary: b.summary },
+        );
+      } catch (e) {
+        Logger.warn("ascend: merge judgment failed", e, {
+          a_id: a.id,
+          b_id: b.id,
+        });
+        continue;
+      }
+
+      if (!judgment.same_topic) {
+        Logger.debug("ascend: keep_separate", {
+          a_id: a.id,
+          b_id: b.id,
+          reason: judgment.reason,
+        });
+        continue;
+      }
+
+      // Preserve quality signal. Higher importance wins; tie goes to
+      // the older cluster id (lexically smaller UUID is the older row
+      // here because gen_random_uuid is monotonic-ish under load —
+      // but a strict tiebreak by created_at would need an extra
+      // SELECT, and importance ties at the same imp value are rare
+      // enough that lexical id is acceptable noise).
+      const winner = a.importance >= b.importance ? a : b;
+      const loser = winner === a ? b : a;
+      try {
+        await applyMerge(winner, loser);
+        mergesApplied++;
+        Logger.info("ascend: clusters merged", {
+          winner: winner.id,
+          loser: loser.id,
+          winner_imp: winner.importance,
+          loser_imp: loser.importance,
+          reason: judgment.reason,
+        });
+      } catch (e) {
+        Logger.warn("ascend: merge apply failed", e, {
+          winner: winner.id,
+          loser: loser.id,
+        });
+      }
+    }
+
+    // ─── Operation 2: cross-cluster supersede ──────────────────────
+    const candidates = await findCrossClusterSupersedeCandidates();
+    let supersedesApplied = 0;
+    let batchCount = 0;
+    for (const batch of chunk(candidates, SUPERSEDE_LLM_BATCH_MAX_MEMBERS)) {
+      batchCount++;
+      const supersedeBatch: SupersedeCandidate[] = batch.map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        content: row.content,
+        created_at: row.created_at.toISOString(),
+      }));
+      const idSet = new Set(supersedeBatch.map((c) => c.id));
+
+      let pairs: SupersedePair[];
+      try {
+        pairs = await findSupersedes(supersedeBatch);
+      } catch (e) {
+        Logger.warn("ascend: supersede call failed", e, {
+          batch: batchCount,
+        });
+        continue;
+      }
+
+      for (const pair of pairs) {
+        // Validate: both ids in the batch we sent (no hallucinated ids).
+        if (!idSet.has(pair.old_id) || !idSet.has(pair.new_id)) {
+          Logger.warn("ascend: supersede pair invalid (id not in batch)", {
+            pair,
+          });
+          continue;
+        }
+        // Validate: chronology. Same check the daemon dream worker does.
+        const oldRow = supersedeBatch.find((c) => c.id === pair.old_id)!;
+        const newRow = supersedeBatch.find((c) => c.id === pair.new_id)!;
+        if (
+          new Date(oldRow.created_at).getTime() >=
+          new Date(newRow.created_at).getTime()
+        ) {
+          Logger.warn("ascend: supersede pair invalid (chronology)", {
+            pair,
+          });
+          continue;
+        }
+        const written = await applySupersede(pair.old_id, pair.new_id);
+        if (written) {
+          supersedesApplied++;
+          Logger.info("ascend: cross-cluster supersede written", {
+            old_id: pair.old_id,
+            new_id: pair.new_id,
+            reason: pair.reason,
+          });
+        }
+      }
+    }
+
+    const result: AscendResult = {
+      merge_pairs_evaluated: mergePairs.length,
+      merges_applied: mergesApplied,
+      supersede_batches: batchCount,
+      supersedes_applied: supersedesApplied,
+    };
+    Logger.info("ascend: done", result);
+    return result;
+  },
+);
