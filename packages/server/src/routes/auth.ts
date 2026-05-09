@@ -240,7 +240,11 @@ export function mountAuthRoutes(app: Hono): void {
   app.get(
     "/api/auth/machines",
     mnemeRoute("api.auth.machines"),
-    requireAuth("admin"),
+    // Read scope (not admin): listing isn't an admin action. The
+    // operator-only ops are register + revoke, which keep `admin`
+    // below. Per-machine bearers can list to power /mneme:machines
+    // and the dashboard's machines panel.
+    requireAuth("read"),
     async (c) => {
       const rows = await sql<
         {

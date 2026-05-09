@@ -56,7 +56,10 @@ export function mountOpsRoutes(app: Hono): void {
   app.get(
     "/api/_ops/status",
     mnemeRoute("api._ops.status"),
-    requireAuth("admin"),
+    // Read scope (not admin): the status snapshot is operational
+    // health, not a privileged action. Per-machine tokens can read it
+    // so the dashboard + slash commands work without holding admin.
+    requireAuth("read"),
     async (c) => {
       const now = Date.now();
 

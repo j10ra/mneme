@@ -500,15 +500,14 @@ function fmtAge(ms: number | null): string {
 }
 
 /** Status: GET /api/_ops/status, render as compact markdown.
- *  Admin password resolved via env → encrypted config → stdin ladder
- *  (resolveAdminPassword). Most operator machines have it cached after
- *  /mneme:setup; the stdin rung is the legacy fallback. */
+ *  Uses the per-machine bearer (cfg.auth.key). The endpoint moved from
+ *  `admin` to `read` scope as part of the dashboard prep — operational
+ *  health isn't a privileged read, so any registered machine can fetch
+ *  it without holding the admin password. */
 async function status(): Promise<void> {
   const cfg = loadConfig();
-  const adminPassword = await resolveAdminPassword(cfg);
-  if (!adminPassword) throw new Error("admin password required");
   const resp = await fetch(serverUrl(cfg, "/api/_ops/status"), {
-    headers: { Authorization: `Bearer ${adminPassword}` },
+    headers: { Authorization: `Bearer ${cfg.auth.key}` },
   });
   if (!resp.ok) {
     throw new Error(
@@ -586,14 +585,13 @@ type MachineRow = {
   revoked_at: string | null;
 };
 
-/** List registered machines. Admin password resolved via env →
- *  encrypted config → stdin ladder. */
+/** List registered machines. Uses the per-machine bearer; the endpoint
+ *  moved from `admin` to `read` scope so listing works on any machine
+ *  with a config, no admin password required. */
 async function machines(): Promise<void> {
   const cfg = loadConfig();
-  const adminPassword = await resolveAdminPassword(cfg);
-  if (!adminPassword) throw new Error("admin password required");
   const resp = await fetch(serverUrl(cfg, "/api/auth/machines"), {
-    headers: { Authorization: `Bearer ${adminPassword}` },
+    headers: { Authorization: `Bearer ${cfg.auth.key}` },
   });
   if (!resp.ok) {
     throw new Error(
