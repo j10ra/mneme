@@ -5,7 +5,7 @@
 //   - nap       (every 6h): decay importance, shadow-mark exact dupes,
 //                link semantically related memories. Paginated via
 //                meta.last_napped_at round-robin (cap NAP_PER_CYCLE_CAP).
-//   - ascend    (every 7d, gated by MNEME_ASCEND_ENABLED): global
+//   - digest    (every 7d, gated by MNEME_DIGEST_ENABLED): global
 //                cross-cluster operations the per-machine daemon dream
 //                can't do — merge duplicate clusters, run cross-cluster
 //                supersede. Sonnet-grade via openrouter, conservative
@@ -19,26 +19,26 @@
 
 import { Logger } from "@mneme/core";
 import { env } from "../infra/env.ts";
-import { runAscendOnce } from "./ascend.ts";
+import { runDigestOnce } from "./digest.ts";
 import { runKeepaliveOnce } from "./keepalive.ts";
 import { runNapOnce } from "./nap.ts";
 import { register, startScheduler } from "./scheduler.ts";
 
 export function startWorker(): void {
   const jobs = ["nap", "keepalive"];
-  if (env.ASCEND_ENABLED) jobs.splice(1, 0, "ascend");
+  if (env.DIGEST_ENABLED) jobs.splice(1, 0, "digest");
   Logger.info(`worker: starting scheduler-driven jobs (${jobs.join(", ")})`);
 
   register({ name: "nap", scheduleMs: 6 * 60 * 60 * 1000, run: runNapOnce });
 
-  if (env.ASCEND_ENABLED) {
+  if (env.DIGEST_ENABLED) {
     register({
-      name: "ascend",
+      name: "digest",
       scheduleMs: 7 * 24 * 60 * 60 * 1000,
-      run: runAscendOnce,
+      run: runDigestOnce,
     });
   } else {
-    Logger.info("worker: ascend disabled (set MNEME_ASCEND_ENABLED=1 to opt in)");
+    Logger.info("worker: digest disabled (set MNEME_DIGEST_ENABLED=1 to opt in)");
   }
 
   register({

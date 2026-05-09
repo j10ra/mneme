@@ -64,12 +64,12 @@ The summary should read like a single coherent observation that subsumes the clu
 
 Output only the JSON object. No prose, no markdown, no commentary.`;
 
-// Cluster-merge judgment prompt — used by the ascend worker (#30).
+// Cluster-merge judgment prompt — used by the digest worker (#30).
 // Input is two cluster summaries (each is itself the distilled output of a
 // dream cycle's clustering pass). Output is a same/different judgment.
 // Conservative by default: a wrong "merge" is hard to undo (members get
 // re-pointed, the loser cluster gets superseded), while a wrong "keep
-// separate" is benign and re-evaluated next ascend cycle.
+// separate" is benign and re-evaluated next digest cycle.
 export const CLUSTER_MERGE_PROMPT = `You are reviewing two memory clusters to decide if they cover the same underlying topic and should be merged into one.
 
 Each cluster is a distillation of multiple memories. The TITLE names the topic; the SUMMARY explains it.

@@ -54,11 +54,11 @@ const Schema = z.object({
 
   // ── Worker toggles ────────────────────────────────────────────────
   // Boolean envs as "1" / "0" strings (Railway convention). Default
-  // for ascend is "0" (off) — the worker is new (#30) and the operator
+  // for digest is "0" (off) — the worker is new (#30) and the operator
   // explicitly opts in by flipping this and restarting. Flip to "1"
   // when ready to let the weekly cluster-merge + cross-cluster
   // supersede pass run against the live corpus.
-  MNEME_ASCEND_ENABLED: z.enum(["0", "1"]).default("0"),
+  MNEME_DIGEST_ENABLED: z.enum(["0", "1"]).default("0"),
 
   // ── Embedder (local TEI via compute.jalipalo.dev) ─────────────────
   EMBEDDER_PROVIDER: z.string().default("local"),
@@ -114,7 +114,7 @@ export const env = {
   HAS_OPENROUTER: !!parsed.OPENROUTER_API_KEY,
   IS_PRODUCTION: parsed.NODE_ENV === "production",
   // Worker toggles as bools (parsed from "0"/"1" strings)
-  ASCEND_ENABLED: parsed.MNEME_ASCEND_ENABLED === "1",
+  DIGEST_ENABLED: parsed.MNEME_DIGEST_ENABLED === "1",
 } as const;
 
 export type Env = typeof env;

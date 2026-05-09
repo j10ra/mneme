@@ -28,7 +28,7 @@ export type ClusterDistillation = {
   summary: string;
 };
 
-/** Inputs for the cluster-merge judgment used by the ascend worker
+/** Inputs for the cluster-merge judgment used by the digest worker
  *  (#30). Two cluster summaries → "are these the same underlying
  *  topic, or topically adjacent but distinct?" */
 export type ClusterSummary = {
@@ -88,7 +88,7 @@ export type LLMProvider = {
   findSupersedes?: (
     candidates: SupersedeCandidate[],
   ) => Promise<SupersedePair[]>;
-  /** Cross-cluster merge judgment for the ascend worker (#30). Like
+  /** Cross-cluster merge judgment for the digest worker (#30). Like
    *  `findSupersedes`, only providers we trust to make this call
    *  implement it (today: openrouter only). Local omits to keep the
    *  7B/3B path off a high-stakes decision. */

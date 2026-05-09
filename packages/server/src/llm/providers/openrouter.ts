@@ -311,9 +311,9 @@ export const findSupersedes = mnemeFn(
   },
 );
 
-/** Cluster-merge judgment for the ascend worker (#30). Same wire
+/** Cluster-merge judgment for the digest worker (#30). Same wire
  *  shape as distillCluster + findSupersedes (SSE, json_object, low
- *  temperature). Caller in worker/ascend.ts
+ *  temperature). Caller in worker/digest.ts
  *  decides identity (winner = higher importance) — this function only
  *  judges whether the two summaries describe the same topic. */
 export const judgeClusterMerge = mnemeFn(

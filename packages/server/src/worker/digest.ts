@@ -1,12 +1,12 @@
-// Ascend — third worker in the brain trio (nap → dream → ascend).
+// Digest — third worker in the brain trio (nap → dream → digest).
 // Cross-cluster consolidator (issue #30).
 //
-// Where nap maintains and dream synthesises, ascend rises above the
+// Where nap maintains and dream synthesises, digest rises above the
 // per-cluster view to stitch the global graph: cluster pairs that
 // turned out to be the same topic get merged, and contradicting facts
 // that span different clusters get reconciled into supersede chains.
 //
-// Gated by MNEME_ASCEND_ENABLED (default off). The worker is new and
+// Gated by MNEME_DIGEST_ENABLED (default off). The worker is new and
 // the operator opts in by flipping the env var and restarting. When
 // disabled, register() is skipped entirely so the row never lands in
 // _ops.worker_runs and /mneme:status stays clean.
@@ -26,7 +26,7 @@
 // cluster graph, and does two things:
 //
 //   Operation 1 — Cluster merge.
-//     Find pairs of cluster summaries at cosine < ASCEND_MERGE_DISTANCE.
+//     Find pairs of cluster summaries at cosine < DIGEST_MERGE_DISTANCE.
 //     Ask Sonnet "are these the same topic?". If yes, merge: keep the
 //     higher-importance cluster as canonical, append the loser's
 //     member_ids onto the winner's, mark the loser as superseded_by
@@ -57,9 +57,9 @@
 
 import { Logger, mnemeFn } from "@mneme/core";
 import {
-  ASCEND_MAX_MERGE_PAIRS,
-  ASCEND_MAX_SUPERSEDE_CANDIDATES,
-  ASCEND_MERGE_DISTANCE,
+  DIGEST_MAX_MERGE_PAIRS,
+  DIGEST_MAX_SUPERSEDE_CANDIDATES,
+  DIGEST_MERGE_DISTANCE,
   SUPERSEDE_LLM_ADJACENT_COSINE_MAX,
   SUPERSEDE_LLM_BATCH_MAX_MEMBERS,
 } from "../infra/config.ts";
@@ -67,7 +67,7 @@ import { sql } from "../infra/db.ts";
 import { pickDream } from "../llm/pick.ts";
 import type { Kind, SupersedeCandidate, SupersedePair } from "../llm/types.ts";
 
-export type AscendResult = {
+export type DigestResult = {
   merge_pairs_evaluated: number;
   merges_applied: number;
   supersede_batches: number;
@@ -98,12 +98,12 @@ async function findMergePairs(): Promise<MergePairRow[]> {
         AND b.embedding IS NOT NULL
         AND b.repo IS NOT DISTINCT FROM a.repo
         AND (b.meta->>'superseded_by') IS NULL
-        AND a.embedding <=> b.embedding < ${ASCEND_MERGE_DISTANCE}
+        AND a.embedding <=> b.embedding < ${DIGEST_MERGE_DISTANCE}
     WHERE a.kind = 'cluster' AND a.archived_at IS NULL
       AND a.embedding IS NOT NULL
       AND (a.meta->>'superseded_by') IS NULL
     ORDER BY a.embedding <=> b.embedding ASC
-    LIMIT ${ASCEND_MAX_MERGE_PAIRS}
+    LIMIT ${DIGEST_MAX_MERGE_PAIRS}
   `) as MergePairRow[];
 }
 
@@ -187,7 +187,7 @@ async function findCrossClusterSupersedeCandidates(): Promise<
       AND (a.meta->>'in_cluster') IS NOT NULL
       AND (a.meta->>'superseded_by') IS NULL
       AND NOT COALESCE((a.meta->>'pinned')::boolean, false)
-    LIMIT ${ASCEND_MAX_SUPERSEDE_CANDIDATES}
+    LIMIT ${DIGEST_MAX_SUPERSEDE_CANDIDATES}
   `) as CrossClusterCandidateRow[];
 }
 
@@ -207,13 +207,13 @@ function chunk<T>(arr: T[], n: number): T[][] {
   return out;
 }
 
-export const runAscendOnce = mnemeFn(
-  "worker.ascend.once",
-  async (): Promise<AscendResult> => {
+export const runDigestOnce = mnemeFn(
+  "worker.digest.once",
+  async (): Promise<DigestResult> => {
     const dr = pickDream();
     if (!dr.judgeClusterMerge || !dr.findSupersedes) {
       Logger.info(
-        "ascend: skipped (provider lacks judgeClusterMerge or findSupersedes)",
+        "digest: skipped (provider lacks judgeClusterMerge or findSupersedes)",
         { provider: dr.name },
       );
       return {
@@ -241,7 +241,7 @@ export const runAscendOnce = mnemeFn(
           { title: b.title, summary: b.summary },
         );
       } catch (e) {
-        Logger.warn("ascend: merge judgment failed", e, {
+        Logger.warn("digest: merge judgment failed", e, {
           a_id: a.id,
           b_id: b.id,
         });
@@ -249,7 +249,7 @@ export const runAscendOnce = mnemeFn(
       }
 
       if (!judgment.same_topic) {
-        Logger.debug("ascend: keep_separate", {
+        Logger.debug("digest: keep_separate", {
           a_id: a.id,
           b_id: b.id,
           reason: judgment.reason,
@@ -268,7 +268,7 @@ export const runAscendOnce = mnemeFn(
       try {
         await applyMerge(winner, loser);
         mergesApplied++;
-        Logger.info("ascend: clusters merged", {
+        Logger.info("digest: clusters merged", {
           winner: winner.id,
           loser: loser.id,
           winner_imp: winner.importance,
@@ -276,7 +276,7 @@ export const runAscendOnce = mnemeFn(
           reason: judgment.reason,
         });
       } catch (e) {
-        Logger.warn("ascend: merge apply failed", e, {
+        Logger.warn("digest: merge apply failed", e, {
           winner: winner.id,
           loser: loser.id,
         });
@@ -301,7 +301,7 @@ export const runAscendOnce = mnemeFn(
       try {
         pairs = await findSupersedes(supersedeBatch);
       } catch (e) {
-        Logger.warn("ascend: supersede call failed", e, {
+        Logger.warn("digest: supersede call failed", e, {
           batch: batchCount,
         });
         continue;
@@ -310,7 +310,7 @@ export const runAscendOnce = mnemeFn(
       for (const pair of pairs) {
         // Validate: both ids in the batch we sent (no hallucinated ids).
         if (!idSet.has(pair.old_id) || !idSet.has(pair.new_id)) {
-          Logger.warn("ascend: supersede pair invalid (id not in batch)", {
+          Logger.warn("digest: supersede pair invalid (id not in batch)", {
             pair,
           });
           continue;
@@ -322,7 +322,7 @@ export const runAscendOnce = mnemeFn(
           new Date(oldRow.created_at).getTime() >=
           new Date(newRow.created_at).getTime()
         ) {
-          Logger.warn("ascend: supersede pair invalid (chronology)", {
+          Logger.warn("digest: supersede pair invalid (chronology)", {
             pair,
           });
           continue;
@@ -330,7 +330,7 @@ export const runAscendOnce = mnemeFn(
         const written = await applySupersede(pair.old_id, pair.new_id);
         if (written) {
           supersedesApplied++;
-          Logger.info("ascend: cross-cluster supersede written", {
+          Logger.info("digest: cross-cluster supersede written", {
             old_id: pair.old_id,
             new_id: pair.new_id,
             reason: pair.reason,
@@ -339,13 +339,13 @@ export const runAscendOnce = mnemeFn(
       }
     }
 
-    const result: AscendResult = {
+    const result: DigestResult = {
       merge_pairs_evaluated: mergePairs.length,
       merges_applied: mergesApplied,
       supersede_batches: batchCount,
       supersedes_applied: supersedesApplied,
     };
-    Logger.info("ascend: done", result);
+    Logger.info("digest: done", result);
     return result;
   },
 );
