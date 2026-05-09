@@ -118,6 +118,10 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   const claudeEnv = cfg.claudePath
     ? `\n    <key>CLAUDE_EXECUTABLE_PATH</key>\n    <string>${cfg.claudePath}</string>`
     : "";
+  // MNEME_PLUGIN_ROOT lets the dashboard route resolve <plugin-root>/
+  // dashboard/dist/ deterministically, regardless of how Bun bundles
+  // import.meta.url. cfg.pluginRoot is already known at install time.
+  const pluginRootEnv = `\n    <key>MNEME_PLUGIN_ROOT</key>\n    <string>${cfg.pluginRoot}</string>`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -141,7 +145,7 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>${homedir()}</string>${claudeEnv}
+    <string>${homedir()}</string>${pluginRootEnv}${claudeEnv}
   </dict>
 </dict>
 </plist>
@@ -158,6 +162,9 @@ export function buildSystemdUnit(cfg: DaemonInstallConfig): string {
   const claudeLine = cfg.claudePath
     ? `\nEnvironment=CLAUDE_EXECUTABLE_PATH=${cfg.claudePath}`
     : "";
+  // MNEME_PLUGIN_ROOT lets the dashboard route resolve dist/ paths
+  // deterministically across Bun bundle / dev source layouts.
+  const pluginRootLine = `\nEnvironment=MNEME_PLUGIN_ROOT=${cfg.pluginRoot}`;
   return `[Unit]
 Description=Mneme daemon (per-machine extract + push)
 After=network-online.target
@@ -168,7 +175,7 @@ Type=simple
 ExecStart=${cfg.bunPath} run ${daemonEntry}
 Restart=on-failure
 RestartSec=5
-Environment=HOME=${homedir()}${claudeLine}
+Environment=HOME=${homedir()}${pluginRootLine}${claudeLine}
 
 [Install]
 WantedBy=default.target

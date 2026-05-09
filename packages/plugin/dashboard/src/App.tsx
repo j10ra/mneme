@@ -1,0 +1,53 @@
+// Dashboard shell. CSS grid: content on the left (status, machines,
+// memories — to be added), portrait logs sidebar on the right.
+//
+// Min-width 1024px enforced via the same media query that drives the
+// "open on a wider screen" notice — below that we drop the grid and
+// show the notice instead. Single page, no internal routing.
+
+import { StatusPanel } from "./components/StatusPanel.tsx";
+
+export function App() {
+  return (
+    <div className="min-h-screen">
+      {/* Width gate: below 1024px, show the notice instead of the grid. */}
+      <div className="block min-[1024px]:hidden p-8">
+        <div className="rounded-lg border border-border bg-card p-6 text-card-foreground">
+          <h1 className="text-lg font-semibold">Mneme dashboard</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            This dashboard is desktop-only (≥1024px). On smaller screens,
+            use the slash commands (<code>/mneme:status</code>,
+            <code>/mneme:recall</code>, …) or open on a wider screen.
+          </p>
+        </div>
+      </div>
+
+      <div className="hidden min-[1024px]:grid min-h-screen [grid-template-columns:1fr_360px]">
+        <main className="border-r border-border p-6 space-y-6 overflow-y-auto">
+          <header className="flex items-center justify-between">
+            <h1 className="text-xl font-semibold tracking-tight">Mneme dashboard</h1>
+            <span className="text-xs text-muted-foreground">
+              loopback · {window.location.host}
+            </span>
+          </header>
+
+          <StatusPanel />
+
+          {/* Machines, memories, graph panels land here as they're built. */}
+        </main>
+
+        <aside className="overflow-y-auto bg-muted/30">
+          <div className="sticky top-0 border-b border-border bg-muted/80 backdrop-blur p-3">
+            <h2 className="text-sm font-medium">Logs</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              live tail · daemon + server (coming soon)
+            </p>
+          </div>
+          <div className="p-3 text-xs text-muted-foreground">
+            Logs panel placeholder — SSE wiring lands in a follow-up.
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}

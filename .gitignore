@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .env
+# Dashboard dist is gitignored locally but committed by CI via
+# .github/workflows/build-dashboard.yml (which uses `git add -f`)
+# so plugin distribution always carries the latest pre-built assets.
 .env.local
 .env.*.local
 *.log

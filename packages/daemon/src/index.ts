@@ -29,6 +29,7 @@ import { createDreamOutbox } from "./dream-outbox.ts";
 import { disposeIfIdle, embedBatch } from "./embed.ts";
 import { createOutbox } from "./outbox.ts";
 import { mountCaptureRoute } from "./routes/capture.ts";
+import { mountDashboardRoutes } from "./routes/dashboard.ts";
 import { mountDreamRoute } from "./routes/dream.ts";
 import { mountEmbedRoute } from "./routes/embed.ts";
 import { mountOpsRoutes } from "./routes/ops.ts";
@@ -228,6 +229,7 @@ export async function startDaemon(): Promise<void> {
   mountCaptureRoute(app, runtime);
   mountEmbedRoute(app);
   mountDreamRoute(app, runDream);
+  mountDashboardRoutes(app);
 
   Bun.serve({
     port: config.daemon_port,
