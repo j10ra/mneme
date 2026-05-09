@@ -9,6 +9,9 @@ on:
       - 'packages/plugin/dashboard/package.json'
       - 'packages/plugin/dashboard/tsconfig.json'
       - '.github/workflows/build-dashboard.yml'
+  # Manual trigger via `gh workflow run build-dashboard`. Useful to
+  # force a rebuild after editing dist-shaped non-source bits.
+  workflow_dispatch:
 
 # Allow this workflow to push the rebuilt dist/ back to main.
 permissions:
