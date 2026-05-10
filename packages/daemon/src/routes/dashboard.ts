@@ -125,24 +125,49 @@ export function mountDashboardRoutes(app: Hono): void {
   app.get(
     "/dashboard/api/server-logs",
     mnemeRoute("daemon.dashboard.server_logs"),
+    forwardQuery("/api/_ops/logs", "dashboard.server_logs"),
+  );
+
+  // ── Memories panel proxies (read-scoped on the server side) ──────
+  app.get(
+    "/dashboard/api/memories",
+    mnemeRoute("daemon.dashboard.memories"),
+    forwardQuery("/api/_ops/memories", "dashboard.memories"),
+  );
+  app.get(
+    "/dashboard/api/memories/:id/related",
+    mnemeRoute("daemon.dashboard.memories.related"),
     async (c) => {
-      const cfg = await readDaemonConfig();
-      if (!cfg) return c.json({ error: "config not loaded" }, 503);
-      const qs = new URL(c.req.url).search;
-      try {
-        const resp = await fetch(`${cfg.serverUrl}/api/_ops/logs${qs}`, {
-          headers: { Authorization: `Bearer ${cfg.token}` },
-        });
-        const body = await resp.text();
-        return c.body(body, resp.status as 200, {
-          "content-type":
-            resp.headers.get("content-type") ?? "application/json",
-        });
-      } catch (err) {
-        Logger.warn("dashboard.server_logs: upstream fetch failed", err);
-        return c.json({ error: "upstream unavailable" }, 502);
-      }
+      const id = c.req.param("id");
+      return forwardPath(`/api/_ops/memories/${id}/related`, "dashboard.memories.related")(c);
     },
+  );
+  app.get(
+    "/dashboard/api/memories/:id/supersede-chain",
+    mnemeRoute("daemon.dashboard.memories.supersede_chain"),
+    async (c) => {
+      const id = c.req.param("id");
+      return forwardPath(
+        `/api/_ops/memories/${id}/supersede-chain`,
+        "dashboard.memories.supersede_chain",
+      )(c);
+    },
+  );
+  app.get(
+    "/dashboard/api/memories/:id/capture",
+    mnemeRoute("daemon.dashboard.memories.capture"),
+    async (c) => {
+      const id = c.req.param("id");
+      return forwardPath(
+        `/api/_ops/memories/${id}/capture`,
+        "dashboard.memories.capture",
+      )(c);
+    },
+  );
+  app.get(
+    "/dashboard/api/clusters",
+    mnemeRoute("daemon.dashboard.clusters"),
+    forwardQuery("/api/_ops/clusters", "dashboard.clusters"),
   );
 
   // GET /dashboard/api/logs/stream — SSE tail of local daemon log files.
@@ -168,6 +193,53 @@ function proxyHandler(upstreamPath: string, traceTag: string) {
     }
     try {
       const resp = await fetch(`${cfg.serverUrl}${upstreamPath}`, {
+        headers: { Authorization: `Bearer ${cfg.token}` },
+      });
+      const body = await resp.text();
+      return c.body(body, resp.status as 200, {
+        "content-type":
+          resp.headers.get("content-type") ?? "application/json",
+      });
+    } catch (err) {
+      Logger.warn(`${traceTag}: upstream fetch failed`, err);
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  };
+}
+
+/** Forwards the incoming query string verbatim to a fixed upstream
+ *  path. Used for the list-style endpoints (/memories, /clusters,
+ *  /server-logs) where filters arrive as ?key=val. */
+function forwardQuery(upstreamPath: string, traceTag: string) {
+  return async (c: Context) => {
+    const cfg = await readDaemonConfig();
+    if (!cfg) return c.json({ error: "config not loaded" }, 503);
+    const qs = new URL(c.req.url).search;
+    try {
+      const resp = await fetch(`${cfg.serverUrl}${upstreamPath}${qs}`, {
+        headers: { Authorization: `Bearer ${cfg.token}` },
+      });
+      const body = await resp.text();
+      return c.body(body, resp.status as 200, {
+        "content-type":
+          resp.headers.get("content-type") ?? "application/json",
+      });
+    } catch (err) {
+      Logger.warn(`${traceTag}: upstream fetch failed`, err);
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  };
+}
+
+/** Forwards to a parameterised upstream path (id baked in). Used for
+ *  per-memory lookups (/related, /supersede-chain, /capture). */
+function forwardPath(upstreamPath: string, traceTag: string) {
+  return async (c: Context) => {
+    const cfg = await readDaemonConfig();
+    if (!cfg) return c.json({ error: "config not loaded" }, 503);
+    const qs = new URL(c.req.url).search;
+    try {
+      const resp = await fetch(`${cfg.serverUrl}${upstreamPath}${qs}`, {
         headers: { Authorization: `Bearer ${cfg.token}` },
       });
       const body = await resp.text();

@@ -19,6 +19,7 @@
 import { Hono } from "hono";
 import { mnemeRoute, requireAuth } from "@mneme/core";
 import { sql } from "../infra/db.ts";
+import { embedText } from "../embedder/index.ts";
 import { inspectBreakers } from "../llm/pick.ts";
 
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
@@ -238,4 +239,397 @@ export function mountOpsRoutes(app: Hono): void {
       return c.json({ logs: rows });
     },
   );
+
+  // -------------------------------------------------------------------
+  // GET /api/_ops/memories — paginated memory browse + hybrid search
+  // for the dashboard's Memories panel.
+  //
+  // Filters (all optional, all comma-sep multi where applicable):
+  //   since, until    ISO timestamps; default (now-7d, now)
+  //   repo            comma-sep
+  //   machine_id      comma-sep (text, joins to _ops.api_keys for name)
+  //   kind            comma-sep (memories.kind taxonomy)
+  //   cluster_status  in_cluster | orphaned | superseded | shadow
+  //   q               hybrid search query (semantic + ts_rank)
+  //   limit, offset   default 50, max 200
+  // -------------------------------------------------------------------
+  app.get(
+    "/api/_ops/memories",
+    mnemeRoute("api._ops.memories"),
+    requireAuth("read"),
+    async (c) => {
+      const u = new URL(c.req.url);
+      const since = parseTs(
+        u.searchParams.get("since"),
+        new Date(Date.now() - 7 * 86_400_000),
+      );
+      const until = parseTs(u.searchParams.get("until"), new Date());
+      const repos = csv(u.searchParams.get("repo"));
+      const machineIds = csv(u.searchParams.get("machine_id"));
+      const kinds = csv(u.searchParams.get("kind"));
+      const clusterStatus = csv(u.searchParams.get("cluster_status"));
+      const q = (u.searchParams.get("q") ?? "").trim();
+      const limit = clamp(
+        Number(u.searchParams.get("limit") ?? 50),
+        1,
+        200,
+        50,
+      );
+      const offset = clamp(
+        Number(u.searchParams.get("offset") ?? 0),
+        0,
+        100_000,
+        0,
+      );
+
+      // Build filter clauses lazily so we can splice them either into
+      // the plain-filter query or the hybrid-scoring query.
+      const filters = sql`
+        m.created_at >= ${since}
+        AND m.created_at < ${until}
+        ${repos.length > 0 ? sql`AND m.repo = ANY(${repos})` : sql``}
+        ${machineIds.length > 0 ? sql`AND m.machine_id = ANY(${machineIds})` : sql``}
+        ${kinds.length > 0 ? sql`AND m.kind = ANY(${kinds})` : sql``}
+        ${clusterStatusClause(clusterStatus)}
+      `;
+
+      let rows: MemoryRow[];
+      if (q) {
+        const vec = await embedText(q);
+        const vecLit = `[${vec.join(",")}]`;
+        rows = (await sql<MemoryRow[]>`
+          WITH q_vec AS (SELECT ${vecLit}::vector AS v),
+               q_kw  AS (SELECT websearch_to_tsquery('simple', ${q}) AS q)
+          SELECT
+            m.id::text                 AS id,
+            m.content,
+            m.kind,
+            m.repo,
+            m.machine_id,
+            m.importance,
+            m.created_at,
+            m.meta->>'in_cluster'      AS cluster_id,
+            (m.meta ? 'superseded_by') AS superseded,
+            k.name                     AS machine_name,
+            (0.6 * (1 - (m.embedding <=> (SELECT v FROM q_vec))) +
+             0.4 * COALESCE(ts_rank(m.tsv, (SELECT q FROM q_kw)), 0)) AS score
+          FROM memories m
+          LEFT JOIN LATERAL (
+            SELECT name FROM _ops.api_keys
+            WHERE machine_id = m.machine_id AND revoked_at IS NULL
+            ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+          ) k ON TRUE
+          WHERE ${filters}
+            AND m.archived_at IS NULL
+          ORDER BY score DESC, m.created_at DESC
+          LIMIT ${limit} OFFSET ${offset}
+        `) as unknown as MemoryRow[];
+      } else {
+        rows = (await sql<MemoryRow[]>`
+          SELECT
+            m.id::text                 AS id,
+            m.content,
+            m.kind,
+            m.repo,
+            m.machine_id,
+            m.importance,
+            m.created_at,
+            m.meta->>'in_cluster'      AS cluster_id,
+            (m.meta ? 'superseded_by') AS superseded,
+            k.name                     AS machine_name,
+            NULL::float                AS score
+          FROM memories m
+          LEFT JOIN LATERAL (
+            SELECT name FROM _ops.api_keys
+            WHERE machine_id = m.machine_id AND revoked_at IS NULL
+            ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+          ) k ON TRUE
+          WHERE ${filters}
+            AND m.archived_at IS NULL
+          ORDER BY m.created_at DESC
+          LIMIT ${limit} OFFSET ${offset}
+        `) as unknown as MemoryRow[];
+      }
+
+      return c.json({ memories: rows });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // GET /api/_ops/memories/:id/related — top-k vector neighbors of a
+  // memory by cosine distance. Used for the "Related" expand tab.
+  // -------------------------------------------------------------------
+  app.get(
+    "/api/_ops/memories/:id/related",
+    mnemeRoute("api._ops.memories.related"),
+    requireAuth("read"),
+    async (c) => {
+      const id = c.req.param("id");
+      const k = clamp(Number(c.req.query("k") ?? 6), 1, 20, 6);
+      const rows = (await sql<
+        { id: string; content_preview: string; distance: number; kind: string | null }[]
+      >`
+        WITH seed AS (
+          SELECT embedding FROM memories WHERE id = ${id}::uuid AND archived_at IS NULL
+        )
+        SELECT
+          m.id::text                            AS id,
+          left(m.content, 200)                  AS content_preview,
+          (m.embedding <=> (SELECT embedding FROM seed))::float AS distance,
+          m.kind                                AS kind
+        FROM memories m, seed
+        WHERE m.id <> ${id}::uuid
+          AND m.archived_at IS NULL
+        ORDER BY m.embedding <=> seed.embedding
+        LIMIT ${k}
+      `) as unknown as Array<{
+        id: string;
+        content_preview: string;
+        distance: number;
+        kind: string | null;
+      }>;
+      return c.json({ related: rows });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // GET /api/_ops/memories/:id/supersede-chain — walks parents (what
+  // this memory replaced) and children (what replaced this memory) up
+  // to a small bounded depth so a long chain doesn't explode the
+  // response.
+  // -------------------------------------------------------------------
+  app.get(
+    "/api/_ops/memories/:id/supersede-chain",
+    mnemeRoute("api._ops.memories.supersede_chain"),
+    requireAuth("read"),
+    async (c) => {
+      const id = c.req.param("id");
+      const MAX_DEPTH = 8;
+      // Parents: this memory's superseded_by points to its replacement.
+      // Walk backwards via meta->>'superseded_by'.
+      const parents = (await sql<
+        { id: string; content_preview: string; kind: string | null; depth: number }[]
+      >`
+        WITH RECURSIVE chain AS (
+          SELECT m.id, m.content, m.kind, m.meta, 0 AS depth
+          FROM memories m WHERE m.id = ${id}::uuid
+          UNION ALL
+          SELECT p.id, p.content, p.kind, p.meta, chain.depth + 1
+          FROM memories p
+          JOIN chain ON p.id::text = chain.meta->>'superseded_by'
+          WHERE chain.depth < ${MAX_DEPTH}
+        )
+        SELECT id::text, left(content, 200) AS content_preview, kind, depth
+        FROM chain WHERE depth > 0
+        ORDER BY depth ASC
+      `) as unknown as Array<{
+        id: string;
+        content_preview: string;
+        kind: string | null;
+        depth: number;
+      }>;
+      // Children: memories whose superseded_by points back at this one,
+      // recursively.
+      const children = (await sql<
+        { id: string; content_preview: string; kind: string | null; depth: number }[]
+      >`
+        WITH RECURSIVE chain AS (
+          SELECT m.id, m.content, m.kind, m.meta, 0 AS depth
+          FROM memories m WHERE m.id = ${id}::uuid
+          UNION ALL
+          SELECT c.id, c.content, c.kind, c.meta, chain.depth + 1
+          FROM memories c
+          JOIN chain ON c.meta->>'superseded_by' = chain.id::text
+          WHERE chain.depth < ${MAX_DEPTH}
+        )
+        SELECT id::text, left(content, 200) AS content_preview, kind, depth
+        FROM chain WHERE depth > 0
+        ORDER BY depth ASC
+      `) as unknown as Array<{
+        id: string;
+        content_preview: string;
+        kind: string | null;
+        depth: number;
+      }>;
+      return c.json({ parents, children });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // GET /api/_ops/memories/:id/capture — the raw capture body that
+  // produced this memory. Used by the "Cluster + capture" expand tab.
+  // -------------------------------------------------------------------
+  app.get(
+    "/api/_ops/memories/:id/capture",
+    mnemeRoute("api._ops.memories.capture"),
+    requireAuth("read"),
+    async (c) => {
+      const id = c.req.param("id");
+      const rows = (await sql<
+        {
+          id: string;
+          content: string;
+          source: string;
+          repo: string | null;
+          captured_at: Date | string;
+          raw_meta: unknown;
+        }[]
+      >`
+        SELECT
+          c.id::text                  AS id,
+          c.content,
+          c.source,
+          c.repo,
+          c.captured_at,
+          c.raw_meta
+        FROM captures c
+        WHERE c.id = (SELECT capture_id FROM memories WHERE id = ${id}::uuid)
+        LIMIT 1
+      `) as unknown as Array<{
+        id: string;
+        content: string;
+        source: string;
+        repo: string | null;
+        captured_at: Date | string;
+        raw_meta: unknown;
+      }>;
+      const row = rows[0];
+      if (!row) return c.json({ error: "capture not found" }, 404);
+      return c.json({ capture: row });
+    },
+  );
+
+  // -------------------------------------------------------------------
+  // GET /api/_ops/clusters — cluster summaries derived from
+  // memories.meta->>'in_cluster'. There's no _ops.clusters table; the
+  // cluster_id IS itself a memory id (the "theme" memory acting as
+  // centroid), so we self-join to get its content as the summary.
+  // -------------------------------------------------------------------
+  app.get(
+    "/api/_ops/clusters",
+    mnemeRoute("api._ops.clusters"),
+    requireAuth("read"),
+    async (c) => {
+      const u = new URL(c.req.url);
+      const since = parseTs(
+        u.searchParams.get("since"),
+        new Date(Date.now() - 30 * 86_400_000),
+      );
+      const until = parseTs(u.searchParams.get("until"), new Date());
+      const limit = clamp(
+        Number(u.searchParams.get("limit") ?? 50),
+        1,
+        200,
+        50,
+      );
+      const rows = (await sql<
+        {
+          id: string;
+          summary: string | null;
+          member_count: number;
+          last_at: Date | string;
+          sample_machine_ids: string[];
+        }[]
+      >`
+        WITH grouped AS (
+          SELECT
+            (meta->>'in_cluster')::uuid AS cluster_id,
+            count(*)                    AS members,
+            max(created_at)             AS last_at,
+            (array_agg(DISTINCT machine_id))[1:5] AS machines
+          FROM memories
+          WHERE meta ? 'in_cluster'
+            AND archived_at IS NULL
+            AND created_at >= ${since}
+            AND created_at < ${until}
+          GROUP BY 1
+        )
+        SELECT
+          g.cluster_id::text     AS id,
+          left(t.content, 240)   AS summary,
+          g.members::int         AS member_count,
+          g.last_at              AS last_at,
+          g.machines             AS sample_machine_ids
+        FROM grouped g
+        LEFT JOIN memories t ON t.id = g.cluster_id
+        ORDER BY g.last_at DESC
+        LIMIT ${limit}
+      `) as unknown as Array<{
+        id: string;
+        summary: string | null;
+        member_count: number;
+        last_at: Date | string;
+        sample_machine_ids: string[];
+      }>;
+      return c.json({ clusters: rows });
+    },
+  );
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+type MemoryRow = {
+  id: string;
+  content: string;
+  kind: string | null;
+  repo: string | null;
+  machine_id: string | null;
+  machine_name: string | null;
+  importance: number | null;
+  created_at: Date | string;
+  cluster_id: string | null;
+  superseded: boolean;
+  score: number | null;
+};
+
+function parseTs(raw: string | null, fallback: Date): Date {
+  if (!raw) return fallback;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? fallback : d;
+}
+
+function csv(raw: string | null): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function clamp(n: number, lo: number, hi: number, fallback: number): number {
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(hi, Math.max(lo, Math.floor(n)));
+}
+
+/** Translate cluster_status filter values into a SQL fragment. Multiple
+ *  values OR together. Empty list = no filter. */
+function clusterStatusClause(
+  values: string[],
+): ReturnType<typeof sql> {
+  if (values.length === 0) return sql``;
+  const fragments = values.map((v) => {
+    switch (v) {
+      case "in_cluster":
+        return sql`(m.meta ? 'in_cluster' AND NOT (m.meta ? 'superseded_by'))`;
+      case "orphaned":
+        return sql`(NOT (m.meta ? 'in_cluster') AND NOT (m.meta ? 'superseded_by') AND NOT (m.meta ? 'shadow_marked_at'))`;
+      case "superseded":
+        return sql`(m.meta ? 'superseded_by')`;
+      case "shadow":
+        return sql`(m.meta ? 'shadow_marked_at')`;
+      default:
+        return sql`FALSE`;
+    }
+  });
+  // Compose with OR using sql.unsafe? Postgres.js doesn't have a clean
+  // OR-join, so we reduce by manually wrapping in (frag1 OR frag2 ...)
+  // by using sql with array spread is unsupported. Build a recursive
+  // chain instead.
+  let combined = fragments[0]!;
+  for (let i = 1; i < fragments.length; i++) {
+    combined = sql`${combined} OR ${fragments[i]!}`;
+  }
+  return sql`AND (${combined})`;
 }

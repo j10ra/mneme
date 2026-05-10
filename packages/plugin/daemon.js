@@ -1616,24 +1616,21 @@ function mountDashboardRoutes(app) {
   });
   app.get("/dashboard/api/status", mnemeRoute("daemon.dashboard.status"), proxyHandler("/api/_ops/status", "dashboard.status"));
   app.get("/dashboard/api/machines", mnemeRoute("daemon.dashboard.machines"), proxyHandler("/api/auth/machines", "dashboard.machines"));
-  app.get("/dashboard/api/server-logs", mnemeRoute("daemon.dashboard.server_logs"), async (c) => {
-    const cfg = await readDaemonConfig();
-    if (!cfg)
-      return c.json({ error: "config not loaded" }, 503);
-    const qs = new URL(c.req.url).search;
-    try {
-      const resp = await fetch(`${cfg.serverUrl}/api/_ops/logs${qs}`, {
-        headers: { Authorization: `Bearer ${cfg.token}` }
-      });
-      const body = await resp.text();
-      return c.body(body, resp.status, {
-        "content-type": resp.headers.get("content-type") ?? "application/json"
-      });
-    } catch (err) {
-      Logger.warn("dashboard.server_logs: upstream fetch failed", err);
-      return c.json({ error: "upstream unavailable" }, 502);
-    }
+  app.get("/dashboard/api/server-logs", mnemeRoute("daemon.dashboard.server_logs"), forwardQuery("/api/_ops/logs", "dashboard.server_logs"));
+  app.get("/dashboard/api/memories", mnemeRoute("daemon.dashboard.memories"), forwardQuery("/api/_ops/memories", "dashboard.memories"));
+  app.get("/dashboard/api/memories/:id/related", mnemeRoute("daemon.dashboard.memories.related"), async (c) => {
+    const id = c.req.param("id");
+    return forwardPath(`/api/_ops/memories/${id}/related`, "dashboard.memories.related")(c);
   });
+  app.get("/dashboard/api/memories/:id/supersede-chain", mnemeRoute("daemon.dashboard.memories.supersede_chain"), async (c) => {
+    const id = c.req.param("id");
+    return forwardPath(`/api/_ops/memories/${id}/supersede-chain`, "dashboard.memories.supersede_chain")(c);
+  });
+  app.get("/dashboard/api/memories/:id/capture", mnemeRoute("daemon.dashboard.memories.capture"), async (c) => {
+    const id = c.req.param("id");
+    return forwardPath(`/api/_ops/memories/${id}/capture`, "dashboard.memories.capture")(c);
+  });
+  app.get("/dashboard/api/clusters", mnemeRoute("daemon.dashboard.clusters"), forwardQuery("/api/_ops/clusters", "dashboard.clusters"));
   app.get("/dashboard/api/logs/stream", mnemeRoute("daemon.dashboard.logs.stream"), (c) => streamSSE(c, async (stream) => streamLogs(stream)));
 }
 function proxyHandler(upstreamPath, traceTag) {
@@ -1644,6 +1641,46 @@ function proxyHandler(upstreamPath, traceTag) {
     }
     try {
       const resp = await fetch(`${cfg.serverUrl}${upstreamPath}`, {
+        headers: { Authorization: `Bearer ${cfg.token}` }
+      });
+      const body = await resp.text();
+      return c.body(body, resp.status, {
+        "content-type": resp.headers.get("content-type") ?? "application/json"
+      });
+    } catch (err) {
+      Logger.warn(`${traceTag}: upstream fetch failed`, err);
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  };
+}
+function forwardQuery(upstreamPath, traceTag) {
+  return async (c) => {
+    const cfg = await readDaemonConfig();
+    if (!cfg)
+      return c.json({ error: "config not loaded" }, 503);
+    const qs = new URL(c.req.url).search;
+    try {
+      const resp = await fetch(`${cfg.serverUrl}${upstreamPath}${qs}`, {
+        headers: { Authorization: `Bearer ${cfg.token}` }
+      });
+      const body = await resp.text();
+      return c.body(body, resp.status, {
+        "content-type": resp.headers.get("content-type") ?? "application/json"
+      });
+    } catch (err) {
+      Logger.warn(`${traceTag}: upstream fetch failed`, err);
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  };
+}
+function forwardPath(upstreamPath, traceTag) {
+  return async (c) => {
+    const cfg = await readDaemonConfig();
+    if (!cfg)
+      return c.json({ error: "config not loaded" }, 503);
+    const qs = new URL(c.req.url).search;
+    try {
+      const resp = await fetch(`${cfg.serverUrl}${upstreamPath}${qs}`, {
         headers: { Authorization: `Bearer ${cfg.token}` }
       });
       const body = await resp.text();
