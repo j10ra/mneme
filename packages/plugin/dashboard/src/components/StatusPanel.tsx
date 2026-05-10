@@ -42,10 +42,30 @@ type StatusResponse = {
   breakers: Record<string, BreakerState>;
 };
 
+type DaemonSchedule = {
+  dream?: {
+    schedule_ms: number;
+    next_run_at: string;
+    last_run_at: string | null;
+    last_duration_ms: number | null;
+  };
+};
+
 type FetchState =
   | { kind: "loading" }
-  | { kind: "ok"; data: StatusResponse; fetchedAt: number }
-  | { kind: "stale"; data: StatusResponse; fetchedAt: number; error: string }
+  | {
+      kind: "ok";
+      data: StatusResponse;
+      schedule: DaemonSchedule | null;
+      fetchedAt: number;
+    }
+  | {
+      kind: "stale";
+      data: StatusResponse;
+      schedule: DaemonSchedule | null;
+      fetchedAt: number;
+      error: string;
+    }
   | { kind: "error"; error: string };
 
 const POLL_MS = 30_000;
@@ -77,9 +97,14 @@ export function StatusPanel() {
 
     const tick = async () => {
       try {
-        const data = await apiGet<StatusResponse>("/status");
+        const [data, schedule] = await Promise.all([
+          apiGet<StatusResponse>("/status"),
+          apiGet<DaemonSchedule>("/daemon-schedule").catch(
+            () => null as DaemonSchedule | null,
+          ),
+        ]);
         if (cancelled) return;
-        setState({ kind: "ok", data, fetchedAt: Date.now() });
+        setState({ kind: "ok", data, schedule, fetchedAt: Date.now() });
       } catch (err) {
         if (cancelled) return;
         const msg =
@@ -90,7 +115,13 @@ export function StatusPanel() {
               : String(err);
         setState((prev) =>
           prev.kind === "ok" || prev.kind === "stale"
-            ? { kind: "stale", data: prev.data, fetchedAt: prev.fetchedAt, error: msg }
+            ? {
+                kind: "stale",
+                data: prev.data,
+                schedule: prev.schedule,
+                fetchedAt: prev.fetchedAt,
+                error: msg,
+              }
             : { kind: "error", error: msg },
         );
       } finally {
@@ -134,7 +165,7 @@ export function StatusPanel() {
                 </AlertDescription>
               </Alert>
             )}
-            <StatusContent data={state.data} />
+            <StatusContent data={state.data} schedule={state.schedule} />
           </>
         )}
       </div>
@@ -160,7 +191,13 @@ function BreakerSummary({ breakers }: { breakers: Record<string, BreakerState> }
   );
 }
 
-function StatusContent({ data }: { data: StatusResponse }) {
+function StatusContent({
+  data,
+  schedule,
+}: {
+  data: StatusResponse;
+  schedule: DaemonSchedule | null;
+}) {
   return (
     <>
       <SectionHeading>Workers</SectionHeading>
@@ -184,6 +221,19 @@ function StatusContent({ data }: { data: StatusResponse }) {
               ? `${fmtAge(Date.now() - new Date(data.dream.last_window_at).getTime())} ago`
               : "never"}
           </span>
+          {schedule?.dream && (
+            <span>
+              <span className="text-muted-foreground">next in:</span>{" "}
+              <span className="tabular-nums">
+                {fmtAge(
+                  Math.max(
+                    0,
+                    new Date(schedule.dream.next_run_at).getTime() - Date.now(),
+                  ),
+                )}
+              </span>
+            </span>
+          )}
           <span>
             <span className="text-muted-foreground">clusters:</span>{" "}
             <span className="tabular-nums">{data.dream.last_cluster_count ?? "—"}</span>

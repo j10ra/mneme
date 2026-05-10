@@ -1616,6 +1616,17 @@ function mountDashboardRoutes(app) {
   });
   app.get("/dashboard/api/status", mnemeRoute("daemon.dashboard.status"), proxyHandler("/api/_ops/status", "dashboard.status"));
   app.get("/dashboard/api/machines", mnemeRoute("daemon.dashboard.machines"), proxyHandler("/api/auth/machines", "dashboard.machines"));
+  app.get("/dashboard/api/daemon-schedule", mnemeRoute("daemon.dashboard.daemon_schedule"), async (c) => {
+    try {
+      const { readFile: readFile3 } = await import("fs/promises");
+      const path = join3(homedir2(), ".mneme", "schedule.json");
+      const raw = await readFile3(path, "utf8");
+      return c.body(raw, 200, { "content-type": "application/json" });
+    } catch (err) {
+      Logger.warn("dashboard.daemon_schedule: read failed", err);
+      return c.json({ error: "schedule unavailable" }, 503);
+    }
+  });
   app.get("/dashboard/api/server-logs", mnemeRoute("daemon.dashboard.server_logs"), forwardQuery("/api/_ops/logs", "dashboard.server_logs"));
   app.get("/dashboard/api/memories", mnemeRoute("daemon.dashboard.memories"), forwardQuery("/api/_ops/memories", "dashboard.memories"));
   app.get("/dashboard/api/memories/:id/related", mnemeRoute("daemon.dashboard.memories.related"), async (c) => {

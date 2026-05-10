@@ -4,6 +4,7 @@
 
 import { LogsPanel } from "./components/LogsPanel.tsx";
 import { MachinesPanel } from "./components/MachinesPanel.tsx";
+import { MemoriesPanel } from "./components/MemoriesPanel.tsx";
 import { StatusPanel } from "./components/StatusPanel.tsx";
 import {
   ResizableHandle,
@@ -40,6 +41,7 @@ export function App() {
 
               <StatusPanel />
               <MachinesPanel />
+              <MemoriesPanel />
             </main>
           </ResizablePanel>
           <ResizableHandle />

@@ -119,6 +119,27 @@ export function mountDashboardRoutes(app: Hono): void {
     proxyHandler("/api/auth/machines", "dashboard.machines"),
   );
 
+  // GET /dashboard/api/daemon-schedule — local-only read of the
+  // per-machine scheduler state. Dream + heartbeat + embedder-reap
+  // run on the daemon (not the server), so their next_run_at lives
+  // in ~/.mneme/schedule.json. The dashboard's Status panel merges
+  // this with the server-side worker rows.
+  app.get(
+    "/dashboard/api/daemon-schedule",
+    mnemeRoute("daemon.dashboard.daemon_schedule"),
+    async (c) => {
+      try {
+        const { readFile } = await import("node:fs/promises");
+        const path = join(homedir(), ".mneme", "schedule.json");
+        const raw = await readFile(path, "utf8");
+        return c.body(raw, 200, { "content-type": "application/json" });
+      } catch (err) {
+        Logger.warn("dashboard.daemon_schedule: read failed", err);
+        return c.json({ error: "schedule unavailable" }, 503);
+      }
+    },
+  );
+
   // GET /dashboard/api/server-logs — proxies /api/_ops/logs (read-scoped)
   // Forwards the query string verbatim so client-side filtering (since,
   // level, limit) flows through unchanged.
