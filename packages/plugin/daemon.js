@@ -13,6 +13,16 @@ function newId() {
   return crypto.randomUUID();
 }
 
+// packages/core/src/errors.ts
+function errorMessageOf(err) {
+  if (err instanceof Error)
+    return err.message;
+  if (err !== null && typeof err === "object" && "message" in err && typeof err.message === "string") {
+    return err.message;
+  }
+  return String(err);
+}
+
 // packages/core/src/trace-store.ts
 var identity = (data) => data;
 var MAX_BODY_BYTES = 256 * 1024;
@@ -205,7 +215,7 @@ class TraceStore {
         }
       });
     } catch (err) {
-      process.stderr.write(`[mneme/core] trace flush failed: ${err instanceof Error ? err.message : String(err)}
+      process.stderr.write(`[mneme/core] trace flush failed: ${errorMessageOf(err)}
 `);
     }
   }
@@ -256,7 +266,7 @@ function emit(level, message, error, meta) {
   const traceId = ctx?.traceId;
   const spanId = ctx?.spanStack.at(-1)?.spanId;
   const ts = Date.now();
-  const errStr = error instanceof Error ? error.message : error !== undefined ? String(error) : undefined;
+  const errStr = error !== undefined ? errorMessageOf(error) : undefined;
   const store = getTraceStore();
   if (store) {
     const fullMessage = errStr ? `${message} :: ${errStr}` : message;
@@ -279,7 +289,7 @@ function emit(level, message, error, meta) {
         stack: error.stack
       };
     } else if (error !== undefined) {
-      record.error = String(error);
+      record.error = errorMessageOf(error);
     }
     stream.write(`${JSON.stringify(record)}
 `);
@@ -352,7 +362,7 @@ function mnemeRoute(name) {
         await next();
       });
     } catch (err) {
-      errorMessage = err instanceof Error ? err.message : String(err);
+      errorMessage = errorMessageOf(err);
       throw err;
     } finally {
       let outputObj;
@@ -414,7 +424,7 @@ function mnemeFn(name, fn) {
       span.outputSize = summary.size;
       return result;
     } catch (err) {
-      errorMessage = err instanceof Error ? err.message : String(err);
+      errorMessage = errorMessageOf(err);
       throw err;
     } finally {
       span.durationMs = Date.now() - span.startedAtMs;
@@ -2060,6 +2070,8 @@ function createRuntime(deps) {
           await deps.outbox.delete(id, "embedded");
           Logger.info("bundle pushed", {
             id,
+            source: stage.capture.source,
+            bytes: stage.capture.content.length,
             memories: stage.memories.length
           });
         } catch (err) {
@@ -2675,7 +2687,7 @@ class TraceForwarder {
       if (isNetworkOfflineError(err)) {
         Logger.debug("trace-forwarder: flush skipped (offline)", {
           ...meta,
-          error: err instanceof Error ? err.message : String(err)
+          error: errorMessageOf(err)
         });
       } else {
         Logger.warn("trace-forwarder: flush failed", err, meta);
@@ -2701,7 +2713,7 @@ async function withRootTrace(name, source, fn) {
     result = await storage.run(ctx, fn);
     return result;
   } catch (err) {
-    errorMessage = err instanceof Error ? err.message : String(err);
+    errorMessage = errorMessageOf(err);
     throw err;
   } finally {
     const endedAtMs = Date.now();

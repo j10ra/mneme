@@ -300,6 +300,8 @@ export function createRuntime(deps: DaemonDeps) {
             await deps.outbox.delete(id, "embedded");
             Logger.info("bundle pushed", {
               id,
+              source: stage.capture.source,
+              bytes: stage.capture.content.length,
               memories: stage.memories.length,
             });
           } catch (err) {
