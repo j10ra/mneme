@@ -2227,7 +2227,8 @@ function createRuntime(deps) {
           batch.push(candidate);
         }
       }
-      Logger.info("extract batch", {
+      const extractStartedAt = Date.now();
+      Logger.info("extract starting", {
         size: batch.length,
         session: seed.capture.session_id ?? null,
         repo: seed.capture.repo ?? null
@@ -2235,9 +2236,10 @@ function createRuntime(deps) {
       let memories;
       try {
         memories = await deps.extract(batch.map((e) => e.capture));
-        Logger.info("extract result", {
+        Logger.info("extract finished", {
+          size: batch.length,
           observations: memories.length,
-          captures: batch.length
+          duration_ms: Date.now() - extractStartedAt
         });
         for (const entry of batch)
           transientRetries.delete(entry.id);

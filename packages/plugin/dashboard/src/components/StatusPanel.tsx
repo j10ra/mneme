@@ -58,6 +58,16 @@ function fmtAge(ms: number | null): string {
   return `${Math.round(ms / 86_400_000)}d`;
 }
 
+// Like fmtAge but keeps sub-second precision so a 17,373ms duration
+// reads as "17.4s" rather than "17s" or the raw ms.
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
+}
+
 export function StatusPanel() {
   const [state, setState] = useState<FetchState>({ kind: "loading" });
 
@@ -98,7 +108,7 @@ export function StatusPanel() {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <CardTitle>Status</CardTitle>
           {state.kind === "ok" || state.kind === "stale" ? (
             <BreakerSummary breakers={state.data.breakers} />
@@ -216,22 +226,22 @@ function StatusContent({ data }: { data: StatusResponse }) {
 function WorkerRowItem({ w }: { w: WorkerRow }) {
   const status = w.last_status ?? "ok";
   return (
-    <div className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-sm">
-      <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
+      <div className="flex min-w-0 items-center gap-3">
         <span
           className={cn(
-            "inline-block h-2 w-2 rounded-full",
+            "inline-block h-2 w-2 shrink-0 rounded-full",
             status === "ok" ? "bg-success" : "bg-destructive",
           )}
         />
-        <span className="font-medium">{w.name}</span>
-        <span className="text-xs text-muted-foreground">
+        <span className="font-medium truncate">{w.name}</span>
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
           last {fmtAge(w.since_last_run_ms)} ago
         </span>
       </div>
       <div className="flex items-center gap-3 text-xs text-muted-foreground tabular-nums">
-        {w.last_duration_ms !== null && <span>{w.last_duration_ms}ms</span>}
-        <span>
+        {w.last_duration_ms !== null && <span>{fmtDuration(w.last_duration_ms)}</span>}
+        <span className="whitespace-nowrap">
           next in{" "}
           {fmtAge(Math.max(0, new Date(w.next_run_at).getTime() - Date.now()))}
         </span>

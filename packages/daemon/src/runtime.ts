@@ -538,7 +538,8 @@ export function createRuntime(deps: DaemonDeps) {
         }
       }
 
-      Logger.info("extract batch", {
+      const extractStartedAt = Date.now();
+      Logger.info("extract starting", {
         size: batch.length,
         session: seed.capture.session_id ?? null,
         repo: seed.capture.repo ?? null,
@@ -547,9 +548,10 @@ export function createRuntime(deps: DaemonDeps) {
       let memories: ExtractedMemory[];
       try {
         memories = await deps.extract(batch.map((e) => e.capture));
-        Logger.info("extract result", {
+        Logger.info("extract finished", {
+          size: batch.length,
           observations: memories.length,
-          captures: batch.length,
+          duration_ms: Date.now() - extractStartedAt,
         });
         // Successful extract: clear any retry counter the batch members
         // accumulated from previous transient failures.
