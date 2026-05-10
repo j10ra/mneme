@@ -273,7 +273,7 @@ export function mountAuthRoutes(app: Hono): void {
           h.last_processed_at AS heartbeat_last_processed_at,
           h.posted_at         AS heartbeat_posted_at
         FROM _ops.api_keys k
-        LEFT JOIN _ops.daemon_heartbeats h ON h.machine_id = k.machine_id
+        LEFT JOIN _ops.daemon_heartbeats h ON h.machine_id::text = k.machine_id
         ORDER BY k.created_at DESC
       `;
       return c.json({ machines: rows });
