@@ -18,6 +18,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiGet } from "../lib/api.ts";
 import { cn } from "../lib/cn.ts";
 import { Button } from "./ui/button.tsx";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select.tsx";
 import { Switch } from "./ui/switch.tsx";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -26,7 +33,6 @@ type Mode = "local" | "server";
 type LocalEntry = {
   kind: "local";
   id: number;
-  source: "out" | "err";
   level: LogLevel;
   text: string;
 };
@@ -97,6 +103,46 @@ function parseLocal(entry: LocalEntry): ParsedLine {
   };
 }
 
+// Persist the "lines we've already shown" set in localStorage so a
+// dashboard refresh skips replaying the daemon's backfill of stuff the
+// user has already seen. FIFO-capped at SEEN_LINES_CAP to bound storage.
+const SEEN_LINES_KEY = "mneme.dashboard.seen-local-lines.v1";
+const SEEN_LINES_CAP = 500;
+
+function loadSeenLines(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(SEEN_LINES_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.filter((x): x is string => typeof x === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistSeenLines(set: Set<string>): void {
+  if (typeof window === "undefined") return;
+  try {
+    // Truncate to last SEEN_LINES_CAP entries to bound storage.
+    const arr = [...set];
+    const tail = arr.length > SEEN_LINES_CAP ? arr.slice(-SEEN_LINES_CAP) : arr;
+    window.localStorage.setItem(SEEN_LINES_KEY, JSON.stringify(tail));
+  } catch {
+    /* quota / disabled — best-effort */
+  }
+}
+
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+function rememberSeenLine(set: Set<string>, sig: string): void {
+  if (set.has(sig)) return;
+  set.add(sig);
+  // Debounce persistence so rapid bursts don't write per line.
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => persistSeenLines(set), 500);
+}
+
 function fmtTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -112,8 +158,6 @@ export function LogsPanel() {
   const [localEntries, setLocalEntries] = useState<LocalEntry[]>([]);
   const [serverEntries, setServerEntries] = useState<ServerEntry[]>([]);
   const [conn, setConn] = useState<ConnState>("connecting");
-  const [showOut, setShowOut] = useState(true);
-  const [showErr, setShowErr] = useState(true);
   const [stickyTail, setStickyTail] = useState(true);
   const [showJump, setShowJump] = useState(false);
   const [query, setQuery] = useState("");
@@ -126,6 +170,21 @@ export function LogsPanel() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stuckToBottomRef = useRef(true);
   const programmaticScrollRef = useRef(false);
+  // localStorage-backed signature set so the same backfill line never
+  // re-renders on a dashboard refresh. Each entry is `${source}|${text}`.
+  // FIFO-capped to bound localStorage growth.
+  const seenLinesRef = useRef<Set<string>>(loadSeenLines());
+  // Keep the freshest stickyTail readable inside SSE/poll callbacks
+  // without re-subscribing them every flip.
+  const stickyTailRef = useRef(stickyTail);
+  useEffect(() => {
+    stickyTailRef.current = stickyTail;
+  }, [stickyTail]);
+  // Buffers new entries that arrived while tail was paused, so resuming
+  // doesn't lose anything (matches Railway's pause UX).
+  const localBufferRef = useRef<LocalEntry[]>([]);
+  const serverBufferRef = useRef<ServerEntry[]>([]);
+  const [pausedCount, setPausedCount] = useState(0);
 
   // ── Local SSE stream ─────────────────────────────────────────────
   useEffect(() => {
@@ -136,12 +195,37 @@ export function LogsPanel() {
     const onLog = (ev: MessageEvent) => {
       try {
         const payload = JSON.parse(ev.data) as {
-          source: "out" | "err";
           level: LogLevel;
           text: string;
+          backfill?: boolean;
         };
+        // Dedup against localStorage: backfill replays the same lines
+        // on every reconnect. If we've rendered this exact text before,
+        // skip silently. Live (non-backfill) lines always pass through
+        // and update the seen set.
+        const sig = payload.text;
+        if (payload.backfill && seenLinesRef.current.has(sig)) {
+          return;
+        }
+        rememberSeenLine(seenLinesRef.current, sig);
         localIdRef.current += 1;
-        const entry: LocalEntry = { kind: "local", id: localIdRef.current, ...payload };
+        const entry: LocalEntry = {
+          kind: "local",
+          id: localIdRef.current,
+          level: payload.level,
+          text: payload.text,
+        };
+        if (!stickyTailRef.current) {
+          // Tail paused — buffer for drain on resume; cap so a long
+          // pause doesn't exhaust memory.
+          const buf = localBufferRef.current;
+          buf.push(entry);
+          if (buf.length > MAX_BUFFER) {
+            localBufferRef.current = buf.slice(-MAX_BUFFER);
+          }
+          setPausedCount(localBufferRef.current.length);
+          return;
+        }
         setLocalEntries((prev) => {
           const next = prev.concat(entry);
           return next.length > MAX_BUFFER ? next.slice(-MAX_BUFFER) : next;
@@ -208,20 +292,34 @@ export function LogsPanel() {
           .reverse(); // server returns DESC; we render ASC for chronological tail
         if (fresh.length > 0) {
           lastTs = fresh[fresh.length - 1]!.ts;
-          setServerEntries((prev) => {
-            const merged = prev.concat(fresh);
-            // Dedupe by id (in case overlap on the boundary).
+          if (!stickyTailRef.current) {
+            // Paused: buffer the new rows for drain on resume.
+            const buf = serverBufferRef.current.concat(fresh);
             const seen = new Set<string>();
             const dedup: ServerEntry[] = [];
-            for (const e of merged) {
+            for (const e of buf) {
               if (seen.has(e.id)) continue;
               seen.add(e.id);
               dedup.push(e);
             }
-            return dedup.length > MAX_BUFFER
-              ? dedup.slice(-MAX_BUFFER)
-              : dedup;
-          });
+            serverBufferRef.current =
+              dedup.length > MAX_BUFFER ? dedup.slice(-MAX_BUFFER) : dedup;
+            setPausedCount(serverBufferRef.current.length);
+          } else {
+            setServerEntries((prev) => {
+              const merged = prev.concat(fresh);
+              const seen = new Set<string>();
+              const dedup: ServerEntry[] = [];
+              for (const e of merged) {
+                if (seen.has(e.id)) continue;
+                seen.add(e.id);
+                dedup.push(e);
+              }
+              return dedup.length > MAX_BUFFER
+                ? dedup.slice(-MAX_BUFFER)
+                : dedup;
+            });
+          }
         }
         setConn("live");
       } catch (err) {
@@ -237,10 +335,23 @@ export function LogsPanel() {
     };
   }, [mode]);
 
-  // Reset per-mode filter affordances when switching mode.
+  // Reset per-mode filter affordances when switching mode and snap
+  // back to "stuck at bottom" so newly-arrived entries always pin to
+  // the latest. Also clear any paused buffer from the prior mode —
+  // entries from a different source aren't useful here.
   useEffect(() => {
     setHiddenMachines(new Set());
     setQuery("");
+    localBufferRef.current = [];
+    serverBufferRef.current = [];
+    setPausedCount(0);
+    stuckToBottomRef.current = true;
+    setShowJump(false);
+    const el = scrollRef.current;
+    if (el) {
+      programmaticScrollRef.current = true;
+      el.scrollTop = el.scrollHeight;
+    }
   }, [mode]);
 
   // ── Distinct machine list (server mode) ──────────────────────────
@@ -263,8 +374,6 @@ export function LogsPanel() {
     if (mode === "local") {
       const out: Array<LocalEntry & { parsed: ParsedLine }> = [];
       for (const e of localEntries) {
-        if (e.source === "out" && !showOut) continue;
-        if (e.source === "err" && !showErr) continue;
         if (!levelFilter.has(e.level)) continue;
         if (q && !e.text.toLowerCase().includes(q)) continue;
         out.push({ ...e, parsed: parseLocal(e) });
@@ -291,8 +400,6 @@ export function LogsPanel() {
     mode,
     localEntries,
     serverEntries,
-    showOut,
-    showErr,
     levelFilter,
     hiddenMachines,
     query,
@@ -315,6 +422,31 @@ export function LogsPanel() {
 
   useEffect(() => {
     if (!stickyTail) return;
+    // Drain any entries that arrived while paused, then snap to bottom.
+    if (localBufferRef.current.length > 0) {
+      const drained = localBufferRef.current;
+      localBufferRef.current = [];
+      setLocalEntries((prev) => {
+        const next = prev.concat(drained);
+        return next.length > MAX_BUFFER ? next.slice(-MAX_BUFFER) : next;
+      });
+    }
+    if (serverBufferRef.current.length > 0) {
+      const drained = serverBufferRef.current;
+      serverBufferRef.current = [];
+      setServerEntries((prev) => {
+        const merged = prev.concat(drained);
+        const seen = new Set<string>();
+        const dedup: ServerEntry[] = [];
+        for (const e of merged) {
+          if (seen.has(e.id)) continue;
+          seen.add(e.id);
+          dedup.push(e);
+        }
+        return dedup.length > MAX_BUFFER ? dedup.slice(-MAX_BUFFER) : dedup;
+      });
+    }
+    setPausedCount(0);
     stuckToBottomRef.current = true;
     setShowJump(false);
     const el = scrollRef.current;
@@ -369,27 +501,43 @@ export function LogsPanel() {
         {/* Title row */}
         <div className="flex items-center justify-between gap-2 px-3 pt-2.5 pb-2">
           <div className="flex items-center gap-2">
-            <select
+            <Select
               value={mode}
-              onChange={(e) => setMode(e.target.value as Mode)}
-              className="h-7 rounded-md border border-border bg-card px-2 text-xs font-medium outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-foreground/20"
+              onValueChange={(v) => setMode(v as Mode)}
             >
-              <option value="local">Local logs</option>
-              <option value="server">Server logs</option>
-            </select>
+              <SelectTrigger className="min-w-[110px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="local">Local logs</SelectItem>
+                <SelectItem value="server">Server logs</SelectItem>
+              </SelectContent>
+            </Select>
             <ConnDot state={conn} />
             <span className="text-[10px] text-muted-foreground tabular-nums">
               {visible.length}
               {visible.length !== totalEntries && `/${totalEntries}`}
             </span>
           </div>
-          <label className="flex items-center gap-2 text-[11px] text-muted-foreground select-none cursor-pointer">
+          <label className="flex items-center gap-2 text-[11px] select-none cursor-pointer">
             {stickyTail ? (
-              <Play className="h-3 w-3 text-success" />
+              <Pause className="h-3 w-3 text-muted-foreground" />
             ) : (
-              <Pause className="h-3 w-3" />
+              <Play className="h-3 w-3 text-warning" />
             )}
-            tail
+            <span
+              className={cn(
+                "uppercase tracking-wider text-[10px]",
+                stickyTail ? "text-muted-foreground" : "text-warning",
+              )}
+            >
+              {stickyTail ? "live" : "paused"}
+            </span>
+            {pausedCount > 0 && !stickyTail && (
+              <span className="rounded-full bg-warning/20 px-1.5 text-[10px] font-medium text-warning tabular-nums">
+                +{pausedCount}
+              </span>
+            )}
             <Switch
               checked={stickyTail}
               onCheckedChange={(v) => setStickyTail(v)}
@@ -448,21 +596,6 @@ export function LogsPanel() {
             tone="muted"
           />
 
-          {mode === "local" && (
-            <>
-              <span className="mx-1 h-3 w-px bg-border" />
-              <SourceChip
-                label="out"
-                checked={showOut}
-                onClick={() => setShowOut((v) => !v)}
-              />
-              <SourceChip
-                label="err"
-                checked={showErr}
-                onClick={() => setShowErr((v) => !v)}
-              />
-            </>
-          )}
         </div>
 
         {mode === "server" && machines.length > 0 && (
@@ -549,7 +682,6 @@ function levelStyles(level: LogLevel): { border: string; level: string; body: st
 }
 
 function LocalRow({
-  entry,
   parsed,
 }: {
   entry: LocalEntry;
@@ -565,9 +697,6 @@ function LocalRow({
         </span>
         {parsed.traceId && (
           <span className="font-mono opacity-70">{parsed.traceId.slice(0, 8)}</span>
-        )}
-        {entry.source === "err" && (
-          <span className="rounded bg-warning/20 px-1 text-[9px] text-warning">stderr</span>
         )}
       </div>
       <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono">
@@ -659,37 +788,6 @@ function LevelChip({
           : "border-border/60 bg-transparent text-muted-foreground/50 hover:text-foreground",
       )}
     >
-      {label}
-    </button>
-  );
-}
-
-function SourceChip({
-  label,
-  checked,
-  onClick,
-}: {
-  label: string;
-  checked: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-5 items-center gap-1.5 rounded-md border px-1.5 transition-colors",
-        checked
-          ? "border-border bg-card text-foreground"
-          : "border-border/40 bg-transparent text-muted-foreground/50 hover:text-foreground",
-      )}
-    >
-      <span
-        className={cn(
-          "inline-block h-1 w-1 rounded-full",
-          checked ? "bg-foreground" : "bg-muted-foreground/40",
-        )}
-      />
       {label}
     </button>
   );

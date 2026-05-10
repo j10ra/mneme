@@ -139,9 +139,9 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${logsDir}/daemon.out.log</string>
+  <string>${logsDir}/daemon.log</string>
   <key>StandardErrorPath</key>
-  <string>${logsDir}/daemon.err.log</string>
+  <string>${logsDir}/daemon.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
@@ -175,6 +175,8 @@ Type=simple
 ExecStart=${cfg.bunPath} run ${daemonEntry}
 Restart=on-failure
 RestartSec=5
+StandardOutput=append:${homedir()}/.mneme/logs/daemon.log
+StandardError=append:${homedir()}/.mneme/logs/daemon.log
 Environment=HOME=${homedir()}${pluginRootLine}${claudeLine}
 
 [Install]

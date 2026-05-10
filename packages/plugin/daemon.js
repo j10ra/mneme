@@ -1658,13 +1658,10 @@ function proxyHandler(upstreamPath, traceTag) {
 }
 var LOG_POLL_MS = 1000;
 var LOG_PING_MS = 15000;
-var LOG_BACKFILL_BYTES = 32 * 1024;
-function logPaths() {
-  const dir = join3(homedir2(), ".mneme", "logs");
-  return {
-    out: join3(dir, "daemon.out.log"),
-    err: join3(dir, "daemon.err.log")
-  };
+var LOG_BACKFILL_BYTES = 256 * 1024;
+var LOG_BACKFILL_MAX_LINES = 500;
+function logPath() {
+  return join3(homedir2(), ".mneme", "logs", "daemon.log");
 }
 function inferLevel(line) {
   if (line.includes(" ERROR "))
@@ -1719,10 +1716,10 @@ async function readNewBytes(path, fromByte) {
   }
 }
 async function streamLogs(stream) {
-  const paths = logPaths();
-  const cursors = { out: 0, err: 0 };
+  const path = logPath();
+  let cursor = 0;
   let id = 0;
-  const send = async (source, line, isBackfill) => {
+  const send = async (line, isBackfill) => {
     if (!line)
       return;
     id++;
@@ -1730,27 +1727,25 @@ async function streamLogs(stream) {
       id: String(id),
       event: "log",
       data: JSON.stringify({
-        source,
         level: inferLevel(line),
         text: line,
         backfill: isBackfill
       })
     });
   };
-  for (const source of ["out", "err"]) {
-    try {
-      const { text, size } = await readTail(paths[source], LOG_BACKFILL_BYTES);
-      cursors[source] = size;
-      const lines = text.split(`
+  try {
+    const { text, size } = await readTail(path, LOG_BACKFILL_BYTES);
+    cursor = size;
+    const allLines = text.split(`
 `);
-      if (lines.length && lines[lines.length - 1] === "")
-        lines.pop();
-      for (const line of lines) {
-        await send(source, line, true);
-      }
-    } catch (err) {
-      Logger.warn(`dashboard.logs.stream: backfill ${source} failed`, err);
+    if (allLines.length && allLines[allLines.length - 1] === "")
+      allLines.pop();
+    const lines = allLines.length > LOG_BACKFILL_MAX_LINES ? allLines.slice(-LOG_BACKFILL_MAX_LINES) : allLines;
+    for (const line of lines) {
+      await send(line, true);
     }
+  } catch (err) {
+    Logger.warn("dashboard.logs.stream: backfill failed", err);
   }
   await stream.writeSSE({
     event: "ready",
@@ -1758,34 +1753,32 @@ async function streamLogs(stream) {
   });
   let lastPing = Date.now();
   while (!stream.aborted && !stream.closed) {
-    for (const source of ["out", "err"]) {
-      try {
-        const { text, size } = await readNewBytes(paths[source], cursors[source]);
-        cursors[source] = size;
-        if (text) {
-          const lastNl = text.lastIndexOf(`
+    try {
+      const { text, size } = await readNewBytes(path, cursor);
+      cursor = size;
+      if (text) {
+        const lastNl = text.lastIndexOf(`
 `);
-          let consumed;
-          if (lastNl < 0) {
-            cursors[source] = size - text.length;
-            consumed = "";
-          } else if (lastNl === text.length - 1) {
-            consumed = text.slice(0, -1);
-          } else {
-            const partial = text.slice(lastNl + 1);
-            cursors[source] = size - partial.length;
-            consumed = text.slice(0, lastNl);
-          }
-          if (consumed) {
-            for (const line of consumed.split(`
+        let consumed;
+        if (lastNl < 0) {
+          cursor = size - text.length;
+          consumed = "";
+        } else if (lastNl === text.length - 1) {
+          consumed = text.slice(0, -1);
+        } else {
+          const partial = text.slice(lastNl + 1);
+          cursor = size - partial.length;
+          consumed = text.slice(0, lastNl);
+        }
+        if (consumed) {
+          for (const line of consumed.split(`
 `)) {
-              await send(source, line, false);
-            }
+            await send(line, false);
           }
         }
-      } catch (err) {
-        Logger.warn(`dashboard.logs.stream: tail ${source} failed`, err);
       }
+    } catch (err) {
+      Logger.warn("dashboard.logs.stream: tail failed", err);
     }
     if (Date.now() - lastPing > LOG_PING_MS) {
       await stream.writeSSE({

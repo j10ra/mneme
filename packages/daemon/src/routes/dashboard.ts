@@ -183,19 +183,22 @@ function proxyHandler(upstreamPath: string, traceTag: string) {
 }
 
 // ── log streaming ───────────────────────────────────────────────────
+//
+// Reads ~/.mneme/logs/daemon.log — a single unified file (was split
+// out/err pre-1.0.83). Unifying lets a fixed line cap reflect actual
+// recency: the previous setup had a sparse err.log whose "last 15
+// lines" spanned days, so yesterday's blips kept replaying on every
+// dashboard refresh.
 
 const LOG_POLL_MS = 1000;
 const LOG_PING_MS = 15_000;
-const LOG_BACKFILL_BYTES = 32 * 1024; // ~32KB tail = a few hundred lines
+// Backfill: ~500 lines of recent context. Client also de-dupes against
+// localStorage so the same line doesn't replay on every refresh.
+const LOG_BACKFILL_BYTES = 256 * 1024;
+const LOG_BACKFILL_MAX_LINES = 500;
 
-type LogSource = "out" | "err";
-
-function logPaths(): Record<LogSource, string> {
-  const dir = join(homedir(), ".mneme", "logs");
-  return {
-    out: join(dir, "daemon.out.log"),
-    err: join(dir, "daemon.err.log"),
-  };
+function logPath(): string {
+  return join(homedir(), ".mneme", "logs", "daemon.log");
 }
 
 /** Best-effort level inference from line text. The daemon writes plain
@@ -257,22 +260,17 @@ async function readNewBytes(path: string, fromByte: number): Promise<{
 type SSEStream = Parameters<Parameters<typeof streamSSE>[1]>[0];
 
 async function streamLogs(stream: SSEStream): Promise<void> {
-  const paths = logPaths();
-  const cursors: Record<LogSource, number> = { out: 0, err: 0 };
+  const path = logPath();
+  let cursor = 0;
   let id = 0;
 
-  const send = async (
-    source: LogSource,
-    line: string,
-    isBackfill: boolean,
-  ) => {
+  const send = async (line: string, isBackfill: boolean) => {
     if (!line) return;
     id++;
     await stream.writeSSE({
       id: String(id),
       event: "log",
       data: JSON.stringify({
-        source,
         level: inferLevel(line),
         text: line,
         backfill: isBackfill,
@@ -280,62 +278,57 @@ async function streamLogs(stream: SSEStream): Promise<void> {
     });
   };
 
-  // ── 1. Backfill: last ~LOG_BACKFILL_BYTES of each file ───────────
-  for (const source of ["out", "err"] as const) {
-    try {
-      const { text, size } = await readTail(paths[source], LOG_BACKFILL_BYTES);
-      cursors[source] = size;
-      const lines = text.split("\n");
-      // Drop the trailing partial-line / empty splittail.
-      if (lines.length && lines[lines.length - 1] === "") lines.pop();
-      for (const line of lines) {
-        await send(source, line, true);
-      }
-    } catch (err) {
-      Logger.warn(`dashboard.logs.stream: backfill ${source} failed`, err);
+  // ── 1. Backfill ──────────────────────────────────────────────────
+  try {
+    const { text, size } = await readTail(path, LOG_BACKFILL_BYTES);
+    cursor = size;
+    const allLines = text.split("\n");
+    if (allLines.length && allLines[allLines.length - 1] === "") allLines.pop();
+    const lines =
+      allLines.length > LOG_BACKFILL_MAX_LINES
+        ? allLines.slice(-LOG_BACKFILL_MAX_LINES)
+        : allLines;
+    for (const line of lines) {
+      await send(line, true);
     }
+  } catch (err) {
+    Logger.warn("dashboard.logs.stream: backfill failed", err);
   }
   await stream.writeSSE({
     event: "ready",
     data: JSON.stringify({ at: new Date().toISOString() }),
   });
 
-  // ── 2. Tail loop ────────────────────────────────────────────────
+  // ── 2. Tail loop ─────────────────────────────────────────────────
   let lastPing = Date.now();
   while (!stream.aborted && !stream.closed) {
-    for (const source of ["out", "err"] as const) {
-      try {
-        const { text, size } = await readNewBytes(
-          paths[source],
-          cursors[source],
-        );
-        cursors[source] = size;
-        if (text) {
-          // New bytes can include a trailing partial line. Hold back the
-          // last segment (anything after the final \n) by rewinding the
-          // cursor; we'll pick it up on the next tick when it's complete.
-          const lastNl = text.lastIndexOf("\n");
-          let consumed: string;
-          if (lastNl < 0) {
-            // Whole chunk is partial. Rewind fully — re-read next tick.
-            cursors[source] = size - text.length;
-            consumed = "";
-          } else if (lastNl === text.length - 1) {
-            consumed = text.slice(0, -1);
-          } else {
-            const partial = text.slice(lastNl + 1);
-            cursors[source] = size - partial.length;
-            consumed = text.slice(0, lastNl);
-          }
-          if (consumed) {
-            for (const line of consumed.split("\n")) {
-              await send(source, line, false);
-            }
+    try {
+      const { text, size } = await readNewBytes(path, cursor);
+      cursor = size;
+      if (text) {
+        // New bytes can include a trailing partial line. Hold back the
+        // last segment (anything after the final \n) by rewinding the
+        // cursor; we'll pick it up on the next tick when it's complete.
+        const lastNl = text.lastIndexOf("\n");
+        let consumed: string;
+        if (lastNl < 0) {
+          cursor = size - text.length;
+          consumed = "";
+        } else if (lastNl === text.length - 1) {
+          consumed = text.slice(0, -1);
+        } else {
+          const partial = text.slice(lastNl + 1);
+          cursor = size - partial.length;
+          consumed = text.slice(0, lastNl);
+        }
+        if (consumed) {
+          for (const line of consumed.split("\n")) {
+            await send(line, false);
           }
         }
-      } catch (err) {
-        Logger.warn(`dashboard.logs.stream: tail ${source} failed`, err);
       }
+    } catch (err) {
+      Logger.warn("dashboard.logs.stream: tail failed", err);
     }
     if (Date.now() - lastPing > LOG_PING_MS) {
       await stream.writeSSE({
