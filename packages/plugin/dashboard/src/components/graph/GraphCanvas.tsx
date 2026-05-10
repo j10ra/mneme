@@ -9,35 +9,8 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Skeleton } from "../ui/skeleton.tsx";
+import { colorForNode } from "./colors.ts";
 import type { GraphEdge, GraphNode } from "./types.ts";
-
-const KIND_COLOR: Record<string, string> = {
-  decision: "#38bdf8",
-  discovery: "#a78bfa",
-  feature: "#34d399",
-  bugfix: "#fbbf24",
-  reference: "#94a3b8",
-  note: "#94a3b8",
-  constraint: "#fbbf24",
-  summary: "#cbd5e1",
-  preference: "#f472b6",
-  security_alert: "#f87171",
-};
-
-const CLUSTER_PALETTE = [
-  "#38bdf8",
-  "#a78bfa",
-  "#34d399",
-  "#fbbf24",
-  "#f472b6",
-  "#22d3ee",
-  "#fb923c",
-  "#c084fc",
-  "#4ade80",
-  "#facc15",
-  "#f87171",
-  "#67e8f9",
-];
 
 function hashStr(s: string): number {
   let h = 0;
@@ -45,14 +18,6 @@ function hashStr(s: string): number {
     h = (h * 31 + s.charCodeAt(i)) | 0;
   }
   return Math.abs(h);
-}
-
-function colorForNode(n: GraphNode): string {
-  if (n.cluster_id) {
-    return CLUSTER_PALETTE[hashStr(n.cluster_id) % CLUSTER_PALETTE.length]!;
-  }
-  if (n.kind && KIND_COLOR[n.kind]) return KIND_COLOR[n.kind]!;
-  return "#94a3b8";
 }
 
 function sizeForImportance(imp: number | null): number {
@@ -96,87 +61,6 @@ function glowTexture(THREE: any): unknown {
   const tex = new THREE.CanvasTexture(canvas);
   _glowTextureCache = tex;
   return tex;
-}
-
-/** Cached kind-chip sprite textures. Tight pill showing only the kind
- *  tag (e.g. DECISION, BUGFIX) — no content preview text on canvas.
- *  Hover tooltip + drawer cover content; the chip just identifies the
- *  node's kind at a glance. Keyed by `kind|color`. */
-const _chipTextureCache = new Map<
-  string,
-  { tex: unknown; w: number; h: number }
->();
-function kindChipTexture(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  THREE: any,
-  kind: string,
-  color: string,
-): { tex: unknown; w: number; h: number } {
-  const key = `${color}|${kind}`;
-  const cached = _chipTextureCache.get(key);
-  if (cached) return cached;
-
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const padX = 8;
-  const font = "600 10px ui-monospace, SFMono-Regular, monospace";
-  const text = kind.toUpperCase();
-
-  const measure = document.createElement("canvas").getContext("2d")!;
-  measure.font = font;
-  const textW = Math.ceil(measure.measureText(text).width);
-  const w = Math.max(36, textW + padX * 2);
-  const h = 18;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.floor(w * dpr);
-  canvas.height = Math.floor(h * dpr);
-  const ctx = canvas.getContext("2d")!;
-  ctx.scale(dpr, dpr);
-
-  ctx.fillStyle = "rgba(10,14,22,0.82)";
-  roundRect(ctx, 0, 0, w, h, h / 2);
-  ctx.fill();
-
-  ctx.strokeStyle = `${color}66`;
-  ctx.lineWidth = 1;
-  roundRect(ctx, 0.5, 0.5, w - 1, h - 1, (h - 1) / 2);
-  ctx.stroke();
-
-  ctx.font = font;
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "center";
-  ctx.fillStyle = color;
-  ctx.fillText(text, w / 2, h / 2 + 0.5);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.needsUpdate = true;
-
-  const entry = { tex, w, h };
-  _chipTextureCache.set(key, entry);
-  return entry;
-}
-
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
 }
 
 export const GraphCanvas = forwardRef<
@@ -461,9 +345,9 @@ export const GraphCanvas = forwardRef<
   const h = size.h > 0 ? size.h : 600;
 
   // Neuron node: tight bright core sphere wrapped in a soft glow
-  // sprite, optionally with a content label sprite floating above.
-  // Bloom turns the core+halo into the firing-synapse feel; the label
-  // is composited on top of the bloom for legibility.
+  // sprite. Bloom amplifies the pair into the firing-synapse feel.
+  // No labels on the canvas — the floating legend identifies colors,
+  // and hover/drawer surface per-node detail.
   function makeNodeMesh(node: Force3DNode) {
     if (!THREE) return undefined;
     const isSelected = node.id === selectedId;
@@ -494,33 +378,6 @@ export const GraphCanvas = forwardRef<
     const haloScale = node.val * (isFocal ? 3.6 : isSelected ? 3 : 2);
     halo.scale.set(haloScale, haloScale, 1);
     group.add(halo);
-
-    // Kind chip: small pill above the node showing only its kind tag.
-    // Always shown for focal/selected; for other nodes only if the
-    // memory is non-trivially important. Search mismatches (`dim`)
-    // hide the chip so the user can scan.
-    const showChip =
-      !node.dim && (isFocal || isSelected || node.val >= 5.5);
-    if (showChip && node.kind) {
-      const { tex, w: lw, h: lh } = kindChipTexture(
-        THREE,
-        node.kind,
-        node.color,
-      );
-      const chipMat = new THREE.SpriteMaterial({
-        map: tex,
-        transparent: true,
-        depthWrite: false,
-        depthTest: true,
-        opacity: isFocal ? 1 : isSelected ? 1 : 0.9,
-      });
-      const chip = new THREE.Sprite(chipMat);
-      const scale = isFocal ? 0.55 : 0.45;
-      chip.scale.set(lw * scale, lh * scale, 1);
-      chip.position.set(0, node.val * 1.4 + 5, 0);
-      chip.renderOrder = 10;
-      group.add(chip);
-    }
 
     return group;
   }

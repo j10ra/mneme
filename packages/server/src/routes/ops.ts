@@ -572,8 +572,10 @@ export function mountOpsRoutes(app: Hono): void {
   // for the dashboard's Graph view. One round trip; sub-second target.
   //
   // Filters mirror /api/_ops/memories (since/until/repo/machine_id/kind).
-  // Ranking: edge_count = related_to count + (superseded_by ? 1 : 0).
-  // Ordered DESC, ties broken by importance.
+  // Ranking: importance DESC, ties broken by edge_count (related_to
+  // count + supersede), then recency. Importance-first surfaces the
+  // memories the user actually cares about; edge_count alone would be
+  // dominated by the subset nap has finished relating.
   //
   // Edges are filtered to only those whose endpoints both made the
   // top-N cut, so the graph stays self-contained.
@@ -612,7 +614,7 @@ export function mountOpsRoutes(app: Hono): void {
       // Two modes:
       //   - focal set: BFS from focal up to `hops` levels within the
       //                filter pool. Returns nodes with their depth.
-      //   - else:      ranked top-N by edge_count (existing behavior).
+      //   - else:      ranked top-N by importance (then edge_count).
       let ids: string[];
       let depthByNode: Map<string, number> | null = null;
       if (focal) {
@@ -664,7 +666,7 @@ export function mountOpsRoutes(app: Hono): void {
           )
           SELECT id::text AS id
           FROM candidates
-          ORDER BY edge_count DESC, importance DESC NULLS LAST, created_at DESC
+          ORDER BY importance DESC NULLS LAST, edge_count DESC, created_at DESC
           LIMIT ${topN}
         `) as unknown as Array<{ id: string }>;
         ids = ranked.map((r) => r.id);

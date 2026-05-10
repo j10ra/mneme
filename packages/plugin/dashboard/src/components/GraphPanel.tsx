@@ -18,6 +18,7 @@ import { GraphCanvas } from "./graph/GraphCanvas.tsx";
 import { GraphDetailDrawer } from "./graph/GraphDetailDrawer.tsx";
 import { GraphFilters } from "./graph/GraphFilters.tsx";
 import { GraphFooter } from "./graph/GraphFooter.tsx";
+import { GraphLegend } from "./graph/GraphLegend.tsx";
 import type {
   GraphFilters as Filters,
   GraphResponse,
@@ -301,6 +302,7 @@ export function GraphPanel() {
                 <span>back to overview</span>
               </button>
             )}
+            <GraphLegend nodes={data.nodes} />
           </>
         )}
       </div>
