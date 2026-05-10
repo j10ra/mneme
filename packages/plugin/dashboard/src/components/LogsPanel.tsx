@@ -103,44 +103,16 @@ function parseLocal(entry: LocalEntry): ParsedLine {
   };
 }
 
-// Persist the "lines we've already shown" set in localStorage so a
-// dashboard refresh skips replaying the daemon's backfill of stuff the
-// user has already seen. FIFO-capped at SEEN_LINES_CAP to bound storage.
-const SEEN_LINES_KEY = "mneme.dashboard.seen-local-lines.v1";
-const SEEN_LINES_CAP = 500;
-
-function loadSeenLines(): Set<string> {
-  if (typeof window === "undefined") return new Set();
+// Best-effort cleanup of the previous version's localStorage dedup set.
+// Removed in 1.0.84 — the unified daemon.log + 500-line backfill cap
+// handles recency naturally; the dedup was over-filtering across
+// reloads.
+if (typeof window !== "undefined") {
   try {
-    const raw = window.localStorage.getItem(SEEN_LINES_KEY);
-    if (!raw) return new Set();
-    const arr = JSON.parse(raw) as unknown;
-    if (!Array.isArray(arr)) return new Set();
-    return new Set(arr.filter((x): x is string => typeof x === "string"));
+    window.localStorage.removeItem("mneme.dashboard.seen-local-lines.v1");
   } catch {
-    return new Set();
+    /* ignore */
   }
-}
-
-function persistSeenLines(set: Set<string>): void {
-  if (typeof window === "undefined") return;
-  try {
-    // Truncate to last SEEN_LINES_CAP entries to bound storage.
-    const arr = [...set];
-    const tail = arr.length > SEEN_LINES_CAP ? arr.slice(-SEEN_LINES_CAP) : arr;
-    window.localStorage.setItem(SEEN_LINES_KEY, JSON.stringify(tail));
-  } catch {
-    /* quota / disabled — best-effort */
-  }
-}
-
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
-function rememberSeenLine(set: Set<string>, sig: string): void {
-  if (set.has(sig)) return;
-  set.add(sig);
-  // Debounce persistence so rapid bursts don't write per line.
-  if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => persistSeenLines(set), 500);
 }
 
 function fmtTime(iso: string): string {
@@ -170,10 +142,6 @@ export function LogsPanel() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stuckToBottomRef = useRef(true);
   const programmaticScrollRef = useRef(false);
-  // localStorage-backed signature set so the same backfill line never
-  // re-renders on a dashboard refresh. Each entry is `${source}|${text}`.
-  // FIFO-capped to bound localStorage growth.
-  const seenLinesRef = useRef<Set<string>>(loadSeenLines());
   // Keep the freshest stickyTail readable inside SSE/poll callbacks
   // without re-subscribing them every flip.
   const stickyTailRef = useRef(stickyTail);
@@ -199,15 +167,6 @@ export function LogsPanel() {
           text: string;
           backfill?: boolean;
         };
-        // Dedup against localStorage: backfill replays the same lines
-        // on every reconnect. If we've rendered this exact text before,
-        // skip silently. Live (non-backfill) lines always pass through
-        // and update the seen set.
-        const sig = payload.text;
-        if (payload.backfill && seenLinesRef.current.has(sig)) {
-          return;
-        }
-        rememberSeenLine(seenLinesRef.current, sig);
         localIdRef.current += 1;
         const entry: LocalEntry = {
           kind: "local",
