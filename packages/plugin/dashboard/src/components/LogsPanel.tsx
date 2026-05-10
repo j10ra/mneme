@@ -35,12 +35,17 @@ type LocalEntry = {
   id: number;
   level: LogLevel;
   text: string;
+  /** Absolute ms epoch for histogram bucketing. Parsed from the
+   *  HH:MM:SS.ms prefix and lifted to today's date; if the parsed time
+   *  is ahead of `now`, it's assumed to be from yesterday. */
+  tsMs: number;
 };
 
 type ServerEntry = {
   kind: "server";
   id: string;
   ts: string;
+  tsMs: number;
   level: LogLevel;
   message: string;
   machine_id: string | null;
@@ -115,6 +120,20 @@ if (typeof window !== "undefined") {
   }
 }
 
+/** Parse `HH:MM:SS.mmm` into an absolute ms epoch by lifting onto
+ *  today's date. If that produces a future time, walk back one day —
+ *  handles the cross-midnight backfill case. */
+function parsedTimeToMs(time: string | undefined, now = Date.now()): number {
+  if (!time) return now;
+  const m = time.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{3})$/);
+  if (!m) return now;
+  const [, h, mn, s, ms] = m;
+  const d = new Date(now);
+  d.setHours(+h, +mn, +s, +ms);
+  if (d.getTime() > now + 60_000) d.setDate(d.getDate() - 1);
+  return d.getTime();
+}
+
 function fmtTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -137,6 +156,12 @@ export function LogsPanel() {
     new Set(["debug", "info", "warn", "error"]),
   );
   const [hiddenMachines, setHiddenMachines] = useState<Set<string>>(new Set());
+  // Histogram bar click → narrows the visible range to [start, end).
+  // Cleared by clicking the bar again or hitting the clear pill.
+  const [rangeFilter, setRangeFilter] = useState<{
+    start: number;
+    end: number;
+  } | null>(null);
 
   const localIdRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -168,11 +193,15 @@ export function LogsPanel() {
           backfill?: boolean;
         };
         localIdRef.current += 1;
+        // Pull HH:MM:SS.mmm out of the line text for histogram
+        // bucketing. Falls back to wall-clock if the parser can't.
+        const tsMatch = payload.text.match(/^(\d{2}:\d{2}:\d{2}\.\d{3})/);
         const entry: LocalEntry = {
           kind: "local",
           id: localIdRef.current,
           level: payload.level,
           text: payload.text,
+          tsMs: parsedTimeToMs(tsMatch?.[1]),
         };
         if (!stickyTailRef.current) {
           // Tail paused — buffer for drain on resume; cap so a long
@@ -237,17 +266,22 @@ export function LogsPanel() {
         }>(`/server-logs?since=${encodeURIComponent(since)}&limit=500`);
         if (cancelled) return;
         const fresh: ServerEntry[] = resp.logs
-          .map((r) => ({
-            kind: "server" as const,
-            id: r.id,
-            ts: typeof r.ts === "string" ? r.ts : new Date(r.ts).toISOString(),
-            level: (r.level?.toLowerCase() as LogLevel) ?? "info",
-            message: r.message ?? "",
-            machine_id: r.machine_id,
-            machine_name: r.machine_name,
-            span_name: r.span_name,
-            trace_id: r.trace_id,
-          }))
+          .map((r) => {
+            const tsIso =
+              typeof r.ts === "string" ? r.ts : new Date(r.ts).toISOString();
+            return {
+              kind: "server" as const,
+              id: r.id,
+              ts: tsIso,
+              tsMs: new Date(tsIso).getTime(),
+              level: (r.level?.toLowerCase() as LogLevel) ?? "info",
+              message: r.message ?? "",
+              machine_id: r.machine_id,
+              machine_name: r.machine_name,
+              span_name: r.span_name,
+              trace_id: r.trace_id,
+            };
+          })
           .reverse(); // server returns DESC; we render ASC for chronological tail
         if (fresh.length > 0) {
           lastTs = fresh[fresh.length - 1]!.ts;
@@ -301,6 +335,7 @@ export function LogsPanel() {
   useEffect(() => {
     setHiddenMachines(new Set());
     setQuery("");
+    setRangeFilter(null);
     localBufferRef.current = [];
     serverBufferRef.current = [];
     setPausedCount(0);
@@ -330,11 +365,14 @@ export function LogsPanel() {
   // ── Filter pipeline (per-mode) ───────────────────────────────────
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const inRange = (ts: number): boolean =>
+      !rangeFilter || (ts >= rangeFilter.start && ts < rangeFilter.end);
     if (mode === "local") {
       const out: Array<LocalEntry & { parsed: ParsedLine }> = [];
       for (const e of localEntries) {
         if (!levelFilter.has(e.level)) continue;
         if (q && !e.text.toLowerCase().includes(q)) continue;
+        if (!inRange(e.tsMs)) continue;
         out.push({ ...e, parsed: parseLocal(e) });
       }
       return out;
@@ -352,6 +390,7 @@ export function LogsPanel() {
       ) {
         continue;
       }
+      if (!inRange(e.tsMs)) continue;
       out.push(e);
     }
     return out;
@@ -362,7 +401,41 @@ export function LogsPanel() {
     levelFilter,
     hiddenMachines,
     query,
+    rangeFilter,
   ]);
+
+  // Histogram operates on the unfiltered (sans range) entry list so the
+  // user can see the full distribution and click into a bucket.
+  const histogramEntries = useMemo<
+    Array<{ tsMs: number; level: LogLevel }>
+  >(() => {
+    const q = query.trim().toLowerCase();
+    if (mode === "local") {
+      const out: Array<{ tsMs: number; level: LogLevel }> = [];
+      for (const e of localEntries) {
+        if (!levelFilter.has(e.level)) continue;
+        if (q && !e.text.toLowerCase().includes(q)) continue;
+        out.push({ tsMs: e.tsMs, level: e.level });
+      }
+      return out;
+    }
+    const out: Array<{ tsMs: number; level: LogLevel }> = [];
+    for (const e of serverEntries) {
+      if (!levelFilter.has(e.level)) continue;
+      const machineKey = e.machine_id ?? "_unattributed";
+      if (hiddenMachines.has(machineKey)) continue;
+      if (
+        q &&
+        !(`${e.message} ${e.span_name ?? ""} ${e.machine_name ?? ""}`)
+          .toLowerCase()
+          .includes(q)
+      ) {
+        continue;
+      }
+      out.push({ tsMs: e.tsMs, level: e.level });
+    }
+    return out;
+  }, [mode, localEntries, serverEntries, levelFilter, hiddenMachines, query]);
 
   const totalEntries =
     mode === "local" ? localEntries.length : serverEntries.length;
@@ -573,6 +646,21 @@ export function LogsPanel() {
             ))}
           </div>
         )}
+
+        {histogramEntries.length > 0 && (
+          <Histogram
+            entries={histogramEntries}
+            range={rangeFilter}
+            onSelectBucket={(start, end) =>
+              setRangeFilter((cur) =>
+                cur && cur.start === start && cur.end === end
+                  ? null
+                  : { start, end },
+              )
+            }
+            onClear={() => setRangeFilter(null)}
+          />
+        )}
       </div>
 
       <div
@@ -613,6 +701,152 @@ export function LogsPanel() {
           jump to live
         </Button>
       )}
+    </div>
+  );
+}
+
+function Histogram({
+  entries,
+  range,
+  onSelectBucket,
+  onClear,
+}: {
+  entries: Array<{ tsMs: number; level: LogLevel }>;
+  range: { start: number; end: number } | null;
+  onSelectBucket: (start: number, end: number) => void;
+  onClear: () => void;
+}) {
+  const BUCKETS = 60;
+  const HEIGHT = 36;
+  type Bucket = {
+    info: number;
+    warn: number;
+    error: number;
+    debug: number;
+    total: number;
+    start: number;
+    end: number;
+  };
+
+  const data = useMemo(() => {
+    if (entries.length === 0) {
+      return { buckets: [] as Bucket[], minTs: 0, maxTs: 0, maxCount: 0 };
+    }
+    let mn = Infinity;
+    let mx = -Infinity;
+    for (const e of entries) {
+      if (e.tsMs < mn) mn = e.tsMs;
+      if (e.tsMs > mx) mx = e.tsMs;
+    }
+    if (mn === mx) mx = mn + 1;
+    const size = (mx - mn) / BUCKETS;
+    const bks: Bucket[] = Array.from({ length: BUCKETS }, (_, i) => ({
+      info: 0,
+      warn: 0,
+      error: 0,
+      debug: 0,
+      total: 0,
+      start: mn + i * size,
+      end: mn + (i + 1) * size,
+    }));
+    for (const e of entries) {
+      let i = Math.floor((e.tsMs - mn) / size);
+      if (i >= BUCKETS) i = BUCKETS - 1;
+      if (i < 0) i = 0;
+      bks[i]![e.level] += 1;
+      bks[i]!.total += 1;
+    }
+    let mc = 0;
+    for (const b of bks) if (b.total > mc) mc = b.total;
+    return { buckets: bks, minTs: mn, maxTs: mx, maxCount: mc };
+  }, [entries]);
+
+  if (data.buckets.length === 0 || data.maxCount === 0) return null;
+
+  const fmt = (ts: number) => {
+    const d = new Date(ts);
+    return [d.getHours(), d.getMinutes(), d.getSeconds()]
+      .map((n) => n.toString().padStart(2, "0"))
+      .join(":");
+  };
+
+  const hasRange = !!range;
+
+  return (
+    <div className="px-3 pb-2">
+      <div className="relative">
+        <svg
+          viewBox={`0 0 ${BUCKETS} ${HEIGHT}`}
+          preserveAspectRatio="none"
+          className={cn("w-full cursor-pointer", `h-[${HEIGHT}px]`)}
+          style={{ height: HEIGHT }}
+        >
+          {data.buckets.map((b, i) => {
+            const isInRange =
+              hasRange && b.start >= range!.start && b.end <= range!.end;
+            const dimmed = hasRange && !isInRange;
+            const segs: Array<{ count: number; cls: string }> = [
+              { count: b.debug, cls: "fill-muted-foreground/40" },
+              { count: b.info, cls: "fill-sky-500/70" },
+              { count: b.warn, cls: "fill-warning/80" },
+              { count: b.error, cls: "fill-destructive" },
+            ];
+            let yOffset = HEIGHT;
+            const rects: React.ReactNode[] = [];
+            for (let j = 0; j < segs.length; j++) {
+              const s = segs[j]!;
+              if (s.count === 0) continue;
+              const h = (s.count / data.maxCount) * HEIGHT;
+              yOffset -= h;
+              rects.push(
+                <rect
+                  key={j}
+                  x={i + 0.08}
+                  y={yOffset}
+                  width={0.84}
+                  height={h}
+                  className={cn(s.cls, dimmed && "opacity-30")}
+                />,
+              );
+            }
+            return (
+              <g key={i} onClick={() => onSelectBucket(b.start, b.end)}>
+                <rect
+                  x={i}
+                  y={0}
+                  width={1}
+                  height={HEIGHT}
+                  className={cn(
+                    "fill-transparent hover:fill-foreground/5",
+                    isInRange && "fill-foreground/10",
+                  )}
+                >
+                  <title>
+                    {fmt(b.start)} · {b.total}{" "}
+                    {b.total === 1 ? "entry" : "entries"}
+                    {b.error > 0 ? ` · ${b.error} error` : ""}
+                    {b.warn > 0 ? ` · ${b.warn} warn` : ""}
+                  </title>
+                </rect>
+                {rects}
+              </g>
+            );
+          })}
+        </svg>
+        <div className="mt-0.5 flex justify-between text-[9px] text-muted-foreground tabular-nums">
+          <span>{fmt(data.minTs)}</span>
+          <span>{fmt(data.maxTs)}</span>
+        </div>
+        {hasRange && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="absolute -top-1 right-0 rounded-md border border-border bg-card px-1.5 py-0.5 text-[9px] text-muted-foreground hover:text-foreground"
+          >
+            clear range
+          </button>
+        )}
+      </div>
     </div>
   );
 }
