@@ -11,7 +11,7 @@
 // pipeline, it stops being useful. 4xx on a malformed span shape
 // fails the same way.
 
-import { Logger } from "@mneme/core";
+import { Logger, errorMessageOf } from "@mneme/core";
 import type {
   LogRecord,
   SpanRecord,
@@ -209,7 +209,7 @@ export class TraceForwarder implements TraceSink {
       if (isNetworkOfflineError(err)) {
         Logger.debug("trace-forwarder: flush skipped (offline)", {
           ...meta,
-          error: err instanceof Error ? err.message : String(err),
+          error: errorMessageOf(err),
         });
       } else {
         Logger.warn("trace-forwarder: flush failed", err, meta);

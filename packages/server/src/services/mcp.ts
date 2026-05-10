@@ -2,7 +2,7 @@
 // matters for our one tool (mneme.sql): initialize, tools/list, tools/call,
 // notifications/initialized, ping. No SDK dep, no streaming.
 
-import { Logger, mnemeFn } from "@mneme/core";
+import { Logger, errorMessageOf, mnemeFn } from "@mneme/core";
 import { scrub } from "@mneme/shared";
 import { readerSql } from "../infra/db.ts";
 import { embedBatch } from "../embedder/index.ts";
@@ -210,7 +210,7 @@ export async function dispatch(req: JsonRpcRequest): Promise<JsonRpcResponse | n
           isError: false,
         });
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = errorMessageOf(e);
         Logger.warn(`mneme.sql failed: ${msg}`);
         return ok(id, {
           content: [{ type: "text", text: `error: ${msg}` }],

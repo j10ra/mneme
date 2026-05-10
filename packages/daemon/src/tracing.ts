@@ -8,7 +8,7 @@
 // keeps no-op ticks (every 2s when the outbox is empty) from hammering
 // the trace pipeline.
 
-import { Logger, getTraceStore, newId, storage } from "@mneme/core";
+import { Logger, errorMessageOf, getTraceStore, newId, storage } from "@mneme/core";
 import type { Span, TraceContext } from "@mneme/core";
 
 export async function withRootTrace<T>(
@@ -32,7 +32,7 @@ export async function withRootTrace<T>(
     result = await storage.run(ctx, fn);
     return result;
   } catch (err) {
-    errorMessage = err instanceof Error ? err.message : String(err);
+    errorMessage = errorMessageOf(err);
     throw err;
   } finally {
     const endedAtMs = Date.now();

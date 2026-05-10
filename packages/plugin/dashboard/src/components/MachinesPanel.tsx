@@ -1,13 +1,14 @@
 // Machines panel — registered machines split into Live (heartbeat fresh)
-// and Known (everyone else, including revoked + never-heartbeated). Live
-// rows surface first. Polls /dashboard/api/machines every 30s.
-//
-// State contract: loading skeleton, empty, error with retry, stale
-// (cached + warn banner) all handled — same shape as StatusPanel.
+// and Known (everyone else); revoked rows summarised by name.
 
+import { Laptop } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ApiError, apiGet } from "../lib/api.ts";
 import { cn } from "../lib/cn.ts";
+import { Alert, AlertDescription, AlertTitle } from "./ui/alert.tsx";
+import { Badge } from "./ui/badge.tsx";
+import { Card, CardDescription, CardHeader, CardTitle } from "./ui/card.tsx";
+import { Skeleton } from "./ui/skeleton.tsx";
 
 type MachineRow = {
   id: string;
@@ -34,7 +35,7 @@ type FetchState =
   | { kind: "error"; error: string };
 
 const POLL_MS = 30_000;
-const LIVE_THRESHOLD_MS = 3 * 60_000; // <3min since heartbeat = live
+const LIVE_THRESHOLD_MS = 3 * 60_000;
 
 function fmtAge(ms: number | null): string {
   if (ms === null) return "never";
@@ -93,30 +94,40 @@ export function MachinesPanel() {
   }, []);
 
   return (
-    <div className="rounded-lg border border-border bg-card text-card-foreground p-5">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold tracking-tight">Machines</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            registered · live = heartbeat &lt; 3m
-          </p>
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle>Machines</CardTitle>
+          {state.kind === "ok" || state.kind === "stale" ? (
+            <CountBadges data={state.data} />
+          ) : null}
         </div>
+        <CardDescription>registered · live = heartbeat &lt; 3m</CardDescription>
+      </CardHeader>
+
+      <div className="px-5 pb-5 space-y-4">
+        {state.kind === "loading" && <SkeletonRows />}
+        {state.kind === "error" && (
+          <Alert variant="destructive">
+            <AlertTitle>Failed to load machines</AlertTitle>
+            <AlertDescription>{state.error}</AlertDescription>
+          </Alert>
+        )}
         {(state.kind === "ok" || state.kind === "stale") && (
-          <CountBadges data={state.data} />
+          <>
+            {state.kind === "stale" && (
+              <Alert variant="warning">
+                <AlertTitle>Stale data</AlertTitle>
+                <AlertDescription>
+                  last updated {fmtAge(Date.now() - state.fetchedAt)} ago — last error: {state.error}
+                </AlertDescription>
+              </Alert>
+            )}
+            <MachinesContent data={state.data} />
+          </>
         )}
       </div>
-
-      {state.kind === "loading" && <SkeletonRows />}
-      {state.kind === "error" && <ErrorBox message={state.error} />}
-      {(state.kind === "ok" || state.kind === "stale") && (
-        <>
-          {state.kind === "stale" && (
-            <StaleBanner fetchedAt={state.fetchedAt} error={state.error} />
-          )}
-          <MachinesContent data={state.data} />
-        </>
-      )}
-    </div>
+    </Card>
   );
 }
 
@@ -124,12 +135,17 @@ function CountBadges({ data }: { data: MachinesResponse }) {
   const live = data.machines.filter(isLive).length;
   const total = data.machines.filter((m) => !m.revoked_at).length;
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2 py-0.5">
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
+    <div className="flex items-center gap-2">
+      <Badge variant={live > 0 ? "success" : "secondary"}>
+        <span
+          className={cn(
+            "inline-block h-1.5 w-1.5 rounded-full",
+            live > 0 ? "bg-success" : "bg-muted-foreground/40",
+          )}
+        />
         {live} live
-      </span>
-      <span className="text-muted-foreground">{total} active</span>
+      </Badge>
+      <span className="text-xs text-muted-foreground">{total} active</span>
     </div>
   );
 }
@@ -139,8 +155,6 @@ function MachinesContent({ data }: { data: MachinesResponse }) {
     return <Empty>No machines registered yet.</Empty>;
   }
 
-  // Live first (sorted by freshest heartbeat), then known (active non-live by
-  // last_used desc), then revoked at the bottom.
   const live: MachineRow[] = [];
   const known: MachineRow[] = [];
   const revoked: MachineRow[] = [];
@@ -149,9 +163,15 @@ function MachinesContent({ data }: { data: MachinesResponse }) {
     else if (isLive(m)) live.push(m);
     else known.push(m);
   }
-  live.sort((a, b) => (ageMs(a.heartbeat_posted_at) ?? Infinity) - (ageMs(b.heartbeat_posted_at) ?? Infinity));
-  known.sort((a, b) => (ageMs(a.last_used_at) ?? Infinity) - (ageMs(b.last_used_at) ?? Infinity));
-  revoked.sort((a, b) => (ageMs(a.revoked_at) ?? Infinity) - (ageMs(b.revoked_at) ?? Infinity));
+  live.sort(
+    (a, b) =>
+      (ageMs(a.heartbeat_posted_at) ?? Infinity) -
+      (ageMs(b.heartbeat_posted_at) ?? Infinity),
+  );
+  known.sort(
+    (a, b) =>
+      (ageMs(a.last_used_at) ?? Infinity) - (ageMs(b.last_used_at) ?? Infinity),
+  );
 
   return (
     <div className="space-y-4">
@@ -169,13 +189,7 @@ function MachinesContent({ data }: { data: MachinesResponse }) {
           ))}
         </Section>
       )}
-      {revoked.length > 0 && (
-        <Section title="Revoked" hint="tokens disabled">
-          {revoked.map((m) => (
-            <Row key={m.id} m={m} live={false} revoked />
-          ))}
-        </Section>
-      )}
+      {revoked.length > 0 && <RevokedSummary rows={revoked} />}
     </div>
   );
 }
@@ -200,40 +214,20 @@ function Section({
   );
 }
 
-function Row({
-  m,
-  live,
-  revoked,
-}: {
-  m: MachineRow;
-  live: boolean;
-  revoked?: boolean;
-}) {
+function Row({ m, live }: { m: MachineRow; live: boolean }) {
   const heartbeatAge = ageMs(m.heartbeat_posted_at);
   const lastUsedAge = ageMs(m.last_used_at);
   const pending = m.heartbeat_pending ?? 0;
   const failed = m.heartbeat_failed ?? 0;
 
   return (
-    <div
-      className={cn(
-        "flex items-center justify-between rounded-md border px-3 py-2 text-sm",
-        revoked
-          ? "border-border/50 bg-muted/20 opacity-70"
-          : "border-border bg-card",
-      )}
-    >
+    <div className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-sm">
       <div className="flex min-w-0 items-center gap-3">
-        <span
+        <Laptop
           className={cn(
-            "inline-block h-2 w-2 shrink-0 rounded-full",
-            revoked
-              ? "bg-muted-foreground/50"
-              : live
-                ? "bg-success"
-                : "bg-warning",
+            "h-3.5 w-3.5 shrink-0",
+            live ? "text-success" : "text-warning",
           )}
-          aria-label={revoked ? "revoked" : live ? "live" : "stale"}
         />
         <span className="font-medium truncate">{m.name}</span>
         {m.machine_id && (
@@ -242,28 +236,92 @@ function Row({
           </span>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
-        {!revoked && heartbeatAge !== null && (
+      <div className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground tabular-nums">
+        {heartbeatAge !== null ? (
           <span title="last heartbeat">♥ {fmtAge(heartbeatAge)}</span>
-        )}
-        {!revoked && heartbeatAge === null && (
+        ) : (
           <span className="opacity-60">no heartbeat</span>
         )}
-        {!revoked && pending > 0 && (
-          <span className={cn(pending > 100 && "text-warning")}>
+        {pending > 0 && (
+          <Badge variant={pending > 100 ? "warning" : "secondary"}>
             {pending} pending
-          </span>
+          </Badge>
         )}
-        {!revoked && failed > 0 && (
-          <span className="text-destructive">{failed} failed</span>
+        {failed > 0 && (
+          <Badge variant="destructive">{failed} failed</Badge>
         )}
-        {revoked ? (
-          <span>revoked {fmtAge(ageMs(m.revoked_at))} ago</span>
-        ) : (
-          <span title="last token use">used {fmtAge(lastUsedAge)} ago</span>
-        )}
+        <span title="last token use">used {fmtAge(lastUsedAge)} ago</span>
       </div>
     </div>
+  );
+}
+
+function RevokedSummary({ rows }: { rows: MachineRow[] }) {
+  type Group = {
+    name: string;
+    tokenCount: number;
+    machineIds: Set<string>;
+    mostRecent: number;
+  };
+  const groups = new Map<string, Group>();
+  for (const m of rows) {
+    const g =
+      groups.get(m.name) ??
+      ({
+        name: m.name,
+        tokenCount: 0,
+        machineIds: new Set<string>(),
+        mostRecent: 0,
+      } satisfies Group);
+    g.tokenCount += 1;
+    if (m.machine_id) g.machineIds.add(m.machine_id);
+    const t = m.revoked_at ? new Date(m.revoked_at).getTime() : 0;
+    if (t > g.mostRecent) g.mostRecent = t;
+    groups.set(m.name, g);
+  }
+  const sorted = [...groups.values()].sort((a, b) => b.mostRecent - a.mostRecent);
+  const totalTokens = rows.length;
+  const overallMostRecent = sorted[0]?.mostRecent ?? 0;
+
+  return (
+    <section>
+      <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-2">
+        Revoked
+        <span className="font-normal normal-case">
+          · {totalTokens} {totalTokens === 1 ? "token" : "tokens"} across{" "}
+          {groups.size} {groups.size === 1 ? "name" : "names"}
+          {overallMostRecent > 0 &&
+            ` · last ${fmtAge(Date.now() - overallMostRecent)} ago`}
+        </span>
+      </h3>
+      <div className="rounded-md border border-border/50 bg-muted/20 divide-y divide-border/30 text-sm">
+        {sorted.map((g) => (
+          <div
+            key={g.name}
+            className="flex items-center justify-between px-3 py-1.5 opacity-80"
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <Laptop className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+              <span className="font-medium truncate">{g.name}</span>
+            </div>
+            <div className="flex shrink-0 items-center gap-4 text-xs text-muted-foreground tabular-nums">
+              <span>
+                {g.tokenCount} {g.tokenCount === 1 ? "token" : "tokens"}
+              </span>
+              {g.machineIds.size > 1 && (
+                <Badge
+                  variant="secondary"
+                  title="distinct machine_ids — likely re-install churn"
+                >
+                  {g.machineIds.size} machine_ids
+                </Badge>
+              )}
+              <span>{fmtAge(Date.now() - g.mostRecent)} ago</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -271,7 +329,7 @@ function SkeletonRows() {
   return (
     <div className="space-y-2">
       {[0, 1].map((i) => (
-        <div key={i} className="h-9 rounded-md bg-muted animate-pulse" />
+        <Skeleton key={i} className="h-9" />
       ))}
     </div>
   );
@@ -281,32 +339,6 @@ function Empty({ children }: { children: React.ReactNode }) {
   return (
     <div className="rounded-md border border-dashed border-border bg-muted/30 px-3 py-4 text-center text-xs text-muted-foreground">
       {children}
-    </div>
-  );
-}
-
-function ErrorBox({ message }: { message: string }) {
-  return (
-    <div className="rounded-md border border-destructive/50 bg-destructive/10 text-destructive px-3 py-2 text-sm">
-      <strong className="font-medium">Failed to load machines</strong>
-      <p className="mt-1 text-xs opacity-80">{message}</p>
-    </div>
-  );
-}
-
-function StaleBanner({
-  fetchedAt,
-  error,
-}: {
-  fetchedAt: number;
-  error: string;
-}) {
-  return (
-    <div className="mb-3 rounded-md border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs">
-      <strong className="font-medium">Stale data</strong>{" "}
-      <span className="opacity-80">
-        last updated {fmtAge(Date.now() - fetchedAt)} ago — last error: {error}
-      </span>
     </div>
   );
 }

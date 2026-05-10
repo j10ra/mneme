@@ -119,6 +119,32 @@ export function mountDashboardRoutes(app: Hono): void {
     proxyHandler("/api/auth/machines", "dashboard.machines"),
   );
 
+  // GET /dashboard/api/server-logs — proxies /api/_ops/logs (read-scoped)
+  // Forwards the query string verbatim so client-side filtering (since,
+  // level, limit) flows through unchanged.
+  app.get(
+    "/dashboard/api/server-logs",
+    mnemeRoute("daemon.dashboard.server_logs"),
+    async (c) => {
+      const cfg = await readDaemonConfig();
+      if (!cfg) return c.json({ error: "config not loaded" }, 503);
+      const qs = new URL(c.req.url).search;
+      try {
+        const resp = await fetch(`${cfg.serverUrl}/api/_ops/logs${qs}`, {
+          headers: { Authorization: `Bearer ${cfg.token}` },
+        });
+        const body = await resp.text();
+        return c.body(body, resp.status as 200, {
+          "content-type":
+            resp.headers.get("content-type") ?? "application/json",
+        });
+      } catch (err) {
+        Logger.warn("dashboard.server_logs: upstream fetch failed", err);
+        return c.json({ error: "upstream unavailable" }, 502);
+      }
+    },
+  );
+
   // GET /dashboard/api/logs/stream — SSE tail of local daemon log files.
   // Reads ~/.mneme/logs/daemon.{out,err}.log directly (no server hop).
   // On connect: replays last N lines of each file. Then polls every

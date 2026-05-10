@@ -13,6 +13,7 @@ export {
   type TraceSink,
 } from "./trace-store.ts";
 export { requireAuth, configureAuth, hashKey } from "./auth.ts";
+export { errorMessageOf } from "./errors.ts";
 export {
   storage,
   currentTrace,

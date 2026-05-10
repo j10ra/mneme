@@ -7,7 +7,7 @@
 //   register({ name: "nap", scheduleMs: 6 * 3600_000, run: runNapOnce })
 //   startScheduler()  // single setInterval ticking every 60s
 
-import { Logger } from "@mneme/core";
+import { Logger, errorMessageOf } from "@mneme/core";
 import { sql } from "../infra/db.ts";
 
 const TICK_MS = 60_000;
@@ -97,7 +97,7 @@ async function tick(): Promise<void> {
       await job.run();
     } catch (e) {
       status = "failed";
-      errorMsg = e instanceof Error ? e.message : String(e);
+      errorMsg = errorMessageOf(e);
       Logger.error("scheduler: job failed", e, { job: job.name });
     }
     const elapsed = Date.now() - t0;

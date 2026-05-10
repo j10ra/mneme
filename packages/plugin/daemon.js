@@ -3,7 +3,7 @@ var __require = import.meta.require;
 
 // packages/daemon/src/index.ts
 import { readFile as readFile4 } from "fs/promises";
-import { homedir as homedir4 } from "os";
+import { homedir as homedir5 } from "os";
 import { join as join6 } from "path";
 
 // packages/core/src/context.ts
@@ -1543,9 +1543,12 @@ function mountCaptureRoute(app, runtime) {
 }
 
 // packages/daemon/src/routes/dashboard.ts
-import { existsSync as existsSync3 } from "fs";
+import { existsSync as existsSync3, statSync } from "fs";
+import { open as fsOpen } from "fs/promises";
+import { homedir as homedir2 } from "os";
 import { dirname, join as join3 } from "path";
 import { fileURLToPath } from "url";
+import { streamSSE } from "hono/streaming";
 function dashboardDist() {
   const fromEnv = process.env.MNEME_PLUGIN_ROOT;
   if (fromEnv && fromEnv.trim()) {
@@ -1601,13 +1604,15 @@ function mountDashboardRoutes(app) {
       "cache-control": "no-cache"
     });
   });
-  app.get("/dashboard/api/status", mnemeRoute("daemon.dashboard.status"), async (c) => {
+  app.get("/dashboard/api/status", mnemeRoute("daemon.dashboard.status"), proxyHandler("/api/_ops/status", "dashboard.status"));
+  app.get("/dashboard/api/machines", mnemeRoute("daemon.dashboard.machines"), proxyHandler("/api/auth/machines", "dashboard.machines"));
+  app.get("/dashboard/api/server-logs", mnemeRoute("daemon.dashboard.server_logs"), async (c) => {
     const cfg = await readDaemonConfig();
-    if (!cfg) {
+    if (!cfg)
       return c.json({ error: "config not loaded" }, 503);
-    }
+    const qs = new URL(c.req.url).search;
     try {
-      const resp = await fetch(`${cfg.serverUrl}/api/_ops/status`, {
+      const resp = await fetch(`${cfg.serverUrl}/api/_ops/logs${qs}`, {
         headers: { Authorization: `Bearer ${cfg.token}` }
       });
       const body = await resp.text();
@@ -1615,16 +1620,178 @@ function mountDashboardRoutes(app) {
         "content-type": resp.headers.get("content-type") ?? "application/json"
       });
     } catch (err) {
-      Logger.warn("dashboard.status: upstream fetch failed", err);
+      Logger.warn("dashboard.server_logs: upstream fetch failed", err);
       return c.json({ error: "upstream unavailable" }, 502);
     }
   });
+  app.get("/dashboard/api/logs/stream", mnemeRoute("daemon.dashboard.logs.stream"), (c) => streamSSE(c, async (stream) => streamLogs(stream)));
+}
+function proxyHandler(upstreamPath, traceTag) {
+  return async (c) => {
+    const cfg = await readDaemonConfig();
+    if (!cfg) {
+      return c.json({ error: "config not loaded" }, 503);
+    }
+    try {
+      const resp = await fetch(`${cfg.serverUrl}${upstreamPath}`, {
+        headers: { Authorization: `Bearer ${cfg.token}` }
+      });
+      const body = await resp.text();
+      return c.body(body, resp.status, {
+        "content-type": resp.headers.get("content-type") ?? "application/json"
+      });
+    } catch (err) {
+      Logger.warn(`${traceTag}: upstream fetch failed`, err);
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  };
+}
+var LOG_POLL_MS = 1000;
+var LOG_PING_MS = 15000;
+var LOG_BACKFILL_BYTES = 32 * 1024;
+function logPaths() {
+  const dir = join3(homedir2(), ".mneme", "logs");
+  return {
+    out: join3(dir, "daemon.out.log"),
+    err: join3(dir, "daemon.err.log")
+  };
+}
+function inferLevel(line) {
+  if (line.includes(" ERROR "))
+    return "error";
+  if (line.includes(" WARN "))
+    return "warn";
+  if (line.includes(" DEBUG "))
+    return "debug";
+  return "info";
+}
+async function readTail(path, maxBytes) {
+  if (!existsSync3(path))
+    return { text: "", size: 0 };
+  const st = statSync(path);
+  const size = st.size;
+  if (size === 0)
+    return { text: "", size: 0 };
+  const start = size > maxBytes ? size - maxBytes : 0;
+  const fh = await fsOpen(path, "r");
+  try {
+    const buf = Buffer.alloc(size - start);
+    await fh.read(buf, 0, buf.length, start);
+    let text = buf.toString("utf8");
+    if (start > 0) {
+      const nl = text.indexOf(`
+`);
+      if (nl >= 0)
+        text = text.slice(nl + 1);
+    }
+    return { text, size };
+  } finally {
+    await fh.close();
+  }
+}
+async function readNewBytes(path, fromByte) {
+  if (!existsSync3(path))
+    return { text: "", size: fromByte };
+  const st = statSync(path);
+  const size = st.size;
+  if (size < fromByte) {
+    return readNewBytes(path, 0);
+  }
+  if (size === fromByte)
+    return { text: "", size };
+  const fh = await fsOpen(path, "r");
+  try {
+    const buf = Buffer.alloc(size - fromByte);
+    await fh.read(buf, 0, buf.length, fromByte);
+    return { text: buf.toString("utf8"), size };
+  } finally {
+    await fh.close();
+  }
+}
+async function streamLogs(stream) {
+  const paths = logPaths();
+  const cursors = { out: 0, err: 0 };
+  let id = 0;
+  const send = async (source, line, isBackfill) => {
+    if (!line)
+      return;
+    id++;
+    await stream.writeSSE({
+      id: String(id),
+      event: "log",
+      data: JSON.stringify({
+        source,
+        level: inferLevel(line),
+        text: line,
+        backfill: isBackfill
+      })
+    });
+  };
+  for (const source of ["out", "err"]) {
+    try {
+      const { text, size } = await readTail(paths[source], LOG_BACKFILL_BYTES);
+      cursors[source] = size;
+      const lines = text.split(`
+`);
+      if (lines.length && lines[lines.length - 1] === "")
+        lines.pop();
+      for (const line of lines) {
+        await send(source, line, true);
+      }
+    } catch (err) {
+      Logger.warn(`dashboard.logs.stream: backfill ${source} failed`, err);
+    }
+  }
+  await stream.writeSSE({
+    event: "ready",
+    data: JSON.stringify({ at: new Date().toISOString() })
+  });
+  let lastPing = Date.now();
+  while (!stream.aborted && !stream.closed) {
+    for (const source of ["out", "err"]) {
+      try {
+        const { text, size } = await readNewBytes(paths[source], cursors[source]);
+        cursors[source] = size;
+        if (text) {
+          const lastNl = text.lastIndexOf(`
+`);
+          let consumed;
+          if (lastNl < 0) {
+            cursors[source] = size - text.length;
+            consumed = "";
+          } else if (lastNl === text.length - 1) {
+            consumed = text.slice(0, -1);
+          } else {
+            const partial = text.slice(lastNl + 1);
+            cursors[source] = size - partial.length;
+            consumed = text.slice(0, lastNl);
+          }
+          if (consumed) {
+            for (const line of consumed.split(`
+`)) {
+              await send(source, line, false);
+            }
+          }
+        }
+      } catch (err) {
+        Logger.warn(`dashboard.logs.stream: tail ${source} failed`, err);
+      }
+    }
+    if (Date.now() - lastPing > LOG_PING_MS) {
+      await stream.writeSSE({
+        event: "ping",
+        data: String(Date.now())
+      });
+      lastPing = Date.now();
+    }
+    await stream.sleep(LOG_POLL_MS);
+  }
 }
 async function readDaemonConfig() {
   try {
     const { readFile: readFile3 } = await import("fs/promises");
-    const { homedir: homedir2 } = await import("os");
-    const path = join3(homedir2(), ".mneme", "config.json");
+    const { homedir: homedir3 } = await import("os");
+    const path = join3(homedir3(), ".mneme", "config.json");
     const raw = await readFile3(path, "utf8");
     const cfg = JSON.parse(raw);
     if (!cfg.server?.url || !cfg.auth?.key)
@@ -1693,7 +1860,7 @@ function mountOpsRoutes(app, runtime) {
 // packages/daemon/src/runtime.ts
 import { existsSync as existsSync4 } from "fs";
 import { appendFile, mkdir as mkdir3, readFile as fsReadFile } from "fs/promises";
-import { homedir as homedir2 } from "os";
+import { homedir as homedir3 } from "os";
 import { join as join4 } from "path";
 
 // packages/shared/src/scrub.ts
@@ -1904,7 +2071,7 @@ function createRuntime(deps) {
       }));
     }
   }
-  const SHAS_DIR = deps.shasDir ?? join4(homedir2(), ".mneme", "shas");
+  const SHAS_DIR = deps.shasDir ?? join4(homedir3(), ".mneme", "shas");
   function shasFile(sessionId) {
     return join4(SHAS_DIR, `${sessionId}.txt`);
   }
@@ -2166,10 +2333,10 @@ function createRuntime(deps) {
 
 // packages/daemon/src/scheduler.ts
 import { mkdir as mkdir4, readFile as readFile3, rename as rename3, writeFile as writeFile3 } from "fs/promises";
-import { homedir as homedir3 } from "os";
+import { homedir as homedir4 } from "os";
 import { dirname as dirname2, join as join5 } from "path";
 var TICK_MS = 60000;
-var STATE_PATH = join5(homedir3(), ".mneme", "schedule.json");
+var STATE_PATH = join5(homedir4(), ".mneme", "schedule.json");
 var STALE_NEW_JOB_SLACK_MS = 5 * 60000;
 var registry = new Map;
 var state = {};
@@ -2568,7 +2735,7 @@ var DREAM_SCHEDULE_MS = 8 * 3600000;
 var HEARTBEAT_SCHEDULE_MS = 60000;
 var EMBEDDER_REAP_SCHEDULE_MS = 60000;
 async function readConfig() {
-  const path = join6(homedir4(), ".mneme", "config.json");
+  const path = join6(homedir5(), ".mneme", "config.json");
   const raw = await readFile4(path, "utf8");
   const shaped = JSON.parse(raw);
   if (!shaped.daemon) {
@@ -2604,8 +2771,8 @@ function pushBundleViaServer(serverUrl, token) {
 }
 async function startDaemon() {
   const config = await readConfig();
-  const captureOutboxRoot = join6(homedir4(), ".mneme", "outbox", "capture");
-  const dreamOutboxRoot = join6(homedir4(), ".mneme", "outbox", "dream");
+  const captureOutboxRoot = join6(homedir5(), ".mneme", "outbox", "capture");
+  const dreamOutboxRoot = join6(homedir5(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
   const agent = pickAgent(config.agent_provider);

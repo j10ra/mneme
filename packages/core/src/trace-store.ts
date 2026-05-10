@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import type { Span } from "./context.ts";
+import { errorMessageOf } from "./errors.ts";
 
 export type TraceRecord = {
   traceId: string;
@@ -297,7 +298,7 @@ export class TraceStore {
     } catch (err) {
       // Last-resort: write to stderr; drop the batch rather than infinite-retry.
       process.stderr.write(
-        `[mneme/core] trace flush failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[mneme/core] trace flush failed: ${errorMessageOf(err)}\n`,
       );
     }
   }

@@ -1,4 +1,5 @@
 import { newId, storage, type Span } from "./context.ts";
+import { errorMessageOf } from "./errors.ts";
 import { getTraceStore, summarizeIO } from "./trace-store.ts";
 
 /**
@@ -38,7 +39,7 @@ export function mnemeFn<TArgs extends unknown[], TReturn>(
       span.outputSize = summary.size;
       return result;
     } catch (err) {
-      errorMessage = err instanceof Error ? err.message : String(err);
+      errorMessage = errorMessageOf(err);
       throw err;
     } finally {
       span.durationMs = Date.now() - span.startedAtMs;

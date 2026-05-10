@@ -7,9 +7,13 @@
     "build": "bun run build.ts"
   },
   "dependencies": {
+    "@base-ui-components/react": "^1.0.0-rc.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.14.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "clsx": "^2.1.1",
+    "react-resizable-panels": "^4.11.0",
     "tailwind-merge": "^2.5.5"
   },
   "devDependencies": {

@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import { newId, storage, type Span, type TraceContext } from "./context.ts";
+import { errorMessageOf } from "./errors.ts";
 import {
   getTraceStore,
   summarizeIO,
@@ -62,7 +63,7 @@ export function mnemeRoute(name: string): MiddlewareHandler {
         await next();
       });
     } catch (err) {
-      errorMessage = err instanceof Error ? err.message : String(err);
+      errorMessage = errorMessageOf(err);
       throw err;
     } finally {
       // Capture response body

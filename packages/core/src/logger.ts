@@ -1,4 +1,5 @@
 import { storage } from "./context.ts";
+import { errorMessageOf } from "./errors.ts";
 import { getTraceStore } from "./trace-store.ts";
 
 type Level = "debug" | "info" | "warn" | "error";
@@ -36,12 +37,7 @@ function emit(
   const spanId = ctx?.spanStack.at(-1)?.spanId;
   const ts = Date.now();
 
-  const errStr =
-    error instanceof Error
-      ? error.message
-      : error !== undefined
-        ? String(error)
-        : undefined;
+  const errStr = error !== undefined ? errorMessageOf(error) : undefined;
 
   // Buffer to DB store (only if traceId; orphan logs go to stderr only)
   const store = getTraceStore();
@@ -73,7 +69,7 @@ function emit(
         stack: error.stack,
       };
     } else if (error !== undefined) {
-      record.error = String(error);
+      record.error = errorMessageOf(error);
     }
     stream.write(`${JSON.stringify(record)}\n`);
   } else {
