@@ -27,13 +27,13 @@ export function App() {
 
       <div className="hidden min-[1024px]:block h-screen">
         <ResizablePanelGroup orientation="horizontal">
-          <ResizablePanel id="content" minSize="320px">
+          <ResizablePanel id="content" minSize="20%">
             <main className="h-full overflow-y-auto p-6 space-y-6">
-              <header className="flex items-center justify-between">
-                <h1 className="text-xl font-semibold tracking-tight">
+              <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <h1 className="text-xl font-semibold tracking-tight whitespace-nowrap">
                   Mneme dashboard
                 </h1>
-                <span className="text-xs text-muted-foreground">
+                <span className="text-xs text-muted-foreground whitespace-nowrap">
                   loopback · {window.location.host}
                 </span>
               </header>
@@ -45,9 +45,9 @@ export function App() {
           <ResizableHandle />
           <ResizablePanel
             id="logs"
-            defaultSize="800px"
+            defaultSize="60%"
             minSize="280px"
-            maxSize="800px"
+            maxSize="80%"
           >
             <LogsPanel />
           </ResizablePanel>

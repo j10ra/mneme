@@ -96,7 +96,7 @@ export function MachinesPanel() {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <CardTitle>Machines</CardTitle>
           {state.kind === "ok" || state.kind === "stale" ? (
             <CountBadges data={state.data} />
@@ -221,7 +221,7 @@ function Row({ m, live }: { m: MachineRow; live: boolean }) {
   const failed = m.heartbeat_failed ?? 0;
 
   return (
-    <div className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-sm">
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
       <div className="flex min-w-0 items-center gap-3">
         <Laptop
           className={cn(
@@ -236,9 +236,11 @@ function Row({ m, live }: { m: MachineRow; live: boolean }) {
           </span>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground tabular-nums">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground tabular-nums">
         {heartbeatAge !== null ? (
-          <span title="last heartbeat">♥ {fmtAge(heartbeatAge)}</span>
+          <span title="last heartbeat" className="whitespace-nowrap">
+            ♥ {fmtAge(heartbeatAge)}
+          </span>
         ) : (
           <span className="opacity-60">no heartbeat</span>
         )}
@@ -247,10 +249,10 @@ function Row({ m, live }: { m: MachineRow; live: boolean }) {
             {pending} pending
           </Badge>
         )}
-        {failed > 0 && (
-          <Badge variant="destructive">{failed} failed</Badge>
-        )}
-        <span title="last token use">used {fmtAge(lastUsedAge)} ago</span>
+        {failed > 0 && <Badge variant="destructive">{failed} failed</Badge>}
+        <span title="last token use" className="whitespace-nowrap">
+          used {fmtAge(lastUsedAge)} ago
+        </span>
       </div>
     </div>
   );
@@ -298,14 +300,14 @@ function RevokedSummary({ rows }: { rows: MachineRow[] }) {
         {sorted.map((g) => (
           <div
             key={g.name}
-            className="flex items-center justify-between px-3 py-1.5 opacity-80"
+            className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-1.5 opacity-80"
           >
             <div className="flex min-w-0 items-center gap-3">
               <Laptop className="h-3 w-3 shrink-0 text-muted-foreground/60" />
               <span className="font-medium truncate">{g.name}</span>
             </div>
-            <div className="flex shrink-0 items-center gap-4 text-xs text-muted-foreground tabular-nums">
-              <span>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground tabular-nums">
+              <span className="whitespace-nowrap">
                 {g.tokenCount} {g.tokenCount === 1 ? "token" : "tokens"}
               </span>
               {g.machineIds.size > 1 && (
@@ -316,7 +318,9 @@ function RevokedSummary({ rows }: { rows: MachineRow[] }) {
                   {g.machineIds.size} machine_ids
                 </Badge>
               )}
-              <span>{fmtAge(Date.now() - g.mostRecent)} ago</span>
+              <span className="whitespace-nowrap">
+                {fmtAge(Date.now() - g.mostRecent)} ago
+              </span>
             </div>
           </div>
         ))}
