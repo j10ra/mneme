@@ -1642,7 +1642,17 @@ function mountDashboardRoutes(app) {
     return forwardPath(`/api/_ops/memories/${id}/capture`, "dashboard.memories.capture")(c);
   });
   app.get("/dashboard/api/clusters", mnemeRoute("daemon.dashboard.clusters"), forwardQuery("/api/_ops/clusters", "dashboard.clusters"));
-  app.get("/dashboard/api/logs/stream", mnemeRoute("daemon.dashboard.logs.stream"), (c) => streamSSE(c, async (stream) => streamLogs(stream)));
+  app.get("/dashboard/api/graph", mnemeRoute("daemon.dashboard.graph"), forwardQuery("/api/_ops/graph", "dashboard.graph"));
+  app.get("/dashboard/api/logs/stream", mnemeRoute("daemon.dashboard.logs.stream"), (c) => {
+    const rangeRaw = c.req.query("range");
+    let rangeMs = null;
+    if (rangeRaw && rangeRaw !== "all") {
+      const n = Number(rangeRaw);
+      if (Number.isFinite(n) && n > 0)
+        rangeMs = n;
+    }
+    return streamSSE(c, async (stream) => streamLogs(stream, rangeMs));
+  });
 }
 function proxyHandler(upstreamPath, traceTag) {
   return async (c) => {
@@ -1707,6 +1717,7 @@ function forwardPath(upstreamPath, traceTag) {
 var LOG_POLL_MS = 1000;
 var LOG_PING_MS = 15000;
 var LOG_BACKFILL_BYTES = 256 * 1024;
+var LOG_BACKFILL_BYTES_RANGE = 16 * 1024 * 1024;
 var LOG_BACKFILL_MAX_LINES = 500;
 function logPath() {
   return join3(homedir2(), ".mneme", "logs", "daemon.log");
@@ -1763,7 +1774,17 @@ async function readNewBytes(path, fromByte) {
     await fh.close();
   }
 }
-async function streamLogs(stream) {
+function lineTsMs(line, now) {
+  const m = line.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{3})/);
+  if (!m)
+    return null;
+  const d = new Date(now);
+  d.setUTCHours(+m[1], +m[2], +m[3], +m[4]);
+  if (d.getTime() > now + 60000)
+    d.setUTCDate(d.getUTCDate() - 1);
+  return d.getTime();
+}
+async function streamLogs(stream, rangeMs) {
   const path = logPath();
   let cursor = 0;
   let id = 0;
@@ -1782,13 +1803,30 @@ async function streamLogs(stream) {
     });
   };
   try {
-    const { text, size } = await readTail(path, LOG_BACKFILL_BYTES);
+    const readBytes = rangeMs !== null ? LOG_BACKFILL_BYTES_RANGE : LOG_BACKFILL_BYTES;
+    const { text, size } = await readTail(path, readBytes);
     cursor = size;
     const allLines = text.split(`
 `);
     if (allLines.length && allLines[allLines.length - 1] === "")
       allLines.pop();
-    const lines = allLines.length > LOG_BACKFILL_MAX_LINES ? allLines.slice(-LOG_BACKFILL_MAX_LINES) : allLines;
+    let lines = allLines;
+    if (rangeMs !== null) {
+      const cutoff = Date.now() - rangeMs;
+      const now = Date.now();
+      const kept = [];
+      let lastTs = 0;
+      for (const ln of allLines) {
+        const ts = lineTsMs(ln, now) ?? lastTs;
+        if (ts)
+          lastTs = ts;
+        if (ts >= cutoff)
+          kept.push(ln);
+      }
+      lines = kept;
+    } else if (allLines.length > LOG_BACKFILL_MAX_LINES) {
+      lines = allLines.slice(-LOG_BACKFILL_MAX_LINES);
+    }
     for (const line of lines) {
       await send(line, true);
     }

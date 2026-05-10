@@ -566,7 +566,179 @@ export function mountOpsRoutes(app: Hono): void {
       return c.json({ clusters: rows });
     },
   );
+
+  // -------------------------------------------------------------------
+  // GET /api/_ops/graph — top-N most-connected memories + their edges
+  // for the dashboard's Graph view. One round trip; sub-second target.
+  //
+  // Filters mirror /api/_ops/memories (since/until/repo/machine_id/kind).
+  // Ranking: edge_count = related_to count + (superseded_by ? 1 : 0).
+  // Ordered DESC, ties broken by importance.
+  //
+  // Edges are filtered to only those whose endpoints both made the
+  // top-N cut, so the graph stays self-contained.
+  // -------------------------------------------------------------------
+  app.get(
+    "/api/_ops/graph",
+    mnemeRoute("api._ops.graph"),
+    requireAuth("read"),
+    async (c) => {
+      const u = new URL(c.req.url);
+      const since = parseTs(
+        u.searchParams.get("since"),
+        new Date(Date.now() - 30 * 86_400_000),
+      );
+      const until = parseTs(u.searchParams.get("until"), new Date());
+      const repos = csv(u.searchParams.get("repo"));
+      const machineIds = csv(u.searchParams.get("machine_id"));
+      const kinds = csv(u.searchParams.get("kind"));
+      const topN = clamp(
+        Number(u.searchParams.get("top_n") ?? 300),
+        1,
+        1000,
+        300,
+      );
+
+      const filters = sql`
+        m.created_at >= ${since}
+        AND m.created_at < ${until}
+        ${repos.length > 0 ? sql`AND m.repo = ANY(${repos})` : sql``}
+        ${machineIds.length > 0 ? sql`AND m.machine_id = ANY(${machineIds})` : sql``}
+        ${kinds.length > 0 ? sql`AND m.kind = ANY(${kinds})` : sql``}
+      `;
+
+      // Step 1: rank candidates by edge_count and pick the top N.
+      const ranked = (await sql<
+        Array<{ id: string }>
+      >`
+        WITH candidates AS (
+          SELECT
+            m.id,
+            m.kind,
+            m.importance,
+            m.machine_id,
+            m.meta,
+            m.content,
+            m.created_at,
+            COALESCE(jsonb_array_length(m.meta->'related_to'), 0)
+              + (CASE WHEN m.meta ? 'superseded_by' THEN 1 ELSE 0 END)
+              AS edge_count
+          FROM memories m
+          WHERE ${filters}
+            AND m.archived_at IS NULL
+        )
+        SELECT id::text AS id
+        FROM candidates
+        ORDER BY edge_count DESC, importance DESC NULLS LAST, created_at DESC
+        LIMIT ${topN}
+      `) as unknown as Array<{ id: string }>;
+
+      const ids = ranked.map((r) => r.id);
+      if (ids.length === 0) {
+        return c.json({
+          nodes: [],
+          edges: [],
+          stats: { node_count: 0, edge_count: 0, total_in_window: 0 },
+        });
+      }
+
+      // Step 2: fetch the node payload for the top N.
+      const nodes = (await sql<
+        Array<GraphNode>
+      >`
+        SELECT
+          m.id::text                  AS id,
+          left(m.content, 200)        AS content_preview,
+          m.kind                      AS kind,
+          m.importance                AS importance,
+          m.meta->>'in_cluster'       AS cluster_id,
+          (m.meta ? 'superseded_by')  AS superseded,
+          m.machine_id                AS machine_id,
+          k.name                      AS machine_name
+        FROM memories m
+        LEFT JOIN LATERAL (
+          SELECT name FROM _ops.api_keys
+          WHERE machine_id = m.machine_id AND revoked_at IS NULL
+          ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+          LIMIT 1
+        ) k ON TRUE
+        WHERE m.id = ANY(${ids}::uuid[])
+      `) as unknown as Array<GraphNode>;
+
+      // Step 3: edges — related_to (unnested) + supersede, both
+      //         constrained to the top-N set.
+      const idSet = new Set(ids);
+      const relatedRows = (await sql<
+        Array<{ source: string; target: string }>
+      >`
+        SELECT
+          m.id::text  AS source,
+          (rel)::text AS target
+        FROM memories m,
+             jsonb_array_elements_text(m.meta->'related_to') AS rel
+        WHERE m.id = ANY(${ids}::uuid[])
+      `) as unknown as Array<{ source: string; target: string }>;
+      const supersedeRows = (await sql<
+        Array<{ source: string; target: string }>
+      >`
+        SELECT
+          m.id::text                          AS source,
+          (m.meta->>'superseded_by')          AS target
+        FROM memories m
+        WHERE m.id = ANY(${ids}::uuid[])
+          AND m.meta ? 'superseded_by'
+      `) as unknown as Array<{ source: string; target: string }>;
+
+      const edges: Array<GraphEdge> = [];
+      for (const r of relatedRows) {
+        if (idSet.has(r.target)) {
+          edges.push({ source: r.source, target: r.target, type: "related" });
+        }
+      }
+      for (const r of supersedeRows) {
+        if (idSet.has(r.target)) {
+          edges.push({ source: r.source, target: r.target, type: "supersede" });
+        }
+      }
+
+      // Step 4: total in-window count (unfiltered by top-N) for stats.
+      const totalRows = (await sql<
+        Array<{ total: number }>
+      >`
+        SELECT count(*)::int AS total
+        FROM memories m
+        WHERE ${filters}
+          AND m.archived_at IS NULL
+      `) as unknown as Array<{ total: number }>;
+
+      return c.json({
+        nodes,
+        edges,
+        stats: {
+          node_count: nodes.length,
+          edge_count: edges.length,
+          total_in_window: totalRows[0]?.total ?? 0,
+        },
+      });
+    },
+  );
 }
+
+type GraphNode = {
+  id: string;
+  content_preview: string;
+  kind: string | null;
+  importance: number | null;
+  cluster_id: string | null;
+  superseded: boolean;
+  machine_id: string | null;
+  machine_name: string | null;
+};
+type GraphEdge = {
+  source: string;
+  target: string;
+  type: "related" | "supersede";
+};
 
 // ── Helpers ─────────────────────────────────────────────────────────
 

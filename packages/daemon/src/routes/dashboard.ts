@@ -190,6 +190,11 @@ export function mountDashboardRoutes(app: Hono): void {
     mnemeRoute("daemon.dashboard.clusters"),
     forwardQuery("/api/_ops/clusters", "dashboard.clusters"),
   );
+  app.get(
+    "/dashboard/api/graph",
+    mnemeRoute("daemon.dashboard.graph"),
+    forwardQuery("/api/_ops/graph", "dashboard.graph"),
+  );
 
   // GET /dashboard/api/logs/stream — SSE tail of local daemon log files.
   // Reads ~/.mneme/logs/daemon.{out,err}.log directly (no server hop).
@@ -197,10 +202,21 @@ export function mountDashboardRoutes(app: Hono): void {
   // POLL_MS for new bytes, emits each line as an SSE event. Handles
   // rotation (size shrink → reset cursor to 0). Heartbeat ping every
   // 15s so proxies don't kill an idle connection.
+  //
+  // ?range=<ms>|all — caps backfill to lines newer than (now - ms).
+  // When omitted or "all", falls back to the LOG_BACKFILL_MAX_LINES cap.
   app.get(
     "/dashboard/api/logs/stream",
     mnemeRoute("daemon.dashboard.logs.stream"),
-    (c) => streamSSE(c, async (stream) => streamLogs(stream)),
+    (c) => {
+      const rangeRaw = c.req.query("range");
+      let rangeMs: number | null = null;
+      if (rangeRaw && rangeRaw !== "all") {
+        const n = Number(rangeRaw);
+        if (Number.isFinite(n) && n > 0) rangeMs = n;
+      }
+      return streamSSE(c, async (stream) => streamLogs(stream, rangeMs));
+    },
   );
 }
 
@@ -285,9 +301,13 @@ function forwardPath(upstreamPath: string, traceTag: string) {
 
 const LOG_POLL_MS = 1000;
 const LOG_PING_MS = 15_000;
-// Backfill: ~500 lines of recent context. Client also de-dupes against
-// localStorage so the same line doesn't replay on every refresh.
+// Backfill caps. LOG_BACKFILL_MAX_LINES applies when no range is
+// requested (legacy "tail last N lines" behavior). When the dashboard
+// passes ?range=<ms>, we read up to LOG_BACKFILL_BYTES_RANGE bytes off
+// the tail and timestamp-filter — large enough to cover ~1 day of busy
+// logging at ~10 lines/sec without eating memory if the file is huge.
 const LOG_BACKFILL_BYTES = 256 * 1024;
+const LOG_BACKFILL_BYTES_RANGE = 16 * 1024 * 1024;
 const LOG_BACKFILL_MAX_LINES = 500;
 
 function logPath(): string {
@@ -352,7 +372,23 @@ async function readNewBytes(path: string, fromByte: number): Promise<{
 
 type SSEStream = Parameters<Parameters<typeof streamSSE>[1]>[0];
 
-async function streamLogs(stream: SSEStream): Promise<void> {
+/** Parse the `HH:MM:SS.mmm` prefix the daemon logger writes (UTC, see
+ *  packages/core/src/logger.ts). Returns null if the line doesn't start
+ *  with one. The day component is lifted from `now` and rolled back if
+ *  the parsed time is ahead of now (covers logs from yesterday). */
+function lineTsMs(line: string, now: number): number | null {
+  const m = line.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{3})/);
+  if (!m) return null;
+  const d = new Date(now);
+  d.setUTCHours(+m[1]!, +m[2]!, +m[3]!, +m[4]!);
+  if (d.getTime() > now + 60_000) d.setUTCDate(d.getUTCDate() - 1);
+  return d.getTime();
+}
+
+async function streamLogs(
+  stream: SSEStream,
+  rangeMs: number | null,
+): Promise<void> {
   const path = logPath();
   let cursor = 0;
   let id = 0;
@@ -373,14 +409,30 @@ async function streamLogs(stream: SSEStream): Promise<void> {
 
   // ── 1. Backfill ──────────────────────────────────────────────────
   try {
-    const { text, size } = await readTail(path, LOG_BACKFILL_BYTES);
+    const readBytes =
+      rangeMs !== null ? LOG_BACKFILL_BYTES_RANGE : LOG_BACKFILL_BYTES;
+    const { text, size } = await readTail(path, readBytes);
     cursor = size;
     const allLines = text.split("\n");
     if (allLines.length && allLines[allLines.length - 1] === "") allLines.pop();
-    const lines =
-      allLines.length > LOG_BACKFILL_MAX_LINES
-        ? allLines.slice(-LOG_BACKFILL_MAX_LINES)
-        : allLines;
+    let lines = allLines;
+    if (rangeMs !== null) {
+      // Range mode: keep only lines newer than the cutoff. Lines without
+      // a parseable timestamp (rare — multi-line stack traces) tag along
+      // with the most recent timestamped line via running fallback.
+      const cutoff = Date.now() - rangeMs;
+      const now = Date.now();
+      const kept: string[] = [];
+      let lastTs = 0;
+      for (const ln of allLines) {
+        const ts = lineTsMs(ln, now) ?? lastTs;
+        if (ts) lastTs = ts;
+        if (ts >= cutoff) kept.push(ln);
+      }
+      lines = kept;
+    } else if (allLines.length > LOG_BACKFILL_MAX_LINES) {
+      lines = allLines.slice(-LOG_BACKFILL_MAX_LINES);
+    }
     for (const line of lines) {
       await send(line, true);
     }
