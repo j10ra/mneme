@@ -16,7 +16,7 @@ Later that day on your desktop, you open Claude Code again. Same digest. Same me
 
 That's Mneme.
 
-> Full design and rationale: see [ARCHITECTURE.md](./ARCHITECTURE.md).
+> Full design and rationale: see the [`docs/`](./docs/README.md) folder. Start at [`docs/README.md`](./docs/README.md) — it's a router, not a long read.
 
 ---
 
@@ -30,23 +30,25 @@ flowchart LR
         direction TB
         CC["Claude Code<br/>+ Mneme plugin"]
         Hooks["hooks · slashes · MCP proxy"]
-        Daemon["per-machine daemon:<br/>dedup · extract (Haiku)<br/>embed (bge-large) · push"]
+        Daemon["per-machine daemon:<br/>scrub · dedup · extract (Claude SDK)<br/>embed (bge-large in-process)<br/>push · dream (8h, leader)"]
+        Dash["browser dashboard<br/>127.0.0.1/dashboard"]
         CC --- Hooks
         Hooks --- Daemon
+        Daemon --- Dash
     end
 
     subgraph Server["server (one Bun process)"]
         direction TB
-        API["bundle ingest<br/>read API<br/>MCP endpoint"]
-        Workers["workers:<br/>nap · dream"]
+        API["/api/bundle · /api/session/start<br/>/mcp · /api/_ops/* · auth"]
+        Workers["scheduler:<br/>nap (6h) · digest (7d, opt-in) · keepalive"]
         API --- Workers
     end
 
     subgraph DB["database (Postgres + pgvector + tsvector)"]
-        Tables["captures · memories · ingest_jobs"]
+        Tables["captures · memories<br/>_ops.{traces, spans, logs, api_keys, …}"]
     end
 
-    Machines -- HTTPS bundle --> Server
+    Machines -- HTTPS bundle / spans / heartbeat --> Server
     Server -- TCP --> DB
 
     classDef m fill:#1e3a8a,stroke:#3b82f6,color:#fff
@@ -57,11 +59,11 @@ flowchart LR
     class DB d
 ```
 
-**Your machines** run a small plugin plus a local daemon. Hooks fire on every prompt / tool call / session boundary and write to a local outbox in milliseconds. The daemon coalesces those captures, dedups them per session, runs Haiku for atomic observations, embeds with bge-large, and posts pre-built bundles to the server. A panel of slash commands (`/mneme:memory`, `/mneme:pin`, `/mneme:recall`, …) lets you write or query memory by hand.
+**Your machines** each run the plugin plus a local daemon. Hooks post to the daemon in sub-millisecond fire-and-forget. The daemon scrubs, dedups per session, calls Claude (via the Agent SDK on the user's existing `claude` login) for atomic observations, embeds with bge-large in-process, and pushes pre-built bundles to the server. The same daemon runs the **dream** worker every 8 hours; one daemon wins a Postgres advisory lock per window and clusters memories into summaries — the others see a held lock and skip. A panel of slash commands (`/mneme:memory`, `/mneme:pin`, `/mneme:recall`, `/mneme:status`, `/mneme:dashboard`, …) lets you write, query, and inspect by hand.
 
-**The server** is one Bun process. It receives pre-built bundles, stores captures + memories atomically, and runs two background workers — **nap** (decay, shadow-mark exact dupes, link semantically related memories) and **dream** (cluster + distil into one-paragraph summaries). Dream is coordinated across machines via a Postgres advisory lock so only one daemon owns each window. The server exposes a single MCP tool (`mneme_sql`) so any AI agent on any harness can read.
+**The server** is one Bun process. It receives pre-built bundles via `/api/bundle`, stores captures + memories atomically, runs **nap** (every 6 hours: decay, shadow-mark exact dupes, link semantically related memories, conservative supersede) and the opt-in **digest** worker (weekly: merge duplicate clusters across machines, cross-cluster supersede), and exposes a single MCP tool (`mneme_sql`) so any AI agent on any harness can read.
 
-**The database** holds everything. Three small tables in plain Postgres. The vector index makes semantic search fast; the text index makes keyword search fast; the rest is JSON.
+**The database** holds everything. Two data tables (`captures`, `memories`) in plain Postgres plus an `_ops` schema for traces, spans, logs, api_keys, and dashboard views. The vector index makes semantic search fast; the text index makes keyword search fast; the rest is JSON.
 
 One database. One server. N machines, each with its own daemon.
 
@@ -81,22 +83,48 @@ One database. One server. N machines, each with its own daemon.
 
 ## How it actually works
 
-The plugin's hooks fire on every prompt / tool call / Stop / SessionEnd and write the event into a local outbox under `~/.mneme/outbox/capture/captured/`. Hooks are intentionally dumb: scrub strings, hash content, write a JSON file, exit. Sub-millisecond, fire-and-forget.
+### Capture → observation → embed → server
 
-The **per-machine daemon** is where the work happens. It runs as a launchd / systemd-user / Task Scheduler service that the plugin installs at `/mneme:setup` time. Three independent stage workers tick every two seconds:
+The plugin's hooks fire on every prompt / tool call / Stop / SessionEnd and post the event to the daemon at `127.0.0.1:<daemon-port>/capture`. Hooks are intentionally dumb: scrub strings, hash content, POST, exit. Sub-millisecond, fire-and-forget. If the daemon is down, the hook writes the same shape directly to `~/.mneme/outbox/capture/pending/` for the daemon to pick up later.
 
-- **capture** runs dedup against the per-session sha + uuid ledger at `~/.mneme/shas/`, then coalesces same-session captures and calls Haiku via a long-lived streaming SDK session for atomic observations (a decision, a bugfix, a constraint, a discovery, …)
-- **embed** runs bge-large-en-v1.5 (quantized int8, ONNX) in-process across whatever's queued in `observations/`
-- **push** posts pre-built `{capture, memories[]}` bundles to `/api/bundle`, four-wide concurrent
+The **per-machine daemon** is where the work happens. It runs as a launchd / systemd-user / Task Scheduler service that the plugin installs at `/mneme:setup` time. Each capture moves through a four-stage outbox under `~/.mneme/outbox/`, and the directory IS the state:
 
-The server is the dedup wall — `UNIQUE (content_sha256, machine_id)` on captures means duplicate work is harmless even when the local ledger is empty. The bge-large model auto-downloads on first run (~1.3GB, one-time per machine) and reaps from RAM after 60s idle.
+```
+captured/      raw scrubbed capture
+   │ extract gate (idle 2 min · 50 captures full · 5 min force · /flush ping)
+observations/  { capture, memories[] }   memories carry only LLM-derivable fields
+   │ embed
+embedded/      memories now have content_hash, chunk_id, embedding, meta
+   │ push 4-wide → POST /api/bundle
+pushed         success → file deleted
+failed/        permanent error → moved with reason
+```
 
-Two server-side workers turn the steady stream of memories into something useful over time:
+- **extract** dedups against the per-session sha+uuid ledger at `~/.mneme/shas/`, coalesces same-session captures inside a ±5-min window, and calls Claude via the Agent SDK (streaming, JSON-shaped) for atomic observations — a decision, a bugfix, a constraint, a discovery, ...
+- **embed** runs `BAAI/bge-large-en-v1.5` (quantised int8, ONNX) **in-process** across whatever's queued in `observations/`. Auto-downloads on first run (~1.3GB, one-time per machine) and reaps from RAM after 60s idle.
+- **push** posts the pre-built `{capture, memories[]}` bundle to the server's `/api/bundle`, four-wide concurrent.
 
-- **Nap** runs every 6 hours to decay importance, mark exact duplicates, and link semantically related memories.
-- **Dream** runs every 24 hours to cluster related memories and write a one-paragraph summary that surfaces above the raw rows for broad questions. Dream is coordinated across machines via a Postgres advisory lock keyed on the time window — so when three daemons simultaneously think it's dream-time, exactly one wins the lock and does the work; the others see a held lock and skip.
+The server is the dedup wall — `UNIQUE (content_sha256, machine_id)` on captures means duplicate posts are harmless. The whole bundle inserts in one transaction so cross-machine fan-in is atomic.
 
-When you start a new session anywhere, the plugin asks the server for the relevant slice for the repos you have open, and the server returns a compact markdown digest that lands directly in the agent's context.
+### Nap, Dream, Digest — how memories become useful
+
+Three time-driven workers shape the steady stream of raw memories into something the agent can actually navigate. Nothing is ever deleted; the workers add flags, links, and summaries that change how rows surface at recall time. (Bitemporal pattern from mempalace: `valid_to` close-out beats `DELETE FROM`, every time.)
+
+- **Nap** — every 6 hours, on the **server**, pure SQL. Decays unpinned importance toward `FLOOR=0.05` (pinned floors at `PIN_FLOOR=0.5`) on a 30-day half-life. Shadows exact-text dupes (`meta.shadow_of`). Links semantically related memories within the same repo (`meta.related_to`, cosine < 0.15). Catches obvious "we now use X" rephrasings as superseded (`meta.superseded_by`, conservative keyword + tight cosine match). Paginated round-robin via `meta.last_napped_at` so one cycle never trips Postgres's 2-min `statement_timeout`.
+- **Dream** — every 8 hours, on the **per-machine daemon**, LLM in the loop. Per-repo cosine-NN clustering at distance < 0.10, union-find connected components, distil clusters of size 3–20 into a single `kind='cluster'` summary memory via Sonnet (Claude Agent SDK). Members get `meta.in_cluster` so they're skipped on the next pass. Coordinated across machines via a Postgres advisory lock — when three daemons think it's dream-time, exactly one wins the lock and does the work; the others see a held lock and skip. The cluster row goes through the daemon's normal embed path, so recall finds it like any other memory but ranks it above its members for broad queries.
+- **Digest** — weekly, on the **server**, **opt-in** (`MNEME_DIGEST_ENABLED=1`). The cross-cluster pass the per-machine dream can't do: merge duplicate clusters across machines/windows, run cross-cluster supersede via Sonnet over OpenRouter. Conservative refinement; backstop only.
+
+```
+capture ──▶ daemon outbox ──▶ /api/bundle ──▶ memories table
+                                                │
+                                                ├── 6h ──▶ nap     (decay · shadow · related · supersede)
+                                                ├── 8h ──▶ dream   (cluster · summarise · supersede, daemon-leader)
+                                                └── 7d ──▶ digest  (cross-cluster merge + supersede, opt-in)
+```
+
+### Surface
+
+When you start a new session anywhere, the plugin's `SessionStart` hook posts the discovered repos to `/api/session/start`. The server returns a compact markdown digest — pinned facts, rules, recent decisions/features/bugfixes, recent session summaries — and the hook hands it to Claude Code as `additionalContext`. No files written to your project.
 
 ---
 
@@ -124,30 +152,30 @@ bun run dev                # local dev; for prod, deploy to any Bun-capable host
 <details>
 <summary><b>Provider configuration</b> — what to put in <code>.env</code></summary>
 
-The two decisions: which **LLM provider** runs extract + dream, and which **embedder** turns text into vectors. Both speak OpenAI-compatible HTTP. Defaults assume self-hosted endpoints (Ollama + TEI), but pointing at any cloud API is four env-var changes.
+Most LLM and embedder work happens **on the user's machine inside the daemon**, not on the server. The daemon uses the Claude Agent SDK (inheriting your existing `claude` OAuth) for extract + dream, and runs `BAAI/bge-large-en-v1.5` in-process for embeddings — neither needs a server-side env var. The server only needs LLM/embedder env vars if you opt into the **digest** worker (weekly cross-cluster pass), in which case the picker uses OpenRouter or any OpenAI-compatible fallback.
 
 ```env
-# Database
+# Database (required)
 DATABASE_URL=postgresql://...
 MNEME_READER_DATABASE_URL=postgresql://...   # mneme_reader role for /mcp
 
-# LLM (extract + dream distillation)
-LLM_PROVIDER=local
-LLM_URL=https://your-llm-endpoint
-LLM_BEARER=...
-LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
+# Auth root of trust (required)
+ADMIN_PASSWORD=...
 
-# Embedder (1024-dim)
+# Digest worker (optional; off by default)
+MNEME_DIGEST_ENABLED=1
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=...
+LLM_MODEL=anthropic/claude-sonnet-4
+
+# Embedder fallback for the digest path (optional)
 EMBEDDER_PROVIDER=local
 EMBEDDER_URL=https://your-embedder-endpoint
 EMBEDDER_BEARER=...
 EMBEDDER_MODEL=BAAI/bge-large-en-v1.5
-
-# Auth root of trust
-ADMIN_PASSWORD=...
 ```
 
-Cost scenarios (self-hosted, mixed cloud, BYO API keys) live in [ARCHITECTURE.md §13](./ARCHITECTURE.md#13-cost-model).
+**Cost shape:** the daemon owns LLM extract + embed using the user's existing `claude` login, so per-machine compute is free. The server only runs nap (SQL) + the opt-in digest (Sonnet via OpenRouter), so a self-hosted Postgres + a $5 Bun host covers it. Enabling digest adds ~$1–5/mo in API spend depending on volume.
 
 </details>
 
@@ -194,8 +222,12 @@ The plugin's SessionStart hook detects the new version and self-heals the servic
 | `/mneme:pinned [scope]` | List what's currently pinned. |
 | `/mneme:recall <query>` | Hybrid (semantic + keyword + recency) search via the bundled skill. |
 | `/mneme:summarise [scope]` | Wrap up the recent thread as a session summary. |
+| `/mneme:status` | Workers + daemons + dream history + breakers in one snapshot. |
+| `/mneme:dashboard` | Open the local browser dashboard (Activity + Memories tabs). |
 | `/mneme:machines` | List your registered machines. |
+| `/mneme:rename <name>` | Rename this machine in place (no token reissue). |
 | `/mneme:revoke <name-or-id>` | Revoke a machine's token (e.g., lost laptop). |
+| `/mneme:help` | List every Mneme slash command. |
 
 Hooks fire on their own. You shouldn't have to think about them.
 
@@ -205,16 +237,18 @@ Hooks fire on their own. You shouldn't have to think about them.
 
 | Path | Purpose |
 |---|---|
-| `packages/server/` | Bun + Hono server and the four workers |
-| `packages/core/`   | auth, logger, trace store, route + fn instrumentation |
-| `packages/plugin/` | Claude Code plugin (hooks, slashes, MCP proxy, skill) |
+| `packages/server/` | Bun + Hono server: bundle ingest, session surface, MCP, ops, auth, plus the nap / digest / keepalive scheduler |
+| `packages/daemon/` | Per-machine Bun daemon: capture intake, four-stage outbox, Claude SDK extract, in-process bge-large embed, push, distributed dream, span forwarder, dashboard server |
+| `packages/core/`   | auth, logger, trace store, route + fn instrumentation, AsyncLocalStorage context |
+| `packages/shared/` | scrubber + cross-cutting types reachable from any package |
+| `packages/plugin/` | Claude Code plugin (hooks, slashes, MCP proxy, skill, dashboard React app) |
 | `migrations/`      | sequential SQL migrations applied by `bun run migrate` |
-| `ARCHITECTURE.md`  | full design doc, including deferred-items list and cost model |
+| `docs/`            | architecture as just-in-time docs — start at [`docs/README.md`](./docs/README.md) |
 
 ---
 
 ## Status
 
-Mneme is a personal tool. One user, several machines. **Phases 0–7 shipped:** capture, extract, embed, nap (decay + shadow + relate + retry), dream (cluster + distil), surface. Phases 8 (multi-harness: Codex, Cursor, OpenCode) and 9 (polish) are tracked in [ARCHITECTURE.md §16](./ARCHITECTURE.md#16-deferred-items-one-place-to-come-back-to).
+Mneme is a personal tool. One user, several machines. **Phases 0–9 shipped:** capture, extract, embed, surface, nap (decay + shadow + relate + supersede), dream (cluster + distil + supersede, distributed-leader), distributed daemon (extract + embed + dream moved to per-machine), dashboard + ops surface, digest (opt-in cross-cluster pass). Multi-harness rollout (Codex / Cursor / OpenCode) tracked at [#6](https://github.com/j10ra/mneme/issues/6).
 
 > Not multi-tenant. Not team memory. Not a search engine. One human, multiple machines, one continuous memory.

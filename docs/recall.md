@@ -1,0 +1,134 @@
+# Recall
+
+How agents read memories. **One MCP tool, `mneme_sql`, plus a skill that teaches query shapes.** Schema changes update the skill, not the MCP surface.
+
+> Reads for context: [`concepts.md`](./concepts.md), [`data-model.md`](./data-model.md).
+> The canonical skill: [`/packages/plugin/skills/using-mneme/SKILL.md`](../packages/plugin/skills/using-mneme/SKILL.md).
+> Sibling read path: [`surface.md`](./surface.md) (session-start injection).
+
+---
+
+## The MCP tool
+
+`mneme_sql(query)` — single tool, read-only.
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant MCP as /mcp · mneme_sql
+    participant E as embedder
+    participant DB as Postgres (mneme_reader role)
+
+    Agent->>MCP: SELECT id, content<br/>FROM memories<br/>ORDER BY embedding <=> embed('payment integration')<br/>LIMIT 10
+    MCP->>E: embed("payment integration")
+    E-->>MCP: vector
+    MCP->>MCP: substitute embed(...) → '[0.12, ...]'::vector
+    MCP->>DB: rewritten SELECT (auto-LIMIT 200 if absent)
+    DB-->>MCP: rows
+    MCP-->>Agent: result set
+```
+
+**Safety layers, in order:**
+1. Comment stripping.
+2. Single-statement check.
+3. SELECT/WITH-only regex (rejects 17+ DML/DDL keywords).
+4. `embed('text')` macro substitution (batched if multiple appear).
+5. Auto-`LIMIT 200` if absent.
+6. 5s `statement_timeout`.
+7. 1MB result cap.
+
+The connection runs as `mneme_reader` (Postgres role) — `SELECT`-only on `public.*`, blocked from `_ops.*`. RLS policy `USING (private = false)` means private rows are physically unreachable through this tool. The canonical implementation lives in [`/packages/server/src/services/mcp.ts`](../packages/server/src/services/mcp.ts).
+
+---
+
+## Default hybrid recall
+
+The canonical template lives in the skill. `/mneme:recall` instructs the agent to run this:
+
+```sql
+SELECT id, content, kind, repo, importance,
+       meta->'related_to' AS related_to, created_at
+FROM memories
+WHERE archived_at IS NULL
+  AND (meta->>'shadow_of') IS NULL
+ORDER BY
+  (
+    0.6  * (1 - (embedding <=> embed($1))) +
+    0.4  * ts_rank(tsv, websearch_to_tsquery('english', $1)) +
+    0.05 * importance
+  )
+  * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
+DESC
+LIMIT 10;
+```
+
+**Score components:**
+- **60% cosine** — semantic similarity via the HNSW index on `memories.embedding`.
+- **40% `ts_rank`** — keyword match via the GIN index on `memories.tsv`.
+- **5% importance** — small but always-on so [`workers/nap.md`](./workers/nap.md)'s decay actually shifts retrieval.
+
+**Filters:**
+- Shadows (`shadow_of IS NOT NULL`) are filtered out — exact-text duplicates.
+- Superseded rows are **not** filtered — they get a `× 0.3` rank-down penalty (`SUPERSEDE_RECALL_PENALTY`) so historical context stays queryable below current truth.
+
+**No `private` filter in the query** — the `mneme_reader` role's RLS makes private rows physically unreachable. The skill explicitly tells the agent not to add a `private` filter.
+
+---
+
+## Useful query shapes
+
+The skill teaches more, but the most-used shapes:
+
+```sql
+-- Recent decisions in this repo
+SELECT id, content, importance, created_at FROM memories
+WHERE archived_at IS NULL
+  AND repo = 'github.com/me/mneme'
+  AND kind IN ('decision','feature','bugfix')
+  AND created_at > now() - interval '7 days'
+ORDER BY created_at DESC LIMIT 20;
+
+-- Cluster summaries only (the synthesised view)
+SELECT id, content, meta->>'cluster_title' AS title, created_at FROM memories
+WHERE archived_at IS NULL AND kind = 'cluster'
+ORDER BY embedding <=> embed('extract pipeline')
+LIMIT 5;
+
+-- Pivot from a surface row's 8-char id prefix
+SELECT * FROM memories WHERE id::text LIKE '31752bec%';
+
+-- Walk a relation graph
+SELECT * FROM memories WHERE id::text = ANY(
+  SELECT jsonb_array_elements_text(meta->'related_to')
+  FROM memories WHERE id = '<seed-id>'
+);
+```
+
+---
+
+## What recall doesn't use yet
+
+- **Recency boost.** Considered (`+ 0.10 * exp(-age / 7d)`) but not in the canonical template. Nap's decay already pulls down old unpinned memories via the importance term; an explicit recency factor would double-count. [`surface.md`](./surface.md) handles "what's fresh" at session-start time.
+- `meta.related_to` is selected but not used in scoring. Two natural evolutions when the relation graph fills out:
+  1. **Neighbour boost** — bump a memory's rank when its `related_to` ids also appear in the result set (mutual reinforcement).
+  2. **Render alongside** — when a memory hits the top-N, fetch its `related_to` ids and render them as context-adjacent suggestions so the agent sees the cluster, not just the centroid.
+
+  Worth adding once user signal says recall is missing nearby context. Today, top-10 hybrid is sufficient.
+
+---
+
+## Why the skill, not more MCP tools
+
+- **One tool to discover, learn, and pick.** A multi-tool surface forces the agent to choose between `search`, `timeline`, `get_observations`, etc., for every question — and the choice is often wrong. One tool removes the decision.
+- **Schema changes update the skill, not the MCP surface.** Adding a column or a new `kind` value is a `SKILL.md` edit, not an MCP version bump.
+- **Full SQL power for queries we never anticipated.** Want `kind='bugfix'` count per repo per week? It's a query, not a feature request.
+- **The pattern: primitive + teach.** Same shape as Claude Code's own `grep` + `read` design — a tiny set of general primitives plus documentation that teaches the patterns, instead of a sprawling tool surface that has to grow with every use case.
+
+---
+
+## See also
+
+- [`surface.md`](./surface.md) — the other read path; runs at SessionStart and pre-loads context without an explicit tool call.
+- [`/packages/server/src/routes/mcp.ts`](../packages/server/src/routes/mcp.ts) — the `/mcp` route handler.
+- [`/packages/plugin/scripts/mcp-proxy.ts`](../packages/plugin/scripts/mcp-proxy.ts) — the bundled stdio MCP proxy that translates JSON-RPC → `POST /mcp`.
+- [`/packages/plugin/skills/using-mneme/SKILL.md`](../packages/plugin/skills/using-mneme/SKILL.md) — the canonical, agent-facing recall guide.

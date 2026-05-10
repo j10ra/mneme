@@ -1,0 +1,168 @@
+# Capture pipeline
+
+The hot path: raw text from a hook becomes a fully-formed `{capture, memories[]}` bundle in Postgres. **All extract and embed work happens locally in the daemon.** The server is the dedup wall and the cross-machine fan-in point.
+
+> Reads for context: [`concepts.md`](./concepts.md).
+
+---
+
+## End-to-end sequence
+
+```mermaid
+sequenceDiagram
+    participant Hook as Hook / Slash / HTTP
+    participant Daemon as Daemon · 127.0.0.1:port
+    participant Outbox as ~/.mneme/outbox/
+    participant Agent as Claude Agent SDK
+    participant EMB as bge-large in-process
+    participant Server as POST /api/bundle
+    participant DB as Postgres
+
+    Hook->>Daemon: POST /capture { content, source, repo, harness, session_id, ... }<br/>fire-and-forget · sub-ms
+    Daemon->>Daemon: scrub · strip <private> · sha256 · dedup ledger
+    Daemon->>Outbox: write captured/<id>.json
+    Daemon-->>Hook: 200 { id }
+
+    Note over Daemon,Outbox: 2-second tick · queue-driven
+    Daemon->>Outbox: read captured/, coalesce siblings (±5 min)
+    Daemon->>Agent: extract observations (streaming JSON)
+    Agent-->>Daemon: { memories: [{kind, content, importance, topics}] }
+    Daemon->>Outbox: write observations/<id>.json
+    Daemon->>EMB: embedBatch(memories)
+    EMB-->>Daemon: vectors
+    Daemon->>Outbox: write embedded/<id>.json with chunk_id, embedding, meta
+
+    Daemon->>Server: POST /api/bundle { capture, memories[] } · 4-wide concurrent
+    Server->>DB: INSERT captures (UNIQUE) + memories (chunk_id) in one tx
+    DB-->>Server: ok
+    Server-->>Daemon: 200
+    Daemon->>Outbox: delete embedded/<id>.json
+```
+
+**SLA:** the hook → daemon hop is sub-millisecond. The hook never waits for extract or embed. If the daemon is down, the hook writes directly to its outbox at `~/.mneme/outbox/capture/pending/`. If the server is down, the daemon retries with backoff; bundles stay in the outbox until they post or move to `failed/`.
+
+---
+
+## Outbox state machine
+
+`~/.mneme/outbox/` is a file-backed queue. Each capture moves through directories in order; **the directory IS the state**.
+
+```
+captured/      raw scrubbed capture body
+   │
+   │ extract gate (idle | full | force | flush)
+   ▼
+observations/  { capture, memories[] } — memories carry only LLM-derivable fields
+   │
+   │ embed
+   ▼
+embedded/      memories now have content_hash, chunk_id, embedding, meta.extractor_*
+   │
+   │ push (4-wide concurrent) → POST /api/bundle
+   ▼
+(deleted)      success path is *no directory* — the file is unlinked on 200
+
+failed/        permanent error during any stage; file moved with reason
+```
+
+The four real on-disk directories are `captured/`, `observations/`, `embedded/`, and `failed/`. There's an automatic one-time migration from the pre-rename layout (`pending/ → captured/`, `extracted/ → observations/`).
+
+**Why files, not SQLite.** A personal daemon with a single writer doesn't need a transactional store. Atomic-rename is enough crash safety; `find`-style scanning is enough query power; the directory structure visualises pipeline depth without any tooling.
+
+**Crash safety.** A daemon kill mid-tick re-runs the affected stage on next start because the file is still in its previous-stage directory. Idempotency comes from `content_sha256` (capture) and `chunk_id` (memory), both `UNIQUE`.
+
+---
+
+## The four stages, in detail
+
+### Stage 1 · Capture intake
+
+Hook posts `{ content, source, repo, harness, session_id, private, ... }` to the daemon's `POST /capture`. The daemon:
+
+1. Runs `scrub` + `scrubData` on every string field (the same shared scrubber the server uses, generated into the plugin via `bun run build:plugin-scrub`). The canonical patterns live in [`/packages/shared/src/scrub.ts`](../packages/shared/src/scrub.ts).
+2. Computes `content_sha256`.
+3. Checks `~/.mneme/shas/<session_id>.txt` for an exact-match duplicate within this session; drops if seen.
+4. Writes `captured/<uuid>.json` and returns `{ id }`. Sub-millisecond.
+
+If the daemon is unreachable, the hook itself writes the same shape to `~/.mneme/outbox/capture/pending/`. The next daemon tick picks it up.
+
+### Stage 2 · Coalesce + extract
+
+Captures sharing `(session_id, repo, private)` within ±5 minutes of the oldest pending file are bundled into one LLM call. The gate that triggers extraction has four triggers in priority order:
+
+| Trigger | When | Why |
+|---|---|---|
+| `/flush` ping | `PreCompact`, `SessionEnd` | Natural session boundaries — extract everything pending |
+| `EXTRACT_BATCH_FULL=50` | Pending group hits 50 captures | Runaway protection on long sessions with no real pauses |
+| `EXTRACT_IDLE_MS=2 min` | No new captures for 2 minutes | "User took a break" detector |
+| `EXTRACT_FORCE_MS=5 min` | Oldest pending file > 5 min | Latency floor for `/recall` freshness |
+
+Per-turn `Stop` events deliberately do **not** flush — captures from many turns coalesce into one Haiku call with cross-turn context.
+
+When the gate fires, the runtime takes up to `MAX_BATCH_SIZE = 20` matching captures into one LLM bundle. Larger backlogs (e.g. when `EXTRACT_BATCH_FULL=50` triggers) split across multiple bundles inside the same tick.
+
+The agent provider (`packages/daemon/src/agents/claude.ts`) calls the Claude Agent SDK with `pathToClaudeCodeExecutable` (resolved at startup by `findClaudeExecutable` in `claude-path.ts`) so it inherits the user's OAuth login. Streaming JSON; no API keys to manage. **Extract uses `EXTRACT_MODEL = "haiku"`; dream uses `DREAM_MODEL = "sonnet"`** (both passed through to the SDK as the model alias). The system prompt (`packages/daemon/src/agents/prompts.ts`) enforces atomic observations, importance ratings (0.1–1.0), and the kind taxonomy.
+
+**Per-cluster failure isolation:** a single bundle's failure doesn't take down the rest of the tick.
+
+### Stage 3 · Embed
+
+`embed.ts` lazily loads `BAAI/bge-large-en-v1.5` from `@xenova/transformers` — auto-downloaded once per machine (~1.3 GB), cached under `~/.cache/transformers/`. `embedBatch(texts)` runs quantised int8 inference inline; on a modern laptop this is faster than a TEI HTTP hop. After 60 seconds idle, the embedder is reaped from RAM (`disposeIfIdle` runs every 60s via the daemon's scheduler) so the daemon's resident set drops to ~50 MB between bursts.
+
+Each memory gets stamped with:
+- `content_hash = sha256(content)`
+- `chunk_id = sha256(content_hash + ":" + EMBEDDER_MODEL)` — model-scoped, so a future model swap creates fresh rows without colliding
+- `embedding_model` — same string, denormalised onto the row for query-time filters
+- `meta.extractor_provider`, `meta.extractor_model` — provenance, queryable forever
+
+### Stage 4 · Push
+
+The push worker runs **4-wide concurrent** `POST /api/bundle` calls against the server. The server's `/api/bundle` handler does the entire write in **one transaction**:
+
+1. Insert capture (`ON CONFLICT (content_sha256, machine_id) DO NOTHING`).
+2. Insert memories (`ON CONFLICT (chunk_id) DO NOTHING`).
+3. Apply pin actuations from `raw_meta.kind = 'pin'` if present.
+
+| Outcome | What the daemon does |
+|---|---|
+| `200` | Delete the local file. |
+| Retryable (5xx, network, ECONNRESET) | File stays in `embedded/`; next tick retries. |
+| Permanent (4xx schema, malformed JSON) | File moves to `failed/<reason>/`. |
+
+---
+
+## Sources (the `source` column)
+
+| Source | Trigger | Default `kind` | Notes |
+|---|---|---|---|
+| `claude_hook` | Claude Code `UserPromptSubmit` and `PostToolUse` | (extracted by daemon) | Coalesced by `session_id` within ±5-min window |
+| `claude_summary` | Claude Code `Stop` and `PreCompact` hooks | `summary` | Skips coalescing |
+| `claude_assistant` | Assistant turns transcribed from Claude Code's session JSONL | (extracted) | Lets Mneme see what the agent said, not just what the user prompted |
+| `claude_memory` | Claude Code `PostToolUse(Write\|Edit)` on `~/.claude/projects/*/memory/*.md` | `claude_memory` (frontmatter `type:` lands in `meta.original_type`) | Mirrors Anthropic auto-memory |
+| `manual:/memory` | `/mneme:memory <text>` slash command | (extracted) | Goes through daemon extract like any other capture |
+| `manual:/api/memory` | `POST /api/memory` (used by `/mneme:pin <text>`) | `note` | Direct memory write; bypasses extract; embeds ~2s later |
+| Future: `codex_hook` / `cursor_hook` / `opencode_hook` | harness-native hooks | (extracted) | [#6](https://github.com/j10ra/mneme/issues/6) |
+
+---
+
+## Bundle vs. legacy `/api/capture`
+
+- `POST /api/bundle` — the daemon's path. Bundle arrives with capture + memories already extracted and embedded; server writes both atomically.
+- `POST /api/capture` — retained for legacy clients and direct HTTP callers that have no daemon. The server scrubs and stores the capture, but extract/embed only happen on machines that run the daemon. `ingest_jobs` is drained.
+
+---
+
+## Why this shape
+
+- **Server stays simple.** No queue, no extract worker, no embed worker, no LLM keys on the server. Just an HTTP API + three time-driven jobs.
+- **Daemon owns the cost.** LLM compute and embedder compute happen on the user's hardware — using a `claude` login the user already has, not API spend the user is paying separately.
+- **Cross-machine fans in at the server.** Three machines × three daemons all post to one `/api/bundle`. The `UNIQUE (content_sha256, machine_id)` constraint means the same content captured on two machines produces two rows (correctly), and the same content captured twice on one machine produces one.
+
+---
+
+## See also
+
+- [`workers/nap.md`](./workers/nap.md), [`workers/dream.md`](./workers/dream.md), [`workers/digest.md`](./workers/digest.md) — what happens to the memories after they land.
+- [`/packages/server/src/routes/`](../packages/server/src/routes/), [`/packages/daemon/src/routes/`](../packages/daemon/src/routes/) — endpoint catalogue lives in code.
+- [`/packages/shared/src/scrub.ts`](../packages/shared/src/scrub.ts) — scrubber patterns.
+- [`/packages/core/src/auth.ts`](../packages/core/src/auth.ts) — server-stamped identity, scope checks.
