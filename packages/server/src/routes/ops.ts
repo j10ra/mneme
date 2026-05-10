@@ -598,6 +598,8 @@ export function mountOpsRoutes(app: Hono): void {
         1000,
         300,
       );
+      const focal = u.searchParams.get("focal");
+      const hops = clamp(Number(u.searchParams.get("hops") ?? 1), 0, 6, 1);
 
       const filters = sql`
         m.created_at >= ${since}
@@ -607,33 +609,66 @@ export function mountOpsRoutes(app: Hono): void {
         ${kinds.length > 0 ? sql`AND m.kind = ANY(${kinds})` : sql``}
       `;
 
-      // Step 1: rank candidates by edge_count and pick the top N.
-      const ranked = (await sql<
-        Array<{ id: string }>
-      >`
-        WITH candidates AS (
-          SELECT
-            m.id,
-            m.kind,
-            m.importance,
-            m.machine_id,
-            m.meta,
-            m.content,
-            m.created_at,
-            COALESCE(jsonb_array_length(m.meta->'related_to'), 0)
-              + (CASE WHEN m.meta ? 'superseded_by' THEN 1 ELSE 0 END)
-              AS edge_count
-          FROM memories m
-          WHERE ${filters}
-            AND m.archived_at IS NULL
-        )
-        SELECT id::text AS id
-        FROM candidates
-        ORDER BY edge_count DESC, importance DESC NULLS LAST, created_at DESC
-        LIMIT ${topN}
-      `) as unknown as Array<{ id: string }>;
-
-      const ids = ranked.map((r) => r.id);
+      // Two modes:
+      //   - focal set: BFS from focal up to `hops` levels within the
+      //                filter pool. Returns nodes with their depth.
+      //   - else:      ranked top-N by edge_count (existing behavior).
+      let ids: string[];
+      let depthByNode: Map<string, number> | null = null;
+      if (focal) {
+        const bfsRows = (await sql<Array<{ id: string; depth: number }>>`
+          WITH RECURSIVE candidates AS (
+            SELECT m.id, m.meta
+            FROM memories m
+            WHERE ${filters}
+              AND m.archived_at IS NULL
+          ),
+          bfs(id, depth) AS (
+            SELECT c.id::text, 0
+            FROM candidates c
+            WHERE c.id = ${focal}::uuid
+            UNION
+            SELECT (rel.value)::text, b.depth + 1
+            FROM bfs b
+            JOIN candidates c ON c.id::text = b.id
+            CROSS JOIN LATERAL jsonb_array_elements_text(c.meta->'related_to') AS rel(value)
+            WHERE b.depth < ${hops}
+              AND EXISTS (
+                SELECT 1 FROM candidates c2
+                WHERE c2.id::text = rel.value
+              )
+          )
+          SELECT id, MIN(depth)::int AS depth
+          FROM bfs
+          GROUP BY id
+        `) as unknown as Array<{ id: string; depth: number }>;
+        ids = bfsRows.map((r) => r.id);
+        depthByNode = new Map(bfsRows.map((r) => [r.id, r.depth]));
+      } else {
+        const ranked = (await sql<Array<{ id: string }>>`
+          WITH candidates AS (
+            SELECT
+              m.id,
+              m.kind,
+              m.importance,
+              m.machine_id,
+              m.meta,
+              m.content,
+              m.created_at,
+              COALESCE(jsonb_array_length(m.meta->'related_to'), 0)
+                + (CASE WHEN m.meta ? 'superseded_by' THEN 1 ELSE 0 END)
+                AS edge_count
+            FROM memories m
+            WHERE ${filters}
+              AND m.archived_at IS NULL
+          )
+          SELECT id::text AS id
+          FROM candidates
+          ORDER BY edge_count DESC, importance DESC NULLS LAST, created_at DESC
+          LIMIT ${topN}
+        `) as unknown as Array<{ id: string }>;
+        ids = ranked.map((r) => r.id);
+      }
       if (ids.length === 0) {
         return c.json({
           nodes: [],
@@ -642,10 +677,8 @@ export function mountOpsRoutes(app: Hono): void {
         });
       }
 
-      // Step 2: fetch the node payload for the top N.
-      const nodes = (await sql<
-        Array<GraphNode>
-      >`
+      // Step 2: fetch the node payload for the selected ids.
+      const nodes = (await sql<Array<GraphNode>>`
         SELECT
           m.id::text                  AS id,
           left(m.content, 200)        AS content_preview,
@@ -664,6 +697,12 @@ export function mountOpsRoutes(app: Hono): void {
         ) k ON TRUE
         WHERE m.id = ANY(${ids}::uuid[])
       `) as unknown as Array<GraphNode>;
+      // Stamp BFS depth onto nodes when focal mode.
+      if (depthByNode) {
+        for (const n of nodes) {
+          n.depth = depthByNode.get(n.id) ?? null;
+        }
+      }
 
       // Step 3: edges — related_to (unnested) + supersede, both
       //         constrained to the top-N set.
@@ -733,6 +772,7 @@ type GraphNode = {
   superseded: boolean;
   machine_id: string | null;
   machine_name: string | null;
+  depth?: number | null;
 };
 type GraphEdge = {
   source: string;

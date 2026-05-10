@@ -1603,10 +1603,10 @@ function mountDashboardRoutes(app) {
     }
     return c.html(await Bun.file(indexPath).text());
   });
-  app.get("/dashboard/:filename{.+\\.js}", async (c) => {
+  app.get("/dashboard/:filename", async (c) => {
     const filename = c.req.param("filename");
-    if (filename.includes("/") || filename.includes("..")) {
-      return c.text("invalid filename", 400);
+    if (!filename.endsWith(".js") || filename.includes("/") || filename.includes("..")) {
+      return c.notFound();
     }
     const filePath = join3(distDir, filename);
     if (!existsSync3(filePath)) {
