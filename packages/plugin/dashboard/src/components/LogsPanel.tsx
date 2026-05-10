@@ -15,9 +15,11 @@
 
 import { ChevronDown, Pause, Play, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Clock } from "lucide-react";
 import { ApiError, apiGet } from "../lib/api.ts";
 import { cn } from "../lib/cn.ts";
 import { Button } from "./ui/button.tsx";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.tsx";
 import {
   Select,
   SelectContent,
@@ -62,6 +64,20 @@ const MAX_BUFFER = 5_000;
 const STREAM_PATH = "/dashboard/api/logs/stream";
 const SERVER_POLL_MS = 5_000;
 const SERVER_LOOKBACK_MS = 5 * 60_000; // first poll asks for last 5 min
+
+type RangeOption = { label: string; ms: number | null };
+const RANGE_OPTIONS: RangeOption[] = [
+  { label: "5 min", ms: 5 * 60_000 },
+  { label: "15 min", ms: 15 * 60_000 },
+  { label: "30 min", ms: 30 * 60_000 },
+  { label: "1 hour", ms: 60 * 60_000 },
+  { label: "3 hour", ms: 3 * 60 * 60_000 },
+  { label: "6 hour", ms: 6 * 60 * 60_000 },
+  { label: "1 day", ms: 24 * 60 * 60_000 },
+  { label: "7 day", ms: 7 * 24 * 60 * 60_000 },
+  { label: "30 day", ms: 30 * 24 * 60 * 60_000 },
+  { label: "all", ms: null },
+];
 
 // ── line parser (local logs only) ──────────────────────────────────
 type ParsedLine = {
@@ -120,17 +136,20 @@ if (typeof window !== "undefined") {
   }
 }
 
-/** Parse `HH:MM:SS.mmm` into an absolute ms epoch by lifting onto
- *  today's date. If that produces a future time, walk back one day —
- *  handles the cross-midnight backfill case. */
+/** Parse `HH:MM:SS.mmm` into an absolute ms epoch.
+ *
+ *  The daemon's logger writes timestamps via `toISOString().slice(11, 23)`,
+ *  which is **UTC**. Local-tz parsing here put every entry ~tz-offset
+ *  hours in the past (NZ +12 → 12h skew → 15-min cutoff filtered all).
+ *  setUTCHours/UTCDate keeps the parse on the same axis as Date.now(). */
 function parsedTimeToMs(time: string | undefined, now = Date.now()): number {
   if (!time) return now;
   const m = time.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{3})$/);
   if (!m) return now;
   const [, h, mn, s, ms] = m;
   const d = new Date(now);
-  d.setHours(+h, +mn, +s, +ms);
-  if (d.getTime() > now + 60_000) d.setDate(d.getDate() - 1);
+  d.setUTCHours(+h, +mn, +s, +ms);
+  if (d.getTime() > now + 60_000) d.setUTCDate(d.getUTCDate() - 1);
   return d.getTime();
 }
 
@@ -162,6 +181,8 @@ export function LogsPanel() {
     start: number;
     end: number;
   } | null>(null);
+  // Quick-range time selector (5min / 1hr / 1d / all). null = all.
+  const [timeRangeMs, setTimeRangeMs] = useState<number | null>(null);
 
   const localIdRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -365,8 +386,11 @@ export function LogsPanel() {
   // ── Filter pipeline (per-mode) ───────────────────────────────────
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const cutoffMs =
+      timeRangeMs !== null ? Date.now() - timeRangeMs : -Infinity;
     const inRange = (ts: number): boolean =>
-      !rangeFilter || (ts >= rangeFilter.start && ts < rangeFilter.end);
+      ts >= cutoffMs &&
+      (!rangeFilter || (ts >= rangeFilter.start && ts < rangeFilter.end));
     if (mode === "local") {
       const out: Array<LocalEntry & { parsed: ParsedLine }> = [];
       for (const e of localEntries) {
@@ -402,19 +426,24 @@ export function LogsPanel() {
     hiddenMachines,
     query,
     rangeFilter,
+    timeRangeMs,
   ]);
 
   // Histogram operates on the unfiltered (sans range) entry list so the
-  // user can see the full distribution and click into a bucket.
+  // user can see the full distribution and click into a bucket. Honors
+  // the quick-range cutoff so the histogram + rows scope match.
   const histogramEntries = useMemo<
     Array<{ tsMs: number; level: LogLevel }>
   >(() => {
     const q = query.trim().toLowerCase();
+    const cutoffMs =
+      timeRangeMs !== null ? Date.now() - timeRangeMs : -Infinity;
     if (mode === "local") {
       const out: Array<{ tsMs: number; level: LogLevel }> = [];
       for (const e of localEntries) {
         if (!levelFilter.has(e.level)) continue;
         if (q && !e.text.toLowerCase().includes(q)) continue;
+        if (e.tsMs < cutoffMs) continue;
         out.push({ tsMs: e.tsMs, level: e.level });
       }
       return out;
@@ -432,10 +461,29 @@ export function LogsPanel() {
       ) {
         continue;
       }
+      if (e.tsMs < cutoffMs) continue;
       out.push({ tsMs: e.tsMs, level: e.level });
     }
     return out;
-  }, [mode, localEntries, serverEntries, levelFilter, hiddenMachines, query]);
+  }, [
+    mode,
+    localEntries,
+    serverEntries,
+    levelFilter,
+    hiddenMachines,
+    query,
+    timeRangeMs,
+  ]);
+
+  // Compute the actual data span across all loaded entries to disable
+  // range options that exceed available data.
+  const dataSpanMs = useMemo(() => {
+    const all = mode === "local" ? localEntries : serverEntries;
+    if (all.length === 0) return null;
+    let mn = Infinity;
+    for (const e of all) if (e.tsMs < mn) mn = e.tsMs;
+    return Date.now() - mn;
+  }, [mode, localEntries, serverEntries]);
 
   const totalEntries =
     mode === "local" ? localEntries.length : serverEntries.length;
@@ -529,7 +577,7 @@ export function LogsPanel() {
 
   return (
     <div className="relative flex h-full flex-col bg-muted/20">
-      <div className="sticky top-0 z-10 border-b border-border bg-muted/80 backdrop-blur">
+      <div className="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur">
         {/* Title row */}
         <div className="flex items-center justify-between gap-2 px-3 pt-2.5 pb-2">
           <div className="flex items-center gap-2">
@@ -577,8 +625,8 @@ export function LogsPanel() {
           </label>
         </div>
 
-        <div className="px-3 pb-2">
-          <div className="relative flex h-7 items-center rounded-md border border-border bg-card">
+        <div className="flex items-center gap-2 px-3 pb-2">
+          <div className="relative flex h-7 flex-1 items-center rounded-md border border-border/60 bg-transparent focus-within:border-border focus-within:bg-card/50 transition-colors">
             <Search className="ml-2 h-3 w-3 text-muted-foreground" />
             <input
               type="text"
@@ -599,10 +647,15 @@ export function LogsPanel() {
               </button>
             )}
           </div>
+          <RangePicker
+            value={timeRangeMs}
+            onChange={setTimeRangeMs}
+            dataSpanMs={dataSpanMs}
+          />
         </div>
 
-        {/* Level + source/machine filters */}
-        <div className="flex flex-wrap items-center gap-1 px-3 pb-2.5 text-[10px]">
+        {/* Level filters — visually tied to the histogram below. */}
+        <div className="flex flex-wrap items-center gap-0.5 px-3 pb-1 text-[10px]">
           <LevelChip
             label="info"
             active={levelFilter.has("info")}
@@ -627,7 +680,6 @@ export function LogsPanel() {
             onClick={() => toggleLevel("debug")}
             tone="muted"
           />
-
         </div>
 
         {mode === "server" && machines.length > 0 && (
@@ -679,7 +731,7 @@ export function LogsPanel() {
               : "No logs match the current filters."}
           </div>
         ) : (
-          <ul className="px-1 py-1">
+          <ul className="px-1 py-1 space-y-1">
             {visible.map((e) =>
               e.kind === "local" ? (
                 <LocalRow key={`l-${e.id}`} entry={e} parsed={e.parsed} />
@@ -716,7 +768,7 @@ function Histogram({
   onSelectBucket: (start: number, end: number) => void;
   onClear: () => void;
 }) {
-  const BUCKETS = 60;
+  const BUCKETS = 140;
   const HEIGHT = 36;
   type Bucket = {
     info: number;
@@ -763,9 +815,11 @@ function Histogram({
 
   if (data.buckets.length === 0 || data.maxCount === 0) return null;
 
+  // Format in UTC to match the daemon log's wall-clock so axis labels
+  // line up with the inline row timestamps.
   const fmt = (ts: number) => {
     const d = new Date(ts);
-    return [d.getHours(), d.getMinutes(), d.getSeconds()]
+    return [d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()]
       .map((n) => n.toString().padStart(2, "0"))
       .join(":");
   };
@@ -778,34 +832,85 @@ function Histogram({
         <svg
           viewBox={`0 0 ${BUCKETS} ${HEIGHT}`}
           preserveAspectRatio="none"
-          className={cn("w-full cursor-pointer", `h-[${HEIGHT}px]`)}
+          className="w-full cursor-pointer"
           style={{ height: HEIGHT }}
         >
           {data.buckets.map((b, i) => {
             const isInRange =
               hasRange && b.start >= range!.start && b.end <= range!.end;
             const dimmed = hasRange && !isInRange;
-            const segs: Array<{ count: number; cls: string }> = [
-              { count: b.debug, cls: "fill-muted-foreground/40" },
-              { count: b.info, cls: "fill-sky-500/70" },
-              { count: b.warn, cls: "fill-warning/80" },
-              { count: b.error, cls: "fill-destructive" },
-            ];
-            let yOffset = HEIGHT;
-            const rects: React.ReactNode[] = [];
-            for (let j = 0; j < segs.length; j++) {
-              const s = segs[j]!;
-              if (s.count === 0) continue;
-              const h = (s.count / data.maxCount) * HEIGHT;
-              yOffset -= h;
-              rects.push(
-                <rect
-                  key={j}
-                  x={i + 0.08}
-                  y={yOffset}
-                  width={0.84}
-                  height={h}
-                  className={cn(s.cls, dimmed && "opacity-30")}
+            const nonError = b.info + b.warn + b.debug;
+            const baseline = HEIGHT - 1;
+            const cx = i + 0.5;
+            const stroke = 0.18;
+            // Empty bucket — a tiny horizontal tick at the baseline so
+            // the time axis reads continuously (Railway-style).
+            if (b.total === 0) {
+              return (
+                <g key={i} onClick={() => onSelectBucket(b.start, b.end)}>
+                  <rect
+                    x={i}
+                    y={0}
+                    width={1}
+                    height={HEIGHT}
+                    className={cn(
+                      "fill-transparent hover:fill-foreground/5",
+                      isInRange && "fill-foreground/10",
+                    )}
+                  >
+                    <title>{fmt(b.start)} · 0 entries</title>
+                  </rect>
+                  <line
+                    x1={i + 0.25}
+                    x2={i + 0.75}
+                    y1={baseline}
+                    y2={baseline}
+                    strokeWidth={stroke}
+                    strokeLinecap="round"
+                    className={cn(
+                      "stroke-muted-foreground/50",
+                      dimmed && "opacity-30",
+                    )}
+                  />
+                </g>
+              );
+            }
+            // Vertical line bar: non-error segment from baseline up,
+            // optional red error segment stacked above it.
+            const nonErrH = (nonError / data.maxCount) * (HEIGHT - 1);
+            const errH = (b.error / data.maxCount) * (HEIGHT - 1);
+            const segs: React.ReactNode[] = [];
+            if (nonErrH > 0) {
+              segs.push(
+                <line
+                  key="ok"
+                  x1={cx}
+                  x2={cx}
+                  y1={baseline}
+                  y2={baseline - nonErrH}
+                  strokeWidth={stroke}
+                  strokeLinecap="round"
+                  className={cn(
+                    "stroke-sky-500",
+                    dimmed && "opacity-30",
+                  )}
+                />,
+              );
+            }
+            if (errH > 0) {
+              segs.push(
+                <line
+                  key="err"
+                  x1={cx}
+                  x2={cx}
+                  y1={baseline - nonErrH}
+                  y2={baseline - nonErrH - errH}
+                  strokeWidth={stroke}
+                  strokeLinecap="round"
+                  className={cn(
+                    "stroke-destructive",
+                    dimmed && "opacity-30",
+                  )}
                 />,
               );
             }
@@ -828,7 +933,7 @@ function Histogram({
                     {b.warn > 0 ? ` · ${b.warn} warn` : ""}
                   </title>
                 </rect>
-                {rects}
+                {segs}
               </g>
             );
           })}
@@ -964,23 +1069,39 @@ function LevelChip({
   onClick: () => void;
   tone: "default" | "warning" | "destructive" | "muted";
 }) {
-  const activeStyles = {
-    default: "border-sky-500/40 bg-sky-500/10 text-sky-500/90",
-    warning: "border-warning/40 bg-warning/10 text-warning",
-    destructive: "border-destructive/50 bg-destructive/10 text-destructive",
-    muted: "border-border bg-muted/40 text-muted-foreground",
+  // Active = a small leading dot in the tone color + bright text on the
+  // shared chip background. Inactive = strikethrough-ish dim with no
+  // dot. Same visual language as the machine chips, no heavy outlines.
+  const dot = {
+    default: "bg-sky-400",
+    warning: "bg-warning",
+    destructive: "bg-destructive",
+    muted: "bg-muted-foreground/60",
   }[tone];
+  const text = active
+    ? {
+        default: "text-sky-400",
+        warning: "text-warning",
+        destructive: "text-destructive",
+        muted: "text-foreground/80",
+      }[tone]
+    : "text-muted-foreground/50";
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        "h-5 rounded-md border px-1.5 uppercase tracking-wider transition-colors",
-        active
-          ? activeStyles
-          : "border-border/60 bg-transparent text-muted-foreground/50 hover:text-foreground",
+        "inline-flex h-5 items-center gap-1.5 rounded-full px-2 uppercase tracking-wider transition-colors hover:bg-muted/40",
+        text,
       )}
     >
+      <span
+        className={cn(
+          "inline-block h-1 w-1 rounded-full transition-opacity",
+          dot,
+          !active && "opacity-25",
+        )}
+      />
       {label}
     </button>
   );
@@ -1018,6 +1139,71 @@ function MachineChip({
       {label}
       <span className="text-muted-foreground tabular-nums">{count}</span>
     </button>
+  );
+}
+
+function RangePicker({
+  value,
+  onChange,
+  dataSpanMs,
+}: {
+  value: number | null;
+  onChange: (ms: number | null) => void;
+  dataSpanMs: number | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = RANGE_OPTIONS.find((o) => o.ms === value) ?? RANGE_OPTIONS[RANGE_OPTIONS.length - 1]!;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-transparent px-2 text-[11px] font-medium text-muted-foreground hover:border-border hover:bg-card/50 hover:text-foreground transition-colors data-[popup-open]:border-border data-[popup-open]:bg-card/50 data-[popup-open]:text-foreground"
+          >
+            <Clock className="h-3 w-3" />
+            <span>{current.label}</span>
+          </button>
+        }
+      />
+      <PopoverContent className="p-2">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5 px-1">
+          Quick range
+        </div>
+        <div className="grid grid-cols-3 gap-1">
+          {RANGE_OPTIONS.map((opt) => {
+            const isActive = opt.ms === value;
+            const exceedsData =
+              opt.ms !== null && dataSpanMs !== null && opt.ms > dataSpanMs * 1.5;
+            return (
+              <button
+                key={opt.label}
+                type="button"
+                disabled={exceedsData}
+                onClick={() => {
+                  onChange(opt.ms);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "h-7 rounded-md border px-2 text-[11px] transition-colors",
+                  isActive
+                    ? "border-sky-500/40 bg-sky-500/10 text-sky-400"
+                    : "border-border/60 text-foreground hover:bg-muted/40",
+                  exceedsData && "opacity-30 cursor-not-allowed",
+                )}
+                title={
+                  exceedsData
+                    ? "exceeds available data"
+                    : undefined
+                }
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

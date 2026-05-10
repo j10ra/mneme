@@ -6,7 +6,7 @@
 
 import { useMemo } from "react";
 import { cn } from "../../lib/cn.ts";
-import type { Filters, MemoryRowData } from "./types.ts";
+import type { Filters } from "./types.ts";
 
 const TIME_CHIPS: Array<{ label: string; days: number | null }> = [
   { label: "24h", days: 1 },
@@ -25,32 +25,38 @@ const CLUSTER_CHIPS = [
 export function MemoriesFilters({
   filters,
   onChange,
-  entries,
+  knownKinds,
+  knownRepos,
+  knownMachines,
 }: {
   filters: Filters;
   onChange: (next: Filters) => void;
-  entries: MemoryRowData[];
+  /** Sticky facet sets accumulated across every fetch so applying a
+   *  chip doesn't make the other choices disappear. */
+  knownKinds: Set<string>;
+  knownRepos: Set<string>;
+  knownMachines: Map<string, string>;
 }) {
-  // Distinct values from the loaded set, capped to keep UI tight.
-  const repos = useMemo(
-    () => distinct(entries.map((m) => m.repo)).slice(0, 8),
-    [entries],
-  );
-  const machines = useMemo(
-    () =>
-      distinctMap(
-        entries
-          .filter((m): m is MemoryRowData & { machine_id: string } =>
-            Boolean(m.machine_id),
-          )
-          .map((m) => [m.machine_id, m.machine_name ?? m.machine_id.slice(0, 8)]),
-      ).slice(0, 8),
-    [entries],
-  );
-  const kinds = useMemo(
-    () => distinct(entries.map((m) => m.kind)).slice(0, 12),
-    [entries],
-  );
+  // Render chips for the union of (a) every value ever seen and (b)
+  // any value currently active (defensive — covers cases where a user
+  // had a chip selected before any matching row was returned).
+  const repos = useMemo(() => {
+    const set = new Set<string>(knownRepos);
+    for (const r of filters.repo) set.add(r);
+    return [...set].sort();
+  }, [knownRepos, filters.repo]);
+  const machines = useMemo(() => {
+    const map = new Map(knownMachines);
+    for (const id of filters.machine_id) {
+      if (!map.has(id)) map.set(id, id.slice(0, 8));
+    }
+    return [...map.entries()];
+  }, [knownMachines, filters.machine_id]);
+  const kinds = useMemo(() => {
+    const set = new Set<string>(knownKinds);
+    for (const k of filters.kind) set.add(k);
+    return [...set].sort();
+  }, [knownKinds, filters.kind]);
 
   const activeTime = useMemo(() => {
     if (!filters.since) return "all";
@@ -69,12 +75,25 @@ export function MemoriesFilters({
     });
   }
 
-  function toggle(field: "repo" | "machine_id" | "kind" | "cluster_status", value: string) {
+  /** Active = "this value is being used as a filter". Inactive (the
+   *  default for every chip) = "no filter on this dimension". When no
+   *  chips are active, no filter is applied → all rows show. */
+  function toggle(
+    field: "repo" | "machine_id" | "kind" | "cluster_status",
+    value: string,
+  ) {
     const cur = filters[field];
     const next = cur.includes(value)
       ? cur.filter((v) => v !== value)
       : cur.concat(value);
     onChange({ ...filters, [field]: next });
+  }
+
+  function isActive(
+    field: "repo" | "machine_id" | "kind" | "cluster_status",
+    value: string,
+  ): boolean {
+    return filters[field].includes(value);
   }
 
   return (
@@ -96,7 +115,7 @@ export function MemoriesFilters({
           {machines.map(([id, name]) => (
             <Chip
               key={id}
-              active={filters.machine_id.includes(id)}
+              active={isActive("machine_id", id)}
               onClick={() => toggle("machine_id", id)}
             >
               {name}
@@ -110,7 +129,7 @@ export function MemoriesFilters({
           {repos.map((r) => (
             <Chip
               key={r}
-              active={filters.repo.includes(r)}
+              active={isActive("repo", r)}
               onClick={() => toggle("repo", r)}
             >
               {r}
@@ -124,7 +143,7 @@ export function MemoriesFilters({
           {kinds.map((k) => (
             <Chip
               key={k}
-              active={filters.kind.includes(k)}
+              active={isActive("kind", k)}
               onClick={() => toggle("kind", k)}
             >
               {k}
@@ -137,7 +156,7 @@ export function MemoriesFilters({
         {CLUSTER_CHIPS.map((c) => (
           <Chip
             key={c.value}
-            active={filters.cluster_status.includes(c.value)}
+            active={isActive("cluster_status", c.value)}
             onClick={() => toggle("cluster_status", c.value)}
           >
             {c.label}
@@ -190,24 +209,3 @@ function Chip({
   );
 }
 
-function distinct<T>(arr: Array<T | null | undefined>): T[] {
-  const seen = new Set<T>();
-  const out: T[] = [];
-  for (const v of arr) {
-    if (v == null || seen.has(v)) continue;
-    seen.add(v);
-    out.push(v);
-  }
-  return out;
-}
-
-function distinctMap<K, V>(pairs: Array<[K, V]>): Array<[K, V]> {
-  const seen = new Set<K>();
-  const out: Array<[K, V]> = [];
-  for (const [k, v] of pairs) {
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push([k, v]);
-  }
-  return out;
-}

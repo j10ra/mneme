@@ -21,8 +21,19 @@ function fmtAge(iso: string): string {
 function repoShort(repo: string | null): string {
   if (!repo) return "—";
   // github.com/j10ra/mneme → j10ra/mneme
-  const m = repo.match(/^github\.com\/(.+)$/);
-  return m ? m[1]! : repo;
+  const gh = repo.match(/^github\.com\/(.+)$/);
+  if (gh) return gh[1]!;
+  // Azure DevOps: <user>@dev.azure.com/<org>/<project>/_git/<repo>
+  // → <project>/<repo> with %20 decoded.
+  const az = repo.match(/dev\.azure\.com\/[^/]+\/(.+?)\/_git\/(.+)$/);
+  if (az) {
+    try {
+      return `${decodeURIComponent(az[1]!)}/${decodeURIComponent(az[2]!)}`;
+    } catch {
+      return `${az[1]!}/${az[2]!}`;
+    }
+  }
+  return repo;
 }
 
 const KIND_TONE: Record<string, string> = {
@@ -59,7 +70,7 @@ export function MemoryRow({
           expanded && "bg-muted/40",
         )}
       >
-        {/* Line 1: meta header */}
+        {/* Line 1: meta header — single left-aligned flow */}
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
           {expanded ? (
             <ChevronDown className="h-3 w-3" />
@@ -77,10 +88,8 @@ export function MemoryRow({
               {data.kind}
             </span>
           )}
-          <span className="ml-auto flex items-center gap-2 text-muted-foreground">
-            <span className="font-mono">{repoShort(data.repo)}</span>
-            {data.machine_name && <span>· {data.machine_name}</span>}
-          </span>
+          <span className="font-mono break-all">· {repoShort(data.repo)}</span>
+          {data.machine_name && <span>· {data.machine_name}</span>}
         </div>
 
         {/* Line 2: content preview */}

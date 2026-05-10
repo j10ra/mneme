@@ -14,7 +14,6 @@ import { MemoryRow } from "./memories/MemoryRow.tsx";
 import type { Filters, MemoryRowData } from "./memories/types.ts";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert.tsx";
 import { Button } from "./ui/button.tsx";
-import { Card, CardDescription, CardHeader, CardTitle } from "./ui/card.tsx";
 import { Skeleton } from "./ui/skeleton.tsx";
 
 const PAGE_SIZE = 50;
@@ -55,9 +54,18 @@ export function MemoriesPanel() {
   const [state, setState] = useState<FetchState>({ kind: "loading" });
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  // "Sticky" facets — accumulate every kind/repo/machine ever seen so
+  // applying a filter chip doesn't make the other choices disappear.
+  // Updated on every fetch via union with the response.
+  const [knownKinds, setKnownKinds] = useState<Set<string>>(new Set());
+  const [knownRepos, setKnownRepos] = useState<Set<string>>(new Set());
+  const [knownMachines, setKnownMachines] = useState<Map<string, string>>(
+    () => new Map(),
+  );
 
   const abortRef = useRef<AbortController | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // Debounce search input.
   useEffect(() => {
@@ -98,6 +106,44 @@ export function MemoriesPanel() {
       );
       const got = data.memories.length;
       setHasMore(got >= PAGE_SIZE);
+      // Union into the sticky facet sets so chips persist across filter
+      // changes. Functional updaters keep this race-safe with overlapping
+      // fetches.
+      setKnownKinds((prev) => {
+        let changed = false;
+        const next = new Set(prev);
+        for (const m of data.memories) {
+          if (m.kind && !next.has(m.kind)) {
+            next.add(m.kind);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+      setKnownRepos((prev) => {
+        let changed = false;
+        const next = new Set(prev);
+        for (const m of data.memories) {
+          if (m.repo && !next.has(m.repo)) {
+            next.add(m.repo);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+      setKnownMachines((prev) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const m of data.memories) {
+          if (!m.machine_id) continue;
+          const label = m.machine_name ?? m.machine_id.slice(0, 8);
+          if (next.get(m.machine_id) !== label) {
+            next.set(m.machine_id, label);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
       setState((prev) => {
         const merged = append && prev.kind !== "loading" && prev.kind !== "error"
           ? prev.entries.concat(data.memories)
@@ -144,7 +190,7 @@ export function MemoriesPanel() {
           void fetchPage(state.entries.length, true);
         }
       },
-      { rootMargin: "200px" },
+      { root: scrollRef.current, rootMargin: "200px" },
     );
     obs.observe(el);
     return () => obs.disconnect();
@@ -176,69 +222,79 @@ export function MemoriesPanel() {
   }, [entries, groupByCluster]);
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-          <CardTitle>Memories</CardTitle>
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {total > 0 ? `${total} loaded` : ""}
-          </span>
-        </div>
-        <CardDescription>
-          last 7d · all machines · click row to expand
-        </CardDescription>
-      </CardHeader>
-
-      <div className="px-5 pb-3 space-y-3">
-        {/* Search + toggles */}
-        <div className="flex items-center gap-2">
-          <div className="relative flex h-8 flex-1 items-center rounded-md border border-border bg-card">
-            <Search className="ml-2 h-3.5 w-3.5 text-muted-foreground" />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="hybrid search…"
-              className="flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/60"
-            />
-            {query && (
-              <button
-                type="button"
-                onClick={() => setQuery("")}
-                className="mr-1 rounded p-0.5 text-muted-foreground hover:text-foreground"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
+    <div className="flex h-full flex-col">
+      {/* Header — fixed at the top of the panel; never scrolls. The
+          scrollbar lives on the rows container below it instead of
+          alongside the whole card, which would feel misleading. */}
+      <div className="border-b border-border bg-card">
+        <div className="px-6 pt-5 pb-3 space-y-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <div>
+              <h2 className="text-lg font-semibold tracking-tight">Memories</h2>
+              <p className="text-xs text-muted-foreground">
+                last 7d · all machines · click row to expand
+              </p>
+            </div>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {total > 0 ? `${total} loaded` : ""}
+            </span>
           </div>
-          <Button
-            variant={filtersOpen ? "active" : "ghost"}
-            size="sm"
-            onClick={() => setFiltersOpen((v) => !v)}
-            title="toggle filters"
-          >
-            <Settings2 className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            variant={groupByCluster ? "active" : "ghost"}
-            size="sm"
-            onClick={() => setGroupByCluster((v) => !v)}
-            title="group by cluster"
-          >
-            <Layers className="h-3.5 w-3.5" />
-          </Button>
-        </div>
 
-        {filtersOpen && (
-          <MemoriesFilters
-            filters={filters}
-            onChange={setFilters}
-            entries={entries}
-          />
-        )}
+          {/* Search + toggles */}
+          <div className="flex items-center gap-2">
+            <div className="relative flex h-8 flex-1 items-center rounded-md border border-border bg-card">
+              <Search className="ml-2 h-3.5 w-3.5 text-muted-foreground" />
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="hybrid search…"
+                className="flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/60"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  className="mr-1 rounded p-0.5 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            <Button
+              variant={filtersOpen ? "active" : "ghost"}
+              size="sm"
+              onClick={() => setFiltersOpen((v) => !v)}
+              title="toggle filters"
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant={groupByCluster ? "active" : "ghost"}
+              size="sm"
+              onClick={() => setGroupByCluster((v) => !v)}
+              title="group by cluster"
+            >
+              <Layers className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+
+          {filtersOpen && (
+            <MemoriesFilters
+              filters={filters}
+              onChange={setFilters}
+              knownKinds={knownKinds}
+              knownRepos={knownRepos}
+              knownMachines={knownMachines}
+            />
+          )}
+        </div>
       </div>
 
-      <div className="px-5 pb-5">
+      {/* Scrollable rows list — the only scroll surface in the panel.
+          Uses bg-background (darker outer chrome tier) to match the
+          LogsPanel rows surface. */}
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto bg-background px-6 py-4">
         {state.kind === "loading" && <SkeletonRows />}
         {state.kind === "error" && (
           <Alert variant="destructive">
@@ -280,7 +336,7 @@ export function MemoriesPanel() {
           </>
         )}
       </div>
-    </Card>
+    </div>
   );
 }
 

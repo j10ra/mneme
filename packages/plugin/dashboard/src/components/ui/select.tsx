@@ -26,9 +26,9 @@ export function SelectTrigger({
   return (
     <BaseSelect.Trigger
       className={cn(
-        "inline-flex h-7 items-center justify-between gap-2 rounded-md border border-border bg-card px-2 text-xs font-medium outline-none transition-colors",
-        "hover:bg-muted focus-visible:ring-2 focus-visible:ring-foreground/20",
-        "data-[popup-open]:bg-muted disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex h-7 items-center justify-between gap-2 rounded-md border border-border/60 bg-transparent px-2 text-xs font-medium outline-none transition-colors",
+        "hover:border-border hover:bg-card/50 focus-visible:ring-2 focus-visible:ring-foreground/20",
+        "data-[popup-open]:border-border data-[popup-open]:bg-card/50 disabled:cursor-not-allowed disabled:opacity-50",
         className,
       )}
       {...props}

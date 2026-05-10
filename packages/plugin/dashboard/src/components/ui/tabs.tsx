@@ -22,7 +22,10 @@ export function TabsList({
   return (
     <BaseTabs.List
       className={cn(
-        "inline-flex h-9 items-center gap-1 rounded-md border border-border bg-card p-1",
+        "inline-flex h-9 items-center gap-1 rounded-lg border border-border bg-muted/30 p-1",
+        // Vertical orientation: column layout, no border (sidebar's
+        // already a chrome surface), tighter spacing.
+        "data-[orientation=vertical]:flex-col data-[orientation=vertical]:h-auto data-[orientation=vertical]:items-stretch data-[orientation=vertical]:border-0 data-[orientation=vertical]:bg-transparent data-[orientation=vertical]:p-0 data-[orientation=vertical]:gap-2",
         className,
       )}
       {...props}
@@ -37,10 +40,20 @@ export function TabsTab({
   return (
     <BaseTabs.Tab
       className={cn(
-        "inline-flex h-7 items-center justify-center gap-1.5 rounded-sm px-3 text-xs font-medium transition-colors",
-        "text-muted-foreground hover:text-foreground",
-        "data-[selected]:bg-muted data-[selected]:text-foreground data-[selected]:shadow-sm",
+        "relative inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-3 text-xs font-medium transition-all",
+        // Inactive
+        "text-muted-foreground hover:text-foreground hover:bg-muted/40",
+        // Active (aria-selected=true is what Base UI sets on the active Tab)
+        "aria-selected:bg-card aria-selected:text-sky-400 aria-selected:shadow-sm",
+        "aria-selected:ring-1 aria-selected:ring-sky-500/40",
+        "aria-selected:pl-5",
+        "aria-selected:before:absolute aria-selected:before:left-1.5 aria-selected:before:top-1/2 aria-selected:before:h-1 aria-selected:before:w-1 aria-selected:before:-translate-y-1/2 aria-selected:before:rounded-full aria-selected:before:bg-sky-400 aria-selected:before:shadow-[0_0_4px] aria-selected:before:shadow-sky-400/60",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20",
+        // Vertical: square icon-only buttons, leading dot becomes a left
+        // tone bar, no padding gymnastics for text.
+        "data-[orientation=vertical]:h-10 data-[orientation=vertical]:w-10 data-[orientation=vertical]:px-0 data-[orientation=vertical]:rounded-lg",
+        "data-[orientation=vertical]:aria-selected:pl-0",
+        "data-[orientation=vertical]:aria-selected:before:left-0 data-[orientation=vertical]:aria-selected:before:top-2 data-[orientation=vertical]:aria-selected:before:h-6 data-[orientation=vertical]:aria-selected:before:w-0.5 data-[orientation=vertical]:aria-selected:before:translate-y-0 data-[orientation=vertical]:aria-selected:before:rounded-r data-[orientation=vertical]:aria-selected:before:shadow-none",
         className,
       )}
       {...props}
