@@ -1,138 +1,50 @@
 ---
 name: using-mneme
-description: How to query Mneme — your cross-machine memory store. SQL-first via the mneme_sql tool. Use embed('text') for semantic search, ts_rank for keyword. Three tables (captures, memories, ingest_jobs). The embed() macro is auto-substituted with a 1024-dim vector from the configured embedder before execution. Surface rows show an [8-char id prefix] you can pivot from with `id::text LIKE '<prefix>%'`.
+description: Recall what was decided, done, or said across this repo's history — cross-machine. Use mneme_sql to query the persistent memory store before assuming you don't have prior context. Triggers on questions like "did we already solve this?", "what was the decision on X?", "how did we last fix Y?", "what was I working on yesterday?", or any historical question the SessionStart surface didn't already answer. Mneme stores a graph of memories (decisions, bugfixes, features, summaries, clusters); navigate it deliberately — search index, then walk relations, then unfold full content.
 ---
 
 # Mneme: cross-machine memory via SQL
 
-Mneme stores your memories in Postgres + pgvector. The agent talks to it through one tool: `mneme_sql(query)`. Read-only. SELECT only. Auto-`LIMIT 200`. 5s statement timeout. 1MB result cap.
+Mneme is a persistent memory layer that captures everything you and the user have worked on, across machines. The agent talks to it through one tool: `mneme_sql(query)` — read-only, SELECT only, auto-`LIMIT 200`, 5s timeout, 1MB result cap.
 
-## Schema
+## When to use
 
-### `captures` — raw, immutable
-| column | type | notes |
-|---|---|---|
-| `id` | uuid PK | |
-| `content` | text | scrubbed at edge for secrets and `<private>` blocks |
-| `content_sha256` | text | dedup key |
-| `source` | text | `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`, `manual:/memory`, `manual:/api/memory`. (Dream writes directly to `memories`, not through `/api/capture`, so no `dream` source on captures.) |
-| `machine_id`, `hostname`, `repo`, `harness`, `agent`, `session_id` | text | scope |
-| `topics` | text[] | optional tags |
-| `private` | bool | true rows are invisible via `mneme_sql`. The MCP reader role has an RLS policy of `USING (private = false)`, so private rows are physically unreachable from this tool — no `WHERE private = false` is needed and no filter you write can surface them. The SessionStart surface uses a separate server-side path that applies a machine-aware filter. |
-| `raw_meta` | jsonb | source-specific extras |
-| `captured_at`, `created_at`, `archived_at` | timestamptz | `created_at` is a generated alias of `captured_at` — both columns work, query with whichever feels natural. |
-| `UNIQUE(content_sha256, machine_id)` | | |
+Use Mneme when the user asks about **work that already happened** (not the current turn):
 
-### `memories` — chunked, embedded, BM25-indexed
-| column | type | notes |
-|---|---|---|
-| `id` | uuid PK | |
-| `capture_id` | uuid FK | → captures |
-| `chunk_id` | text UNIQUE | composite hash; encodes embedding model so re-embed is safe |
-| `content` | text | |
-| `content_hash` | text | |
-| `embedding` | vector(1024) | populated by the configured embedder provider |
-| `embedding_model` | text | model name from the embedder; varies by deployment. `chunk_id = sha256(content_hash + ":" + embedding_model)` so re-embedding under a different model produces fresh rows instead of overwriting. |
-| `tsv` | tsvector | for `ts_rank`, `websearch_to_tsquery` |
-| `kind` | text | one of: `note`, `bugfix`, `feature`, `discovery`, `decision`, `preference`, `constraint`, `security_alert`, `reference`, `summary`, `cluster`. (`claude_memory` is a *source* on captures, not a kind on memories. `pin` is a `raw_meta.kind` flag used to actuate `meta.pinned` — also not a memory kind.) |
-| `importance` | real | decays over time (nap), boosts on reference |
-| `meta` | jsonb | `related_to`, `member_ids`, `superseded_by`, `shadow_of`, `pinned`, `one_line` |
-| same scope cols | | denormalized from capture |
+- "Did we already…", "have we discussed…", "how did we solve… last time"
+- "What was the decision on…", "what's our policy for…"
+- "What was I working on yesterday / last week / on machine X"
+- A reference like "the bug we hit", "that decision", "the homelab finding" — when context is missing in the current session
 
-### `ingest_jobs` — worker queue
-You usually don't query this. `phase` ∈ `extract`, `embed`, `dream`. `state` ∈ `queued`, `running`, `done`, `error`.
+Don't use when:
+- The answer is in the current conversation.
+- The question is about live state (run `git log`, read the file, query the dashboard).
+- You want to *write* a memory (use `/mneme:memory` or `/mneme:pin` slashes — never write through `mneme_sql`).
 
-### `_ops.machines` — name → machine_id lookup (view)
-Read-only view in the `_ops` schema exposing the `(machine_id, name, created_at, last_used_at, revoked_at)` mapping that lives in `_ops.api_keys`. Schema-qualify on every reference (`_ops.machines`, never bare `machines`). Use this whenever the user refers to a machine by its friendly name ("get recent conversation from qube-laptop"): resolve the name to a `machine_id` first, then query `captures` / `memories`.
+The SessionStart surface (the markdown that landed in your context at session start) already pre-loaded **pinned facts, rules, recent decisions, themes, and session summaries**. Every line carries an `[8-char id]` you can pivot from. Check the surface first. Only query Mneme when the surface didn't cover the question.
+
+---
+
+## The 3-layer workflow (always follow)
+
+**Don't fetch full rows up front.** Filter to a small set of IDs, then unfold. Same pattern as `mem-search` in claude-mem; ~5–10× token savings on broad recall.
+
+### Layer 1 · Search — get a lightweight index
+
+Pull the smallest row shape that lets you decide what's relevant. Always preview-only.
 
 ```sql
--- Resolve "qube-laptop" → machine_id, then pull recent captures
-WITH m AS (
-  SELECT machine_id FROM _ops.machines
-  WHERE name = 'qube-laptop' AND revoked_at IS NULL
-  LIMIT 1
-)
-SELECT c.captured_at, c.source, substring(c.content, 1, 200) AS preview
-FROM captures c, m
-WHERE c.machine_id = m.machine_id
-  AND c.archived_at IS NULL
-ORDER BY c.captured_at DESC
-LIMIT 20;
-```
-
-If `name = '<exact>'` returns nothing, fall back to `name ILIKE '%<fragment>%'`. A machine renamed in place via `/mneme:rename` keeps the same `machine_id` (its captures don't bifurcate); a machine that was revoked + re-registered shows two rows here.
-
-### Common mistakes (READ THIS BEFORE WRITING SQL)
-
-These are real failure patterns observed in production. Don't repeat them:
-
-| Mistake | Why it fails | Fix |
-|---|---|---|
-| `SELECT title FROM ...` | No `title` column exists on any table | Memory/capture content is in `content`. Cluster summaries also use `content`. |
-| `FROM observations` | No `observations` table — that's claude-mem's schema, not Mneme | Use `memories` (chunked + embedded) or `captures` (raw events) |
-| `captures.kind` / `captures.embedding` / `captures.tsv` | These columns are **only on `memories`**, not `captures` | If you need kind filtering / embeddings / BM25, you need the `memories` table. If `memories` is empty, fall back to keyword `ILIKE` on `captures.content` |
-| `WHERE source = 'note'` | `source` is the *event source* (`claude_hook`, `claude_summary`, `manual:/memory`, etc.). `note` is a `kind`. | Use `kind = 'note'` on memories, or `source = 'manual:/memory'` on captures |
-
-**Always read the schema table at the top of this skill before constructing a query.** Don't assume column names from other systems.
-
-## Which table to query (read this before recalling)
-
-The two real tables hold different things. Pick based on the user's intent:
-
-| User intent | Query | Why |
-|---|---|---|
-| "What did we talk about?" / "show me recent conversation" / "what tools did Claude run?" / "what was I working on yesterday?" | `captures` | Raw record of prompts, tool calls, session summaries. No processing required, always present. |
-| "Find me memories about X" / "what's our decision on Y?" / semantic recall | `memories` | Chunked + embedded + kind-tagged. Use the `embed()` macro for cosine similarity. |
-
-**Fallback rule:** if a `memories` query returns 0 rows for a recall request, immediately re-run the recall against `captures` before reporting "no memories" to the user. Captures are the source-of-truth event log; memories are a synthesized index built on top.
-
-### Recent conversation pattern (captures)
-
-```sql
-SELECT id, source, repo, machine_id, captured_at,
+SELECT id, kind, repo, importance, created_at,
+       meta->>'in_cluster'    AS in_cluster,
+       meta->>'superseded_by' AS superseded_by,
        substring(content, 1, 200) AS preview
-FROM captures
-WHERE archived_at IS NULL
-  AND captured_at > now() - interval '24 hours'
-  -- optional: AND repo = '<canonical-repo>'
-ORDER BY captured_at DESC
-LIMIT 20;
-```
-
-The `source` column tells you what kind of event:
-- `claude_hook` — a prompt the user typed OR a tool call the agent made (UserPromptSubmit + PostToolUse)
-- `claude_summary` — Stop / PreCompact session digest (full payload as JSON)
-- `claude_assistant` — assistant turns transcribed from the session JSONL
-- `claude_memory` — auto-memory write detected by the hook on `~/.claude/projects/*/memory/*.md`
-- `manual:/memory` — explicit `/mneme:memory` slash command
-- `manual:/api/memory` — direct memory write (used by `/mneme:pin <text>`, which bypasses the extract worker)
-
-For "what did the user say" specifically, filter on `source = 'claude_hook'` and look at `content` — user prompts are short text, tool calls are JSON beginning with `{"tool":...}`. For "what did the agent say back," filter on `source = 'claude_assistant'`.
-
-## The `embed()` macro
-
-Inside any SELECT, `embed('your query text')` is replaced with a 1024-dim vector from the configured embedder before execution. Use with `<=>` (cosine distance):
-
-```sql
-SELECT id, content, 1 - (embedding <=> embed('payment integration')) AS sim
-FROM memories
-ORDER BY sim DESC
-LIMIT 10;
-```
-
-## Default hybrid recall
-
-Copy and adapt:
-
-```sql
-SELECT id, content, kind, repo, importance, meta->'related_to' AS related_to, created_at
 FROM memories
 WHERE archived_at IS NULL
   AND (meta->>'shadow_of') IS NULL
 ORDER BY
   (
-    0.6 * (1 - (embedding <=> embed('your query'))) +
-    0.4 * ts_rank(tsv, websearch_to_tsquery('english', 'your query')) +
+    0.6  * (1 - (embedding <=> embed('your query'))) +
+    0.4  * ts_rank(tsv, websearch_to_tsquery('english', 'your query')) +
     0.05 * importance
   )
   * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
@@ -140,119 +52,80 @@ DESC
 LIMIT 10;
 ```
 
-Three terms:
-- `0.6 *` cosine similarity (semantic).
-- `0.4 *` BM25 (keyword overlap).
-- `0.05 *` importance — breaks ties between semantically-similar rows in favour of high-importance ones (decisions, constraints, security alerts), without dominating the ranking. Importance is centered ~0.58 with a long tail to 1.0; this contributes 0.03–0.05 to the final score.
+Read the previews. Pick the IDs that matter. **Discard the rest.**
 
-The `superseded_by` penalty multiplies the score by 0.3 instead of filtering — superseded memories still surface for queries like "what did we used to do?", just rank below the current truth unless overwhelmingly relevant. To see only current memories explicitly, add `AND meta->>'superseded_by' IS NULL`. To find historical context only, flip to `AND meta->>'superseded_by' IS NOT NULL`.
+If 0 rows: read [`references/recipes.md`](./references/recipes.md) for the captures-fallback pattern.
 
-### Co-rendering related memories
+### Layer 2 · Walk — follow the graph
 
-The query above selects `meta->'related_to'` so you have the neighbour ids alongside each hit. When the user asks a broad recall question and a top hit has neighbours (`related_to` is a JSON array of uuids), surface them too:
+Memories form a graph. A search hit rarely tells the whole story; the *cluster summary* + *siblings* + *supersede chain* tells the story. After Layer 1, walk the relevant edges.
+
+| Edge | What it gives you |
+|---|---|
+| `meta.in_cluster` | the cluster summary — a one-paragraph distillation of N related memories. **Almost always cheaper to read than the members themselves.** |
+| `meta.member_ids` | the members of a cluster — the raw story behind the summary |
+| `meta.related_to` | semantic neighbours (cosine < 0.15) recorded by the nap worker |
+| `meta.superseded_by` | the newer version that replaced this one. Walk forward to find current truth |
+
+When a top hit has `meta.in_cluster`, fetch the cluster summary first — it's often enough on its own. Full walk queries (cluster, related_to, supersede chain) are in [`references/navigation.md`](./references/navigation.md).
+
+### Layer 3 · Unfold — full content for the chosen few
+
+Once you've filtered to memories that actually matter (usually 1–5), fetch full content:
 
 ```sql
--- Pull the related neighbours for ONE specific top hit, in one round-trip.
-SELECT id, kind, importance,
-       substring(content, 1, 200) AS preview
+SELECT id, content, kind, importance, repo, machine_id, created_at, meta
 FROM memories
-WHERE id = ANY (
-        ARRAY(SELECT jsonb_array_elements_text(
-                       (SELECT meta->'related_to' FROM memories WHERE id = '<top-hit-uuid>')
-                     )::uuid)
-      )
-  AND archived_at IS NULL
-ORDER BY importance DESC, created_at DESC
-LIMIT 5;
+WHERE id = ANY (ARRAY['<id1>', '<id2>', '<id3>']::uuid[]);
 ```
 
-When summarising for the user, group neighbours under the parent ("X — also see related: A, B, C") rather than as separate top results. Don't fan out neighbours-of-neighbours; one hop is enough to give the user the surrounding context without burying the actual answer.
+Synthesise across rows. Don't echo metadata back to the user unless the answer depends on it.
 
-## Common patterns
+---
 
-**Decisions in current repo:**
-```sql
-SELECT id, content, created_at FROM memories
-WHERE kind = 'decision' AND repo = '<canonical-git-url>'
-  AND archived_at IS NULL
-ORDER BY importance DESC, created_at DESC LIMIT 10;
-```
+## Synthesising the answer
 
-**Recent across all machines (last week):**
-```sql
-SELECT id, content, machine_id, created_at FROM memories
-WHERE created_at > now() - interval '7 days'
-  AND archived_at IS NULL
-ORDER BY created_at DESC LIMIT 20;
-```
+After you've gathered the rows, **answer the user's question, don't dump the database.**
 
-**Unfold one memory by id:**
-```sql
-SELECT * FROM memories WHERE id = '<uuid>';
-```
+- Conversational prose. Write like a colleague who just looked something up.
+- Don't surface metadata (id, kind, repo, timestamp) unless the answer specifically depends on it. Raw rows live in the tool response — you can refer back without echoing them.
+- Synthesise across overlapping rows. If three memories all point to the same decision, state it once.
+- If a specific memory IS the answer, quote the salient phrase, not the full row.
+- If the rows don't really answer the question, say so plainly — don't pad with marginally-related content.
+- Match length to the question: specific question → 1–3 sentences; broad question → short paragraph.
 
-**Pivoting from a surface row** — the SessionStart surface (the markdown that lands in your context at session start) prefixes every line with an 8-char hex id and a kind glyph, e.g.:
+---
 
-```
-- [a3f29c7d] ⚖️ 0.90 Use the local LLM provider for extraction
-- [c4f2a1b9] 5d ago · 🔴 Pin actuation needed UUID validation
-```
+## References (load on demand)
 
-To fetch the full memory + related context for one of those rows, match the prefix:
+Don't load these up front. Read the relevant one when you actually need it.
 
-```sql
-SELECT id, content, kind, importance, repo, machine_id,
-       meta->'related_to' AS related_ids,
-       meta->>'in_cluster' AS in_cluster,
-       meta->>'shadow_of' AS shadowed_by
-FROM memories
-WHERE id::text LIKE 'a3f29c7d%'
-  AND archived_at IS NULL
-LIMIT 1;
-```
+| When | Read |
+|---|---|
+| Question matches a recurring shape (decisions, transcript, timeline, themes, surface pivot, machine-scoped) | [`references/recipes.md`](./references/recipes.md) |
+| Walking the memory graph (cluster summary + members, related neighbours, supersede chains) | [`references/navigation.md`](./references/navigation.md) |
+| Need column types, jsonb shapes, or the source taxonomy | [`references/schema.md`](./references/schema.md) |
+| Hit a SQL error or unexpected empty result | [`references/mistakes.md`](./references/mistakes.md) |
 
-The 8-char prefix is unambiguous at personal scale. If you want the cluster summary that contains a surface row, follow `meta.in_cluster`; for siblings, follow `meta.related_to`.
+The 3-layer workflow above plus `references/recipes.md` cover ~90% of recall questions. The other references are deep-dive material.
 
-**Glyph legend** (for reading the surface):
-🔴 bugfix · 🟣 feature · ⚖️ decision · 🔵 discovery · 💬 preference · 🚧 constraint · 🚨 security_alert · 📎 reference · 🎯 summary · 🧩 cluster · 🧠 claude_memory · 📝 note
+---
 
-**Cluster summaries only:**
-```sql
-SELECT id, content, meta->'member_ids' AS members, importance
-FROM memories
-WHERE kind = 'cluster' AND archived_at IS NULL
-ORDER BY created_at DESC LIMIT 5;
-```
-
-**Backlinks (memories that reference this one):**
-```sql
-SELECT id, content FROM memories
-WHERE meta->'related_to' ? '<target-uuid>';
-```
-
-**Recent sessions for a repo (cross-machine):**
-```sql
-SELECT session_id, machine_id, count(*) AS captures, max(captured_at) AS last_active
-FROM captures
-WHERE repo = '<canonical-git-url>' AND archived_at IS NULL
-GROUP BY session_id, machine_id
-ORDER BY last_active DESC LIMIT 10;
-```
-
-## Scope filtering
-
-- `repo = '<canonical-git-url>'` — same repo across all machines (recommended default)
-- `machine_id = '<uuid>'` — same machine only
-- `archived_at IS NULL` — alive memories only (almost always include this)
-
-Privacy is enforced at the role level — `mneme_sql` physically can't return rows with `private = true`. You don't need (and shouldn't add) a `private = false` filter in your queries.
-
-## What the tool will *not* run
+## What this tool will not run
 
 - `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `VACUUM`, `REINDEX`, `REFRESH`, `COPY`, `CALL`, `DO`, `EXECUTE`, `LOCK`, `MERGE`
 - More than one statement per call
-- The connection runs as `mneme_reader` which physically lacks write privileges
+- Anything against `private = true` rows (RLS-blocked at the role level)
 
-## Writing memories
+The connection runs as `mneme_reader` which physically lacks write privileges.
 
-Don't use `mneme_sql` for writes. Use the slash command `/memory <text>`, which POSTs to `/api/capture` with proper scrubbing, dedup, and job enqueuing. Hooks fire automatically during sessions.
+## Writing memories (don't use mneme_sql)
+
+| Goal | Tool |
+|---|---|
+| Save a fact in the user's words | `/mneme:memory <text>` slash |
+| Pin a one-liner so it surfaces every session | `/mneme:pin <text>` slash |
+| Pin / unpin an existing memory by id | `/mneme:pin <uuid>` / `/mneme:unpin <uuid>` |
+| Wrap up the current session | `/mneme:summarise` slash |
+
+Hooks fire automatically — most memories get captured without a slash command.
