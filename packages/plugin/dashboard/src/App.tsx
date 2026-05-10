@@ -5,6 +5,8 @@
 // "open on a wider screen" notice — below that we drop the grid and
 // show the notice instead. Single page, no internal routing.
 
+import { LogsPanel } from "./components/LogsPanel.tsx";
+import { MachinesPanel } from "./components/MachinesPanel.tsx";
 import { StatusPanel } from "./components/StatusPanel.tsx";
 
 export function App() {
@@ -22,7 +24,7 @@ export function App() {
         </div>
       </div>
 
-      <div className="hidden min-[1024px]:grid min-h-screen [grid-template-columns:1fr_360px]">
+      <div className="hidden min-[1024px]:grid h-screen grid-cols-[1fr_400px]">
         <main className="border-r border-border p-6 space-y-6 overflow-y-auto">
           <header className="flex items-center justify-between">
             <h1 className="text-xl font-semibold tracking-tight">Mneme dashboard</h1>
@@ -32,20 +34,13 @@ export function App() {
           </header>
 
           <StatusPanel />
+          <MachinesPanel />
 
-          {/* Machines, memories, graph panels land here as they're built. */}
+          {/* Memories + graph panels land here next. */}
         </main>
 
-        <aside className="overflow-y-auto bg-muted/30">
-          <div className="sticky top-0 border-b border-border bg-muted/80 backdrop-blur p-3">
-            <h2 className="text-sm font-medium">Logs</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              live tail · daemon + server (coming soon)
-            </p>
-          </div>
-          <div className="p-3 text-xs text-muted-foreground">
-            Logs panel placeholder — SSE wiring lands in a follow-up.
-          </div>
+        <aside className="relative bg-muted/30 overflow-hidden">
+          <LogsPanel />
         </aside>
       </div>
     </div>

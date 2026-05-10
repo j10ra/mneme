@@ -15,10 +15,13 @@
 // committed by CI. This route just reads them at request time — no
 // caching, no bundling, no build step inside the daemon.
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
+import { open as fsOpen } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import { Logger, mnemeRoute } from "@mneme/core";
 
 /** Absolute path to `<plugin-root>/dashboard/dist/`.
@@ -102,34 +105,221 @@ export function mountDashboardRoutes(app: Hono): void {
   // cfg.auth.key, or reads local-only data from disk. No auth on
   // the dashboard side (loopback-only).
 
-  // GET /dashboard/api/status — proxies /api/_ops/status (now read-scoped)
-  // First endpoint wired; more land per the dashboard ticket.
+  // GET /dashboard/api/status — proxies /api/_ops/status (read-scoped)
   app.get(
     "/dashboard/api/status",
     mnemeRoute("daemon.dashboard.status"),
-    async (c) => {
-      const cfg = await readDaemonConfig();
-      if (!cfg) {
-        return c.json({ error: "config not loaded" }, 503);
-      }
-      try {
-        const resp = await fetch(`${cfg.serverUrl}/api/_ops/status`, {
-          headers: { Authorization: `Bearer ${cfg.token}` },
-        });
-        const body = await resp.text();
-        return c.body(body, resp.status as 200, {
-          "content-type":
-            resp.headers.get("content-type") ?? "application/json",
-        });
-      } catch (err) {
-        Logger.warn("dashboard.status: upstream fetch failed", err);
-        return c.json(
-          { error: "upstream unavailable" },
-          502,
-        );
-      }
-    },
+    proxyHandler("/api/_ops/status", "dashboard.status"),
   );
+
+  // GET /dashboard/api/machines — proxies /api/auth/machines (read-scoped)
+  app.get(
+    "/dashboard/api/machines",
+    mnemeRoute("daemon.dashboard.machines"),
+    proxyHandler("/api/auth/machines", "dashboard.machines"),
+  );
+
+  // GET /dashboard/api/logs/stream — SSE tail of local daemon log files.
+  // Reads ~/.mneme/logs/daemon.{out,err}.log directly (no server hop).
+  // On connect: replays last N lines of each file. Then polls every
+  // POLL_MS for new bytes, emits each line as an SSE event. Handles
+  // rotation (size shrink → reset cursor to 0). Heartbeat ping every
+  // 15s so proxies don't kill an idle connection.
+  app.get(
+    "/dashboard/api/logs/stream",
+    mnemeRoute("daemon.dashboard.logs.stream"),
+    (c) => streamSSE(c, async (stream) => streamLogs(stream)),
+  );
+}
+
+// ── proxy helper ────────────────────────────────────────────────────
+
+function proxyHandler(upstreamPath: string, traceTag: string) {
+  return async (c: Context) => {
+    const cfg = await readDaemonConfig();
+    if (!cfg) {
+      return c.json({ error: "config not loaded" }, 503);
+    }
+    try {
+      const resp = await fetch(`${cfg.serverUrl}${upstreamPath}`, {
+        headers: { Authorization: `Bearer ${cfg.token}` },
+      });
+      const body = await resp.text();
+      return c.body(body, resp.status as 200, {
+        "content-type":
+          resp.headers.get("content-type") ?? "application/json",
+      });
+    } catch (err) {
+      Logger.warn(`${traceTag}: upstream fetch failed`, err);
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  };
+}
+
+// ── log streaming ───────────────────────────────────────────────────
+
+const LOG_POLL_MS = 1000;
+const LOG_PING_MS = 15_000;
+const LOG_BACKFILL_BYTES = 32 * 1024; // ~32KB tail = a few hundred lines
+
+type LogSource = "out" | "err";
+
+function logPaths(): Record<LogSource, string> {
+  const dir = join(homedir(), ".mneme", "logs");
+  return {
+    out: join(dir, "daemon.out.log"),
+    err: join(dir, "daemon.err.log"),
+  };
+}
+
+/** Best-effort level inference from line text. The daemon writes plain
+ *  `HH:MM:SS.ms LEVEL ...` lines, so a substring match is enough. */
+function inferLevel(line: string): "debug" | "info" | "warn" | "error" {
+  if (line.includes(" ERROR ")) return "error";
+  if (line.includes(" WARN ")) return "warn";
+  if (line.includes(" DEBUG ")) return "debug";
+  return "info";
+}
+
+async function readTail(path: string, maxBytes: number): Promise<{
+  text: string;
+  size: number;
+}> {
+  if (!existsSync(path)) return { text: "", size: 0 };
+  const st = statSync(path);
+  const size = st.size;
+  if (size === 0) return { text: "", size: 0 };
+  const start = size > maxBytes ? size - maxBytes : 0;
+  const fh = await fsOpen(path, "r");
+  try {
+    const buf = Buffer.alloc(size - start);
+    await fh.read(buf, 0, buf.length, start);
+    let text = buf.toString("utf8");
+    if (start > 0) {
+      const nl = text.indexOf("\n");
+      if (nl >= 0) text = text.slice(nl + 1);
+    }
+    return { text, size };
+  } finally {
+    await fh.close();
+  }
+}
+
+async function readNewBytes(path: string, fromByte: number): Promise<{
+  text: string;
+  size: number;
+}> {
+  if (!existsSync(path)) return { text: "", size: fromByte };
+  const st = statSync(path);
+  const size = st.size;
+  if (size < fromByte) {
+    // Rotation: file shrunk. Reset cursor by reading from 0 (cheap;
+    // post-rotation the file is small).
+    return readNewBytes(path, 0);
+  }
+  if (size === fromByte) return { text: "", size };
+  const fh = await fsOpen(path, "r");
+  try {
+    const buf = Buffer.alloc(size - fromByte);
+    await fh.read(buf, 0, buf.length, fromByte);
+    return { text: buf.toString("utf8"), size };
+  } finally {
+    await fh.close();
+  }
+}
+
+type SSEStream = Parameters<Parameters<typeof streamSSE>[1]>[0];
+
+async function streamLogs(stream: SSEStream): Promise<void> {
+  const paths = logPaths();
+  const cursors: Record<LogSource, number> = { out: 0, err: 0 };
+  let id = 0;
+
+  const send = async (
+    source: LogSource,
+    line: string,
+    isBackfill: boolean,
+  ) => {
+    if (!line) return;
+    id++;
+    await stream.writeSSE({
+      id: String(id),
+      event: "log",
+      data: JSON.stringify({
+        source,
+        level: inferLevel(line),
+        text: line,
+        backfill: isBackfill,
+      }),
+    });
+  };
+
+  // ── 1. Backfill: last ~LOG_BACKFILL_BYTES of each file ───────────
+  for (const source of ["out", "err"] as const) {
+    try {
+      const { text, size } = await readTail(paths[source], LOG_BACKFILL_BYTES);
+      cursors[source] = size;
+      const lines = text.split("\n");
+      // Drop the trailing partial-line / empty splittail.
+      if (lines.length && lines[lines.length - 1] === "") lines.pop();
+      for (const line of lines) {
+        await send(source, line, true);
+      }
+    } catch (err) {
+      Logger.warn(`dashboard.logs.stream: backfill ${source} failed`, err);
+    }
+  }
+  await stream.writeSSE({
+    event: "ready",
+    data: JSON.stringify({ at: new Date().toISOString() }),
+  });
+
+  // ── 2. Tail loop ────────────────────────────────────────────────
+  let lastPing = Date.now();
+  while (!stream.aborted && !stream.closed) {
+    for (const source of ["out", "err"] as const) {
+      try {
+        const { text, size } = await readNewBytes(
+          paths[source],
+          cursors[source],
+        );
+        cursors[source] = size;
+        if (text) {
+          // New bytes can include a trailing partial line. Hold back the
+          // last segment (anything after the final \n) by rewinding the
+          // cursor; we'll pick it up on the next tick when it's complete.
+          const lastNl = text.lastIndexOf("\n");
+          let consumed: string;
+          if (lastNl < 0) {
+            // Whole chunk is partial. Rewind fully — re-read next tick.
+            cursors[source] = size - text.length;
+            consumed = "";
+          } else if (lastNl === text.length - 1) {
+            consumed = text.slice(0, -1);
+          } else {
+            const partial = text.slice(lastNl + 1);
+            cursors[source] = size - partial.length;
+            consumed = text.slice(0, lastNl);
+          }
+          if (consumed) {
+            for (const line of consumed.split("\n")) {
+              await send(source, line, false);
+            }
+          }
+        }
+      } catch (err) {
+        Logger.warn(`dashboard.logs.stream: tail ${source} failed`, err);
+      }
+    }
+    if (Date.now() - lastPing > LOG_PING_MS) {
+      await stream.writeSSE({
+        event: "ping",
+        data: String(Date.now()),
+      });
+      lastPing = Date.now();
+    }
+    await stream.sleep(LOG_POLL_MS);
+  }
 }
 
 // Lazy-read of ~/.mneme/config.json so we always pick up the latest
