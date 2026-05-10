@@ -150,4 +150,92 @@ export function mountOpsRoutes(app: Hono): void {
       });
     },
   );
+
+  // -------------------------------------------------------------------
+  // GET /api/_ops/logs — recent server-side log rows from _ops.logs,
+  // joined to _ops.traces for the originating machine_id and to
+  // _ops.api_keys for a friendly machine_name. Optional join to
+  // _ops.spans for span_name when the log is span-scoped.
+  //
+  // Query params:
+  //   since   ISO-8601 timestamp; only rows with l.ts > since are returned.
+  //           Defaults to now() - 5 minutes.
+  //   level   log level filter; repeatable. Default: all.
+  //   limit   max rows; default 200, capped at 1000.
+  //
+  // Returns rows in DESC ts order so the dashboard can render newest-
+  // first and (when polling) prepend new entries.
+  // -------------------------------------------------------------------
+  app.get(
+    "/api/_ops/logs",
+    mnemeRoute("api._ops.logs"),
+    requireAuth("read"),
+    async (c) => {
+      const url = new URL(c.req.url);
+      const sinceParam = url.searchParams.get("since");
+      const sinceParsed = sinceParam ? new Date(sinceParam) : null;
+      const sinceTs =
+        sinceParsed && !Number.isNaN(sinceParsed.getTime())
+          ? sinceParsed
+          : new Date(Date.now() - 5 * 60_000);
+      const limitRaw = Number(url.searchParams.get("limit") ?? 200);
+      const limit = Math.min(
+        1000,
+        Math.max(1, Number.isFinite(limitRaw) ? limitRaw : 200),
+      );
+      const levels = url.searchParams.getAll("level").filter(Boolean);
+
+      const rows = (await sql<
+        {
+          id: string;
+          ts: Date | string;
+          level: string;
+          message: string;
+          trace_id: string | null;
+          span_id: string | null;
+          machine_id: string | null;
+          machine_name: string | null;
+          span_name: string | null;
+        }[]
+      >`
+        SELECT
+          l.id::text       AS id,
+          l.ts,
+          l.level,
+          l.message,
+          l.trace_id::text AS trace_id,
+          l.span_id::text  AS span_id,
+          t.machine_id::text AS machine_id,
+          k.name           AS machine_name,
+          s.name           AS span_name
+        FROM _ops.logs l
+        LEFT JOIN _ops.traces t ON t.trace_id = l.trace_id
+        LEFT JOIN _ops.spans  s ON s.span_id  = l.span_id
+        LEFT JOIN LATERAL (
+          SELECT name
+          FROM _ops.api_keys
+          WHERE machine_id = t.machine_id::text
+            AND revoked_at IS NULL
+          ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+          LIMIT 1
+        ) k ON TRUE
+        WHERE l.ts > ${sinceTs}
+          ${levels.length > 0 ? sql`AND l.level = ANY(${levels})` : sql``}
+        ORDER BY l.ts DESC
+        LIMIT ${limit}
+      `) as unknown as Array<{
+        id: string;
+        ts: Date | string;
+        level: string;
+        message: string;
+        trace_id: string | null;
+        span_id: string | null;
+        machine_id: string | null;
+        machine_name: string | null;
+        span_name: string | null;
+      }>;
+
+      return c.json({ logs: rows });
+    },
+  );
 }
