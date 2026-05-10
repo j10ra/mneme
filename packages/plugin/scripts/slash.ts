@@ -456,6 +456,42 @@ async function help(): Promise<void> {
   );
 }
 
+/** Dashboard: print the local daemon URL and (best-effort) open it in
+ *  the system browser. Read-only convenience — no auth, no admin
+ *  password. The daemon binds to 127.0.0.1 only so the URL is local. */
+async function dashboard(): Promise<void> {
+  const cfg = loadConfig();
+  if (!cfg.daemon?.port) {
+    throw new Error(
+      "no daemon configured (run /mneme:setup first)",
+    );
+  }
+  const url = `http://127.0.0.1:${cfg.daemon.port}/dashboard`;
+  console.log(url);
+
+  // Best-effort browser open. Silent failure is fine — the URL is
+  // already printed for the user to copy if their environment doesn't
+  // have a browser launcher (SSH, headless, etc).
+  const openCmd =
+    process.platform === "darwin"
+      ? ["open", url]
+      : process.platform === "win32"
+        ? ["cmd", "/c", "start", "", url]
+        : ["xdg-open", url];
+
+  try {
+    const proc = Bun.spawn(openCmd, {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    // Don't await — fire-and-forget; the spawn returning means the
+    // launcher accepted the URL even if the browser is still starting.
+    proc.unref();
+  } catch {
+    // No browser launcher on PATH. URL is already printed.
+  }
+}
+
 type StatusResponse = {
   generated_at: string;
   workers: Array<{
@@ -726,6 +762,9 @@ async function main(): Promise<void> {
     case "help":
       await help();
       return;
+    case "dashboard":
+      await dashboard();
+      return;
     case "revoke":
       await revoke(process.argv[3] ?? "");
       return;
@@ -735,7 +774,7 @@ async function main(): Promise<void> {
     default:
       console.error(`unknown subcommand: ${cmd}`);
       console.error(
-        "usage: slash.ts <setup|memory|pin|unpin|machines|status|help|revoke|rename> [args]",
+        "usage: slash.ts <setup|memory|pin|unpin|machines|status|help|dashboard|revoke|rename> [args]",
       );
       process.exit(1);
   }

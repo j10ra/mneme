@@ -4,7 +4,7 @@ var __require = import.meta.require;
 // packages/daemon/src/index.ts
 import { readFile as readFile4 } from "fs/promises";
 import { homedir as homedir4 } from "os";
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 
 // packages/core/src/context.ts
 import { AsyncLocalStorage } from "async_hooks";
@@ -1542,6 +1542,102 @@ function mountCaptureRoute(app, runtime) {
   });
 }
 
+// packages/daemon/src/routes/dashboard.ts
+import { existsSync as existsSync3 } from "fs";
+import { dirname, join as join3 } from "path";
+import { fileURLToPath } from "url";
+function dashboardDist() {
+  const fromEnv = process.env.MNEME_PLUGIN_ROOT;
+  if (fromEnv && fromEnv.trim()) {
+    const p = join3(fromEnv.trim(), "dashboard", "dist");
+    if (existsSync3(join3(p, "index.html")))
+      return p;
+  }
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join3(here, "..", "..", "..", "..", "packages", "plugin", "dashboard", "dist"),
+    join3(here, "dashboard", "dist"),
+    join3(here, "..", "dashboard", "dist")
+  ];
+  for (const p of candidates) {
+    if (existsSync3(join3(p, "index.html")))
+      return p;
+  }
+  return candidates[1];
+}
+var NOT_BUILT_HTML = `<!doctype html>
+<html><head><title>Mneme dashboard</title>
+<style>body{font-family:system-ui,sans-serif;padding:2rem;max-width:600px;margin:auto;color:#333}</style>
+</head><body>
+<h1>Dashboard not built</h1>
+<p>The dashboard's <code>dist/</code> wasn't found at the expected path.
+This usually means either the plugin was installed before CI rebuilt
+the bundle, or you're running from a fresh dev checkout where
+<code>packages/plugin/dashboard/dist/</code> hasn't been generated yet.</p>
+<p>To build locally:</p>
+<pre>cd packages/plugin/dashboard &amp;&amp; bun install &amp;&amp; bun run build</pre>
+<p>Then re-run <code>/plugin update mneme</code> &amp; <code>/reload-plugins</code>.</p>
+</body></html>`;
+function mountDashboardRoutes(app) {
+  const distDir = dashboardDist();
+  app.get("/dashboard", mnemeRoute("daemon.dashboard"), async (c) => {
+    const indexPath = join3(distDir, "index.html");
+    if (!existsSync3(indexPath)) {
+      Logger.warn("dashboard: dist/index.html not found", undefined, {
+        looked_at: indexPath
+      });
+      return c.html(NOT_BUILT_HTML, 503);
+    }
+    return c.html(await Bun.file(indexPath).text());
+  });
+  app.get("/dashboard/bundle.js", async (c) => {
+    const bundlePath = join3(distDir, "bundle.js");
+    if (!existsSync3(bundlePath)) {
+      return c.text("// dashboard bundle not built", 503);
+    }
+    const bytes = await Bun.file(bundlePath).bytes();
+    return c.body(bytes, 200, {
+      "content-type": "application/javascript; charset=utf-8",
+      "cache-control": "no-cache"
+    });
+  });
+  app.get("/dashboard/api/status", mnemeRoute("daemon.dashboard.status"), async (c) => {
+    const cfg = await readDaemonConfig();
+    if (!cfg) {
+      return c.json({ error: "config not loaded" }, 503);
+    }
+    try {
+      const resp = await fetch(`${cfg.serverUrl}/api/_ops/status`, {
+        headers: { Authorization: `Bearer ${cfg.token}` }
+      });
+      const body = await resp.text();
+      return c.body(body, resp.status, {
+        "content-type": resp.headers.get("content-type") ?? "application/json"
+      });
+    } catch (err) {
+      Logger.warn("dashboard.status: upstream fetch failed", err);
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  });
+}
+async function readDaemonConfig() {
+  try {
+    const { readFile: readFile3 } = await import("fs/promises");
+    const { homedir: homedir2 } = await import("os");
+    const path = join3(homedir2(), ".mneme", "config.json");
+    const raw = await readFile3(path, "utf8");
+    const cfg = JSON.parse(raw);
+    if (!cfg.server?.url || !cfg.auth?.key)
+      return null;
+    return {
+      serverUrl: cfg.server.url.replace(/\/$/, ""),
+      token: cfg.auth.key
+    };
+  } catch {
+    return null;
+  }
+}
+
 // packages/daemon/src/routes/dream.ts
 function mountDreamRoute(app, runDream) {
   app.post("/dream/run", mnemeRoute("daemon.dream_run"), async (c) => {
@@ -1595,10 +1691,10 @@ function mountOpsRoutes(app, runtime) {
 }
 
 // packages/daemon/src/runtime.ts
-import { existsSync as existsSync3 } from "fs";
+import { existsSync as existsSync4 } from "fs";
 import { appendFile, mkdir as mkdir3, readFile as fsReadFile } from "fs/promises";
 import { homedir as homedir2 } from "os";
-import { join as join3 } from "path";
+import { join as join4 } from "path";
 
 // packages/shared/src/scrub.ts
 var SECRET_PATTERNS = [
@@ -1808,13 +1904,13 @@ function createRuntime(deps) {
       }));
     }
   }
-  const SHAS_DIR = deps.shasDir ?? join3(homedir2(), ".mneme", "shas");
+  const SHAS_DIR = deps.shasDir ?? join4(homedir2(), ".mneme", "shas");
   function shasFile(sessionId) {
-    return join3(SHAS_DIR, `${sessionId}.txt`);
+    return join4(SHAS_DIR, `${sessionId}.txt`);
   }
   async function loadSessionLedger(sessionId) {
     const file = shasFile(sessionId);
-    if (!existsSync3(file))
+    if (!existsSync4(file))
       return new Set;
     try {
       const buf = await fsReadFile(file, "utf8");
@@ -1828,7 +1924,7 @@ function createRuntime(deps) {
     if (keys.length === 0)
       return;
     try {
-      if (!existsSync3(SHAS_DIR)) {
+      if (!existsSync4(SHAS_DIR)) {
         await mkdir3(SHAS_DIR, { recursive: true, mode: 448 });
       }
       await appendFile(shasFile(sessionId), `${keys.join(`
@@ -2071,9 +2167,9 @@ function createRuntime(deps) {
 // packages/daemon/src/scheduler.ts
 import { mkdir as mkdir4, readFile as readFile3, rename as rename3, writeFile as writeFile3 } from "fs/promises";
 import { homedir as homedir3 } from "os";
-import { dirname, join as join4 } from "path";
+import { dirname as dirname2, join as join5 } from "path";
 var TICK_MS = 60000;
-var STATE_PATH = join4(homedir3(), ".mneme", "schedule.json");
+var STATE_PATH = join5(homedir3(), ".mneme", "schedule.json");
 var STALE_NEW_JOB_SLACK_MS = 5 * 60000;
 var registry = new Map;
 var state = {};
@@ -2093,7 +2189,7 @@ async function loadState() {
   }
 }
 async function saveState(s) {
-  await mkdir4(dirname(STATE_PATH), { recursive: true });
+  await mkdir4(dirname2(STATE_PATH), { recursive: true });
   const tmp = `${STATE_PATH}.tmp`;
   await writeFile3(tmp, JSON.stringify(s, null, 2));
   await rename3(tmp, STATE_PATH);
@@ -2472,7 +2568,7 @@ var DREAM_SCHEDULE_MS = 8 * 3600000;
 var HEARTBEAT_SCHEDULE_MS = 60000;
 var EMBEDDER_REAP_SCHEDULE_MS = 60000;
 async function readConfig() {
-  const path = join5(homedir4(), ".mneme", "config.json");
+  const path = join6(homedir4(), ".mneme", "config.json");
   const raw = await readFile4(path, "utf8");
   const shaped = JSON.parse(raw);
   if (!shaped.daemon) {
@@ -2508,8 +2604,8 @@ function pushBundleViaServer(serverUrl, token) {
 }
 async function startDaemon() {
   const config = await readConfig();
-  const captureOutboxRoot = join5(homedir4(), ".mneme", "outbox", "capture");
-  const dreamOutboxRoot = join5(homedir4(), ".mneme", "outbox", "dream");
+  const captureOutboxRoot = join6(homedir4(), ".mneme", "outbox", "capture");
+  const dreamOutboxRoot = join6(homedir4(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
   const agent = pickAgent(config.agent_provider);
@@ -2577,6 +2673,7 @@ async function startDaemon() {
   mountCaptureRoute(app, runtime);
   mountEmbedRoute(app);
   mountDreamRoute(app, runDream);
+  mountDashboardRoutes(app);
   Bun.serve({
     port: config.daemon_port,
     hostname: "127.0.0.1",
