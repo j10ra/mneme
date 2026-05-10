@@ -1,18 +1,9 @@
-// Filter strip for the Graph view. Mirrors the Memories filter
-// language but keeps independent state. Layout dropdown lets the
-// user swap fcose / circle / grid / concentric — useful when fcose
-// isn't reading well for a particular subset.
+// Filter strip for the Graph view. Search + time chips + kind chips.
+// Drops the layout dropdown — 3D force is the only mode now.
 
 import { Search, X } from "lucide-react";
 import { cn } from "../../lib/cn.ts";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../ui/select.tsx";
-import type { GraphFilters as Filters, LayoutName } from "./types.ts";
+import type { GraphFilters as Filters } from "./types.ts";
 
 const TIME_CHIPS: Array<{ label: string; days: number | null }> = [
   { label: "24h", days: 1 },
@@ -21,28 +12,17 @@ const TIME_CHIPS: Array<{ label: string; days: number | null }> = [
   { label: "all", days: null },
 ];
 
-const LAYOUTS: Array<{ label: string; value: LayoutName }> = [
-  { label: "fcose", value: "fcose" },
-  { label: "concentric", value: "concentric" },
-  { label: "circle", value: "circle" },
-  { label: "grid", value: "grid" },
-];
-
 export function GraphFilters({
   filters,
   onFilters,
   query,
   onQuery,
-  layout,
-  onLayout,
   knownKinds,
 }: {
   filters: Filters;
   onFilters: (next: Filters) => void;
   query: string;
   onQuery: (q: string) => void;
-  layout: LayoutName;
-  onLayout: (l: LayoutName) => void;
   knownKinds: string[];
 }) {
   const activeTime = (() => {
@@ -72,8 +52,8 @@ export function GraphFilters({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-border">
-      <div className="relative flex h-7 items-center rounded-md border border-border/60 bg-transparent focus-within:border-border focus-within:bg-card/50 transition-colors min-w-[200px] flex-1 max-w-md">
+    <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2">
+      <div className="relative flex h-7 min-w-[200px] max-w-md flex-1 items-center rounded-md border border-border/60 bg-transparent transition-colors focus-within:border-border focus-within:bg-card/50">
         <Search className="ml-2 h-3 w-3 text-muted-foreground" />
         <input
           type="text"
@@ -118,22 +98,6 @@ export function GraphFilters({
           ))}
         </div>
       )}
-
-      <Select
-        value={layout}
-        onValueChange={(v) => onLayout(v as LayoutName)}
-      >
-        <SelectTrigger className="ml-auto min-w-[110px]">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {LAYOUTS.map((l) => (
-            <SelectItem key={l.value} value={l.value}>
-              {l.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
     </div>
   );
 }

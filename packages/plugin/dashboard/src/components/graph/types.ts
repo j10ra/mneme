@@ -9,6 +9,8 @@ export type GraphNode = {
   superseded: boolean;
   machine_id: string | null;
   machine_name: string | null;
+  /** Set in focal-mode responses: BFS depth from focal (0 = focal). */
+  depth?: number | null;
 };
 
 export type GraphEdge = {

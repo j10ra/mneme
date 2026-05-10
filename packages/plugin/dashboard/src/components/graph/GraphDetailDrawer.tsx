@@ -3,7 +3,7 @@
 // Related, Chain, Cluster+Capture) work identically to the Memories
 // table's inline expand.
 
-import { X } from "lucide-react";
+import { Crosshair, X } from "lucide-react";
 import { cn } from "../../lib/cn.ts";
 import { MemoryExpand } from "../memories/MemoryExpand.tsx";
 import type { MemoryRowData } from "../memories/types.ts";
@@ -12,9 +12,11 @@ import type { GraphNode } from "./types.ts";
 export function GraphDetailDrawer({
   node,
   onClose,
+  onRefocus,
 }: {
   node: GraphNode | null;
   onClose: () => void;
+  onRefocus?: () => void;
 }) {
   return (
     <aside
@@ -36,13 +38,25 @@ export function GraphDetailDrawer({
                 {node.id.slice(0, 8)}
               </span>
             </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded p-1 text-muted-foreground hover:bg-muted/40 hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
+            <div className="flex items-center gap-1">
+              {onRefocus && (
+                <button
+                  type="button"
+                  onClick={onRefocus}
+                  title="refocus on this node"
+                  className="rounded p-1 text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+                >
+                  <Crosshair className="h-3.5 w-3.5" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded p-1 text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
           <div className="flex h-[calc(100%-37px)] flex-col overflow-y-auto">
             <MemoryExpand data={nodeToMemoryRow(node)} />

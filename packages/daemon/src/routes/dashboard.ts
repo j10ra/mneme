@@ -90,10 +90,14 @@ export function mountDashboardRoutes(app: Hono): void {
   // Graph tab) in separate <name>-<hash>.js files. We serve any .js
   // file in dist/ here, but reject path traversal and non-js requests
   // so the route can't be coerced into reading other files.
-  app.get("/dashboard/:filename{.+\\.js}", async (c) => {
+  app.get("/dashboard/:filename", async (c) => {
     const filename = c.req.param("filename");
-    if (filename.includes("/") || filename.includes("..")) {
-      return c.text("invalid filename", 400);
+    if (
+      !filename.endsWith(".js") ||
+      filename.includes("/") ||
+      filename.includes("..")
+    ) {
+      return c.notFound();
     }
     const filePath = join(distDir, filename);
     if (!existsSync(filePath)) {
