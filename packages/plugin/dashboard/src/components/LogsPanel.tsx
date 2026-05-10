@@ -201,9 +201,17 @@ export function LogsPanel() {
   const [pausedCount, setPausedCount] = useState(0);
 
   // ── Local SSE stream ─────────────────────────────────────────────
+  // Re-subscribes when the quick-range changes — the daemon scopes the
+  // backfill server-side via ?range, so swapping range gives a fresh
+  // backfill window instead of layering on top of stale entries.
   useEffect(() => {
     if (mode !== "local") return;
-    const es = new EventSource(STREAM_PATH);
+    setLocalEntries([]);
+    localBufferRef.current = [];
+    setPausedCount(0);
+    localIdRef.current = 0;
+    const rangeParam = timeRangeMs === null ? "all" : String(timeRangeMs);
+    const es = new EventSource(`${STREAM_PATH}?range=${rangeParam}`);
     setConn("connecting");
 
     const onLog = (ev: MessageEvent) => {
@@ -259,19 +267,23 @@ export function LogsPanel() {
       es.removeEventListener("error", onError);
       es.close();
     };
-  }, [mode]);
+  }, [mode, timeRangeMs]);
 
   // ── Server polling ───────────────────────────────────────────────
   useEffect(() => {
     if (mode !== "server") return;
+    setServerEntries([]);
+    serverBufferRef.current = [];
+    setPausedCount(0);
     let cancelled = false;
     let lastTs: string | null = null;
     setConn("connecting");
 
     const tick = async () => {
       try {
+        const lookbackMs = timeRangeMs ?? SERVER_LOOKBACK_MS;
         const since =
-          lastTs ?? new Date(Date.now() - SERVER_LOOKBACK_MS).toISOString();
+          lastTs ?? new Date(Date.now() - lookbackMs).toISOString();
         const resp = await apiGet<{
           logs: Array<{
             id: string;
@@ -347,7 +359,7 @@ export function LogsPanel() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [mode]);
+  }, [mode, timeRangeMs]);
 
   // Reset per-mode filter affordances when switching mode and snap
   // back to "stuck at bottom" so newly-arrived entries always pin to
@@ -474,16 +486,6 @@ export function LogsPanel() {
     query,
     timeRangeMs,
   ]);
-
-  // Compute the actual data span across all loaded entries to disable
-  // range options that exceed available data.
-  const dataSpanMs = useMemo(() => {
-    const all = mode === "local" ? localEntries : serverEntries;
-    if (all.length === 0) return null;
-    let mn = Infinity;
-    for (const e of all) if (e.tsMs < mn) mn = e.tsMs;
-    return Date.now() - mn;
-  }, [mode, localEntries, serverEntries]);
 
   const totalEntries =
     mode === "local" ? localEntries.length : serverEntries.length;
@@ -647,11 +649,7 @@ export function LogsPanel() {
               </button>
             )}
           </div>
-          <RangePicker
-            value={timeRangeMs}
-            onChange={setTimeRangeMs}
-            dataSpanMs={dataSpanMs}
-          />
+          <RangePicker value={timeRangeMs} onChange={setTimeRangeMs} />
         </div>
 
         {/* Level filters — visually tied to the histogram below. */}
@@ -1145,11 +1143,9 @@ function MachineChip({
 function RangePicker({
   value,
   onChange,
-  dataSpanMs,
 }: {
   value: number | null;
   onChange: (ms: number | null) => void;
-  dataSpanMs: number | null;
 }) {
   const [open, setOpen] = useState(false);
   const current = RANGE_OPTIONS.find((o) => o.ms === value) ?? RANGE_OPTIONS[RANGE_OPTIONS.length - 1]!;
@@ -1173,13 +1169,10 @@ function RangePicker({
         <div className="grid grid-cols-3 gap-1">
           {RANGE_OPTIONS.map((opt) => {
             const isActive = opt.ms === value;
-            const exceedsData =
-              opt.ms !== null && dataSpanMs !== null && opt.ms > dataSpanMs * 1.5;
             return (
               <button
                 key={opt.label}
                 type="button"
-                disabled={exceedsData}
                 onClick={() => {
                   onChange(opt.ms);
                   setOpen(false);
@@ -1189,13 +1182,7 @@ function RangePicker({
                   isActive
                     ? "border-sky-500/40 bg-sky-500/10 text-sky-400"
                     : "border-border/60 text-foreground hover:bg-muted/40",
-                  exceedsData && "opacity-30 cursor-not-allowed",
                 )}
-                title={
-                  exceedsData
-                    ? "exceeds available data"
-                    : undefined
-                }
               >
                 {opt.label}
               </button>

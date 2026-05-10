@@ -5,8 +5,9 @@
 // Min-width 1024px enforced; below that we drop the layout for a
 // notice and tell the operator to use slash commands instead.
 
-import { Activity, Brain, Moon, Sun } from "lucide-react";
+import { Activity, Brain, Moon, Network, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
+import { GraphPanel } from "./components/GraphPanel.tsx";
 import { LogsPanel } from "./components/LogsPanel.tsx";
 import { MachinesPanel } from "./components/MachinesPanel.tsx";
 import { MemoriesPanel } from "./components/MemoriesPanel.tsx";
@@ -18,7 +19,7 @@ import {
 } from "./components/ui/resizable.tsx";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "./components/ui/tabs.tsx";
 
-type Tab = "activity" | "memories";
+type Tab = "activity" | "memories" | "graph";
 type Theme = "dark" | "light";
 
 const THEME_KEY = "mneme.dashboard.theme";
@@ -85,6 +86,9 @@ export function App() {
               <TabsTab value="memories" title="Memories">
                 <Brain className="h-4 w-4" />
               </TabsTab>
+              <TabsTab value="graph" title="Graph">
+                <Network className="h-4 w-4" />
+              </TabsTab>
             </TabsList>
           </aside>
 
@@ -139,6 +143,10 @@ export function App() {
 
               <TabsPanel value="memories" className="flex-1 min-h-0">
                 <MemoriesPanel />
+              </TabsPanel>
+
+              <TabsPanel value="graph" className="flex-1 min-h-0">
+                <GraphPanel />
               </TabsPanel>
             </div>
           </div>

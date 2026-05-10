@@ -1603,12 +1603,16 @@ function mountDashboardRoutes(app) {
     }
     return c.html(await Bun.file(indexPath).text());
   });
-  app.get("/dashboard/bundle.js", async (c) => {
-    const bundlePath = join3(distDir, "bundle.js");
-    if (!existsSync3(bundlePath)) {
-      return c.text("// dashboard bundle not built", 503);
+  app.get("/dashboard/:filename{.+\\.js}", async (c) => {
+    const filename = c.req.param("filename");
+    if (filename.includes("/") || filename.includes("..")) {
+      return c.text("invalid filename", 400);
     }
-    const bytes = await Bun.file(bundlePath).bytes();
+    const filePath = join3(distDir, filename);
+    if (!existsSync3(filePath)) {
+      return c.text("// not found", 404);
+    }
+    const bytes = await Bun.file(filePath).bytes();
     return c.body(bytes, 200, {
       "content-type": "application/javascript; charset=utf-8",
       "cache-control": "no-cache"

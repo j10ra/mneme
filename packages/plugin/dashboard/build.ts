@@ -1,14 +1,16 @@
 #!/usr/bin/env bun
-// Two-file dist builder for the dashboard.
+// Dist builder for the dashboard.
 //
 //   dist/index.html   — index.html.template with <style> filled in
-//   dist/bundle.js    — Bun-bundled, minified single JS bundle
+//   dist/bundle.js    — main entry chunk
+//   dist/<hash>.js    — lazy-loaded chunks (e.g. cytoscape pulled in
+//                       by GraphCanvas's dynamic import)
 //
-// No `assets/` folder, no chunk hashing, no code splitting. The whole
-// dashboard is one HTTP fetch (HTML) + one (JS). Daemon serves both
-// directly out of dist/ at /dashboard and /dashboard/bundle.js.
+// Code-splitting is enabled so heavy optional libs like cytoscape
+// only download when the Graph tab is opened. The daemon's dashboard
+// route serves any .js file in dist/ at /dashboard/<filename>.js.
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,14 +28,22 @@ clean(DIST);
 clean(TMP);
 
 // ── 1. JS bundle (Bun handles JSX/TSX natively) ──────────────────────
+//
+// Splitting is on so dynamic imports become separate chunks. Naming
+// templates: the entry stays at "bundle.js" (the HTML <script>
+// references it), chunks land at "<name>-<hash>.js" so the runtime
+// loader fetches them by hashed name.
 const jsResult = await Bun.build({
   entrypoints: [join(SRC, "main.tsx")],
   target: "browser",
   minify: true,
   outdir: TMP,
-  naming: "bundle.js",
-  // No splitting: one bundle, one network round-trip.
-  splitting: false,
+  naming: {
+    entry: "bundle.js",
+    chunk: "[name]-[hash].js",
+    asset: "[name]-[hash][ext]",
+  },
+  splitting: true,
   // Strip React's dev-mode branches via constant folding.
   define: {
     "process.env.NODE_ENV": '"production"',
@@ -64,20 +74,36 @@ if (cssExit !== 0) {
   throw new Error(`dashboard: Tailwind build failed (exit ${cssExit})`);
 }
 
-// ── 3. Inline CSS into HTML template, write final dist/ ──────────────
+// ── 3. Inline CSS into HTML template, copy all JS chunks to dist/ ───
 const tmpl = await Bun.file(join(HERE, "index.html.template")).text();
 const css = await Bun.file(cssOut).text();
 const html = tmpl.replace("/* INLINE_CSS */", css);
 
 await Bun.write(join(DIST, "index.html"), html);
-await Bun.write(join(DIST, "bundle.js"), await Bun.file(join(TMP, "bundle.js")).bytes());
+
+let entryBytes = 0;
+let chunkBytes = 0;
+let chunkCount = 0;
+for (const f of readdirSync(TMP)) {
+  if (!f.endsWith(".js")) continue;
+  const bytes = await Bun.file(join(TMP, f)).bytes();
+  await Bun.write(join(DIST, f), bytes);
+  if (f === "bundle.js") {
+    entryBytes = bytes.byteLength;
+  } else {
+    chunkBytes += bytes.byteLength;
+    chunkCount += 1;
+  }
+}
 
 // ── 4. Cleanup tmp ───────────────────────────────────────────────────
 rmSync(TMP, { recursive: true, force: true });
 
 const htmlBytes = (await Bun.file(join(DIST, "index.html")).bytes()).byteLength;
-const jsBytes = (await Bun.file(join(DIST, "bundle.js")).bytes()).byteLength;
 console.log(
   `✓ dashboard built — index.html ${(htmlBytes / 1024).toFixed(1)}KB, ` +
-    `bundle.js ${(jsBytes / 1024).toFixed(1)}KB`,
+    `bundle.js ${(entryBytes / 1024).toFixed(1)}KB` +
+    (chunkCount > 0
+      ? ` + ${chunkCount} chunk${chunkCount === 1 ? "" : "s"} ${(chunkBytes / 1024).toFixed(1)}KB`
+      : ""),
 );

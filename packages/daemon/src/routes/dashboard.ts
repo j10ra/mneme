@@ -84,13 +84,22 @@ export function mountDashboardRoutes(app: Hono): void {
     return c.html(await Bun.file(indexPath).text());
   });
 
-  // GET /dashboard/bundle.js → minified JS
-  app.get("/dashboard/bundle.js", async (c) => {
-    const bundlePath = join(distDir, "bundle.js");
-    if (!existsSync(bundlePath)) {
-      return c.text("// dashboard bundle not built", 503);
+  // GET /dashboard/<filename>.js → entry bundle or lazy-loaded chunks
+  //
+  // Code-splitting puts dynamic imports (e.g. cytoscape from the
+  // Graph tab) in separate <name>-<hash>.js files. We serve any .js
+  // file in dist/ here, but reject path traversal and non-js requests
+  // so the route can't be coerced into reading other files.
+  app.get("/dashboard/:filename{.+\\.js}", async (c) => {
+    const filename = c.req.param("filename");
+    if (filename.includes("/") || filename.includes("..")) {
+      return c.text("invalid filename", 400);
     }
-    const bytes = await Bun.file(bundlePath).bytes();
+    const filePath = join(distDir, filename);
+    if (!existsSync(filePath)) {
+      return c.text("// not found", 404);
+    }
+    const bytes = await Bun.file(filePath).bytes();
     return c.body(bytes, 200, {
       "content-type": "application/javascript; charset=utf-8",
       // No long-cache: dashboard updates ride the plugin update cycle,
