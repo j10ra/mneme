@@ -14,7 +14,7 @@
 
 You open Claude Code on your laptop. Before you type a single word, the agent already sees a tight digest of what you decided last week, what's pinned, what bug you fixed yesterday, and what summaries the agent wrote at the end of recent sessions.
 
-That digest is **light by design** — short previews, not full memories. The agent only pulls the full content on the ones it actually needs (the same just-in-time retrieval pattern from Anthropic's meta-harness work). Your context window stays free for the work in front of you.
+That digest is **light by design** — short previews, not full memories. The agent only pulls the full content on the ones it actually needs (the same just-in-time / progressive-disclosure pattern Anthropic uses in Skills). Your context window stays free for the work in front of you.
 
 Later that day on your desktop, you open Claude Code again. The same surface, freshly assembled — whatever you worked on is already in it. One continuous memory across every machine — for now inside Claude Code, with every harness and model on the roadmap.
 
