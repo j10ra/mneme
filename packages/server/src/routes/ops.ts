@@ -167,38 +167,31 @@ export function mountOpsRoutes(app: Hono): void {
   // Returns rows in DESC ts order so the dashboard can render newest-
   // first and (when polling) prepend new entries.
   // -------------------------------------------------------------------
-  app.get(
-    "/api/_ops/logs",
-    mnemeRoute("api._ops.logs"),
-    requireAuth("read"),
-    async (c) => {
-      const url = new URL(c.req.url);
-      const sinceParam = url.searchParams.get("since");
-      const sinceParsed = sinceParam ? new Date(sinceParam) : null;
-      const sinceTs =
-        sinceParsed && !Number.isNaN(sinceParsed.getTime())
-          ? sinceParsed
-          : new Date(Date.now() - 5 * 60_000);
-      const limitRaw = Number(url.searchParams.get("limit") ?? 200);
-      const limit = Math.min(
-        1000,
-        Math.max(1, Number.isFinite(limitRaw) ? limitRaw : 200),
-      );
-      const levels = url.searchParams.getAll("level").filter(Boolean);
+  app.get("/api/_ops/logs", mnemeRoute("api._ops.logs"), requireAuth("read"), async (c) => {
+    const url = new URL(c.req.url);
+    const sinceParam = url.searchParams.get("since");
+    const sinceParsed = sinceParam ? new Date(sinceParam) : null;
+    const sinceTs =
+      sinceParsed && !Number.isNaN(sinceParsed.getTime())
+        ? sinceParsed
+        : new Date(Date.now() - 5 * 60_000);
+    const limitRaw = Number(url.searchParams.get("limit") ?? 200);
+    const limit = Math.min(1000, Math.max(1, Number.isFinite(limitRaw) ? limitRaw : 200));
+    const levels = url.searchParams.getAll("level").filter(Boolean);
 
-      const rows = (await sql<
-        {
-          id: string;
-          ts: Date | string;
-          level: string;
-          message: string;
-          trace_id: string | null;
-          span_id: string | null;
-          machine_id: string | null;
-          machine_name: string | null;
-          span_name: string | null;
-        }[]
-      >`
+    const rows = (await sql<
+      {
+        id: string;
+        ts: Date | string;
+        level: string;
+        message: string;
+        trace_id: string | null;
+        span_id: string | null;
+        machine_id: string | null;
+        machine_name: string | null;
+        span_name: string | null;
+      }[]
+    >`
         SELECT
           l.id::text       AS id,
           l.ts,
@@ -225,20 +218,19 @@ export function mountOpsRoutes(app: Hono): void {
         ORDER BY l.ts DESC
         LIMIT ${limit}
       `) as unknown as Array<{
-        id: string;
-        ts: Date | string;
-        level: string;
-        message: string;
-        trace_id: string | null;
-        span_id: string | null;
-        machine_id: string | null;
-        machine_name: string | null;
-        span_name: string | null;
-      }>;
+      id: string;
+      ts: Date | string;
+      level: string;
+      message: string;
+      trace_id: string | null;
+      span_id: string | null;
+      machine_id: string | null;
+      machine_name: string | null;
+      span_name: string | null;
+    }>;
 
-      return c.json({ logs: rows });
-    },
-  );
+    return c.json({ logs: rows });
+  });
 
   // -------------------------------------------------------------------
   // GET /api/_ops/memories — paginated memory browse + hybrid search
@@ -253,38 +245,21 @@ export function mountOpsRoutes(app: Hono): void {
   //   q               hybrid search query (semantic + ts_rank)
   //   limit, offset   default 50, max 200
   // -------------------------------------------------------------------
-  app.get(
-    "/api/_ops/memories",
-    mnemeRoute("api._ops.memories"),
-    requireAuth("read"),
-    async (c) => {
-      const u = new URL(c.req.url);
-      const since = parseTs(
-        u.searchParams.get("since"),
-        new Date(Date.now() - 7 * 86_400_000),
-      );
-      const until = parseTs(u.searchParams.get("until"), new Date());
-      const repos = csv(u.searchParams.get("repo"));
-      const machineIds = csv(u.searchParams.get("machine_id"));
-      const kinds = csv(u.searchParams.get("kind"));
-      const clusterStatus = csv(u.searchParams.get("cluster_status"));
-      const q = (u.searchParams.get("q") ?? "").trim();
-      const limit = clamp(
-        Number(u.searchParams.get("limit") ?? 50),
-        1,
-        200,
-        50,
-      );
-      const offset = clamp(
-        Number(u.searchParams.get("offset") ?? 0),
-        0,
-        100_000,
-        0,
-      );
+  app.get("/api/_ops/memories", mnemeRoute("api._ops.memories"), requireAuth("read"), async (c) => {
+    const u = new URL(c.req.url);
+    const since = parseTs(u.searchParams.get("since"), new Date(Date.now() - 7 * 86_400_000));
+    const until = parseTs(u.searchParams.get("until"), new Date());
+    const repos = csv(u.searchParams.get("repo"));
+    const machineIds = csv(u.searchParams.get("machine_id"));
+    const kinds = csv(u.searchParams.get("kind"));
+    const clusterStatus = csv(u.searchParams.get("cluster_status"));
+    const q = (u.searchParams.get("q") ?? "").trim();
+    const limit = clamp(Number(u.searchParams.get("limit") ?? 50), 1, 200, 50);
+    const offset = clamp(Number(u.searchParams.get("offset") ?? 0), 0, 100_000, 0);
 
-      // Build filter clauses lazily so we can splice them either into
-      // the plain-filter query or the hybrid-scoring query.
-      const filters = sql`
+    // Build filter clauses lazily so we can splice them either into
+    // the plain-filter query or the hybrid-scoring query.
+    const filters = sql`
         m.created_at >= ${since}
         AND m.created_at < ${until}
         ${repos.length > 0 ? sql`AND m.repo = ANY(${repos})` : sql``}
@@ -293,11 +268,11 @@ export function mountOpsRoutes(app: Hono): void {
         ${clusterStatusClause(clusterStatus)}
       `;
 
-      let rows: MemoryRow[];
-      if (q) {
-        const vec = await embedText(q);
-        const vecLit = `[${vec.join(",")}]`;
-        rows = (await sql<MemoryRow[]>`
+    let rows: MemoryRow[];
+    if (q) {
+      const vec = await embedText(q);
+      const vecLit = `[${vec.join(",")}]`;
+      rows = (await sql<MemoryRow[]>`
           WITH q_vec AS (SELECT ${vecLit}::vector AS v),
                q_kw  AS (SELECT websearch_to_tsquery('simple', ${q}) AS q)
           SELECT
@@ -325,8 +300,8 @@ export function mountOpsRoutes(app: Hono): void {
           ORDER BY score DESC, m.created_at DESC
           LIMIT ${limit} OFFSET ${offset}
         `) as unknown as MemoryRow[];
-      } else {
-        rows = (await sql<MemoryRow[]>`
+    } else {
+      rows = (await sql<MemoryRow[]>`
           SELECT
             m.id::text                 AS id,
             m.content,
@@ -351,11 +326,10 @@ export function mountOpsRoutes(app: Hono): void {
           ORDER BY m.created_at DESC
           LIMIT ${limit} OFFSET ${offset}
         `) as unknown as MemoryRow[];
-      }
+    }
 
-      return c.json({ memories: rows });
-    },
-  );
+    return c.json({ memories: rows });
+  });
 
   // -------------------------------------------------------------------
   // GET /api/_ops/memories/:id/related — top-k vector neighbors of a
@@ -507,32 +481,20 @@ export function mountOpsRoutes(app: Hono): void {
   // cluster_id IS itself a memory id (the "theme" memory acting as
   // centroid), so we self-join to get its content as the summary.
   // -------------------------------------------------------------------
-  app.get(
-    "/api/_ops/clusters",
-    mnemeRoute("api._ops.clusters"),
-    requireAuth("read"),
-    async (c) => {
-      const u = new URL(c.req.url);
-      const since = parseTs(
-        u.searchParams.get("since"),
-        new Date(Date.now() - 30 * 86_400_000),
-      );
-      const until = parseTs(u.searchParams.get("until"), new Date());
-      const limit = clamp(
-        Number(u.searchParams.get("limit") ?? 50),
-        1,
-        200,
-        50,
-      );
-      const rows = (await sql<
-        {
-          id: string;
-          summary: string | null;
-          member_count: number;
-          last_at: Date | string;
-          sample_machine_ids: string[];
-        }[]
-      >`
+  app.get("/api/_ops/clusters", mnemeRoute("api._ops.clusters"), requireAuth("read"), async (c) => {
+    const u = new URL(c.req.url);
+    const since = parseTs(u.searchParams.get("since"), new Date(Date.now() - 30 * 86_400_000));
+    const until = parseTs(u.searchParams.get("until"), new Date());
+    const limit = clamp(Number(u.searchParams.get("limit") ?? 50), 1, 200, 50);
+    const rows = (await sql<
+      {
+        id: string;
+        summary: string | null;
+        member_count: number;
+        last_at: Date | string;
+        sample_machine_ids: string[];
+      }[]
+    >`
         WITH grouped AS (
           SELECT
             (meta->>'in_cluster')::uuid AS cluster_id,
@@ -557,15 +519,14 @@ export function mountOpsRoutes(app: Hono): void {
         ORDER BY g.last_at DESC
         LIMIT ${limit}
       `) as unknown as Array<{
-        id: string;
-        summary: string | null;
-        member_count: number;
-        last_at: Date | string;
-        sample_machine_ids: string[];
-      }>;
-      return c.json({ clusters: rows });
-    },
-  );
+      id: string;
+      summary: string | null;
+      member_count: number;
+      last_at: Date | string;
+      sample_machine_ids: string[];
+    }>;
+    return c.json({ clusters: rows });
+  });
 
   // -------------------------------------------------------------------
   // GET /api/_ops/graph — top-N most-connected memories + their edges
@@ -580,30 +541,18 @@ export function mountOpsRoutes(app: Hono): void {
   // Edges are filtered to only those whose endpoints both made the
   // top-N cut, so the graph stays self-contained.
   // -------------------------------------------------------------------
-  app.get(
-    "/api/_ops/graph",
-    mnemeRoute("api._ops.graph"),
-    requireAuth("read"),
-    async (c) => {
-      const u = new URL(c.req.url);
-      const since = parseTs(
-        u.searchParams.get("since"),
-        new Date(Date.now() - 30 * 86_400_000),
-      );
-      const until = parseTs(u.searchParams.get("until"), new Date());
-      const repos = csv(u.searchParams.get("repo"));
-      const machineIds = csv(u.searchParams.get("machine_id"));
-      const kinds = csv(u.searchParams.get("kind"));
-      const topN = clamp(
-        Number(u.searchParams.get("top_n") ?? 300),
-        1,
-        1000,
-        300,
-      );
-      const focal = u.searchParams.get("focal");
-      const hops = clamp(Number(u.searchParams.get("hops") ?? 1), 0, 6, 1);
+  app.get("/api/_ops/graph", mnemeRoute("api._ops.graph"), requireAuth("read"), async (c) => {
+    const u = new URL(c.req.url);
+    const since = parseTs(u.searchParams.get("since"), new Date(Date.now() - 30 * 86_400_000));
+    const until = parseTs(u.searchParams.get("until"), new Date());
+    const repos = csv(u.searchParams.get("repo"));
+    const machineIds = csv(u.searchParams.get("machine_id"));
+    const kinds = csv(u.searchParams.get("kind"));
+    const topN = clamp(Number(u.searchParams.get("top_n") ?? 300), 1, 1000, 300);
+    const focal = u.searchParams.get("focal");
+    const hops = clamp(Number(u.searchParams.get("hops") ?? 1), 0, 6, 1);
 
-      const filters = sql`
+    const filters = sql`
         m.created_at >= ${since}
         AND m.created_at < ${until}
         ${repos.length > 0 ? sql`AND m.repo = ANY(${repos})` : sql``}
@@ -611,14 +560,14 @@ export function mountOpsRoutes(app: Hono): void {
         ${kinds.length > 0 ? sql`AND m.kind = ANY(${kinds})` : sql``}
       `;
 
-      // Two modes:
-      //   - focal set: BFS from focal up to `hops` levels within the
-      //                filter pool. Returns nodes with their depth.
-      //   - else:      ranked top-N by importance (then edge_count).
-      let ids: string[];
-      let depthByNode: Map<string, number> | null = null;
-      if (focal) {
-        const bfsRows = (await sql<Array<{ id: string; depth: number }>>`
+    // Two modes:
+    //   - focal set: BFS from focal up to `hops` levels within the
+    //                filter pool. Returns nodes with their depth.
+    //   - else:      ranked top-N by importance (then edge_count).
+    let ids: string[];
+    let depthByNode: Map<string, number> | null = null;
+    if (focal) {
+      const bfsRows = (await sql<Array<{ id: string; depth: number }>>`
           WITH RECURSIVE candidates AS (
             SELECT m.id, m.meta
             FROM memories m
@@ -644,10 +593,10 @@ export function mountOpsRoutes(app: Hono): void {
           FROM bfs
           GROUP BY id
         `) as unknown as Array<{ id: string; depth: number }>;
-        ids = bfsRows.map((r) => r.id);
-        depthByNode = new Map(bfsRows.map((r) => [r.id, r.depth]));
-      } else {
-        const ranked = (await sql<Array<{ id: string }>>`
+      ids = bfsRows.map((r) => r.id);
+      depthByNode = new Map(bfsRows.map((r) => [r.id, r.depth]));
+    } else {
+      const ranked = (await sql<Array<{ id: string }>>`
           WITH candidates AS (
             SELECT
               m.id,
@@ -669,18 +618,18 @@ export function mountOpsRoutes(app: Hono): void {
           ORDER BY importance DESC NULLS LAST, edge_count DESC, created_at DESC
           LIMIT ${topN}
         `) as unknown as Array<{ id: string }>;
-        ids = ranked.map((r) => r.id);
-      }
-      if (ids.length === 0) {
-        return c.json({
-          nodes: [],
-          edges: [],
-          stats: { node_count: 0, edge_count: 0, total_in_window: 0 },
-        });
-      }
+      ids = ranked.map((r) => r.id);
+    }
+    if (ids.length === 0) {
+      return c.json({
+        nodes: [],
+        edges: [],
+        stats: { node_count: 0, edge_count: 0, total_in_window: 0 },
+      });
+    }
 
-      // Step 2: fetch the node payload for the selected ids.
-      const nodes = (await sql<Array<GraphNode>>`
+    // Step 2: fetch the node payload for the selected ids.
+    const nodes = (await sql<Array<GraphNode>>`
         SELECT
           m.id::text                  AS id,
           left(m.content, 200)        AS content_preview,
@@ -699,19 +648,17 @@ export function mountOpsRoutes(app: Hono): void {
         ) k ON TRUE
         WHERE m.id = ANY(${ids}::uuid[])
       `) as unknown as Array<GraphNode>;
-      // Stamp BFS depth onto nodes when focal mode.
-      if (depthByNode) {
-        for (const n of nodes) {
-          n.depth = depthByNode.get(n.id) ?? null;
-        }
+    // Stamp BFS depth onto nodes when focal mode.
+    if (depthByNode) {
+      for (const n of nodes) {
+        n.depth = depthByNode.get(n.id) ?? null;
       }
+    }
 
-      // Step 3: edges — related_to (unnested) + supersede, both
-      //         constrained to the top-N set.
-      const idSet = new Set(ids);
-      const relatedRows = (await sql<
-        Array<{ source: string; target: string }>
-      >`
+    // Step 3: edges — related_to (unnested) + supersede, both
+    //         constrained to the top-N set.
+    const idSet = new Set(ids);
+    const relatedRows = (await sql<Array<{ source: string; target: string }>>`
         SELECT
           m.id::text  AS source,
           (rel)::text AS target
@@ -719,9 +666,7 @@ export function mountOpsRoutes(app: Hono): void {
              jsonb_array_elements_text(m.meta->'related_to') AS rel
         WHERE m.id = ANY(${ids}::uuid[])
       `) as unknown as Array<{ source: string; target: string }>;
-      const supersedeRows = (await sql<
-        Array<{ source: string; target: string }>
-      >`
+    const supersedeRows = (await sql<Array<{ source: string; target: string }>>`
         SELECT
           m.id::text                          AS source,
           (m.meta->>'superseded_by')          AS target
@@ -730,39 +675,36 @@ export function mountOpsRoutes(app: Hono): void {
           AND m.meta ? 'superseded_by'
       `) as unknown as Array<{ source: string; target: string }>;
 
-      const edges: Array<GraphEdge> = [];
-      for (const r of relatedRows) {
-        if (idSet.has(r.target)) {
-          edges.push({ source: r.source, target: r.target, type: "related" });
-        }
+    const edges: Array<GraphEdge> = [];
+    for (const r of relatedRows) {
+      if (idSet.has(r.target)) {
+        edges.push({ source: r.source, target: r.target, type: "related" });
       }
-      for (const r of supersedeRows) {
-        if (idSet.has(r.target)) {
-          edges.push({ source: r.source, target: r.target, type: "supersede" });
-        }
+    }
+    for (const r of supersedeRows) {
+      if (idSet.has(r.target)) {
+        edges.push({ source: r.source, target: r.target, type: "supersede" });
       }
+    }
 
-      // Step 4: total in-window count (unfiltered by top-N) for stats.
-      const totalRows = (await sql<
-        Array<{ total: number }>
-      >`
+    // Step 4: total in-window count (unfiltered by top-N) for stats.
+    const totalRows = (await sql<Array<{ total: number }>>`
         SELECT count(*)::int AS total
         FROM memories m
         WHERE ${filters}
           AND m.archived_at IS NULL
       `) as unknown as Array<{ total: number }>;
 
-      return c.json({
-        nodes,
-        edges,
-        stats: {
-          node_count: nodes.length,
-          edge_count: edges.length,
-          total_in_window: totalRows[0]?.total ?? 0,
-        },
-      });
-    },
-  );
+    return c.json({
+      nodes,
+      edges,
+      stats: {
+        node_count: nodes.length,
+        edge_count: edges.length,
+        total_in_window: totalRows[0]?.total ?? 0,
+      },
+    });
+  });
 }
 
 type GraphNode = {
@@ -819,9 +761,7 @@ function clamp(n: number, lo: number, hi: number, fallback: number): number {
 
 /** Translate cluster_status filter values into a SQL fragment. Multiple
  *  values OR together. Empty list = no filter. */
-function clusterStatusClause(
-  values: string[],
-): ReturnType<typeof sql> {
+function clusterStatusClause(values: string[]): ReturnType<typeof sql> {
   if (values.length === 0) return sql``;
   const fragments = values.map((v) => {
     switch (v) {

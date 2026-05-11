@@ -6,7 +6,9 @@ node_modules/
 .DS_Store
 .bun/
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
 coverage/
 .superpowers/
 .pg.env

@@ -17,8 +17,7 @@
 import { describe, expect, mock, test } from "bun:test";
 
 const TWO_PROVIDERS_AVAILABLE =
-  Boolean(process.env.OPENROUTER_API_KEY) &&
-  !process.env.LLM_PROVIDER_FORCE;
+  Boolean(process.env.OPENROUTER_API_KEY) && !process.env.LLM_PROVIDER_FORCE;
 
 const orState = { extract: 0, distill: 0, supersede: 0, fail: false };
 mock.module("../src/llm/providers/openrouter.ts", () => ({
@@ -112,9 +111,7 @@ describe("wrapper feeds the per-provider breaker", () => {
     const ext = pickExtract();
     if (ext.name !== "openrouter") return; // can't drive a controlled failure
     orState.fail = true;
-    await expect(ext.extractObservations("hello")).rejects.toThrow(
-      "openrouter extract failed",
-    );
+    await expect(ext.extractObservations("hello")).rejects.toThrow("openrouter extract failed");
     orState.fail = false;
   });
 });

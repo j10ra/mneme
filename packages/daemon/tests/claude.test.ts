@@ -108,11 +108,10 @@ describe("parseExtractResponse", () => {
   });
 
   test("strips markdown code fences from the response", () => {
-    const wrapped = "```json\n" +
+    const wrapped =
+      "```json\n" +
       JSON.stringify({
-        observations: [
-          { content: "x", kind: "note", importance: 0.5, topics: [] },
-        ],
+        observations: [{ content: "x", kind: "note", importance: 0.5, topics: [] }],
       }) +
       "\n```";
     const memories = parseExtractResponse(wrapped);
@@ -145,9 +144,7 @@ describe("parseExtractResponse", () => {
     const wrapped =
       "Here are the observations I extracted:\n\n" +
       JSON.stringify({
-        observations: [
-          { content: "a useful fact", kind: "note", importance: 0.4, topics: [] },
-        ],
+        observations: [{ content: "a useful fact", kind: "note", importance: 0.4, topics: [] }],
       }) +
       "\n\nLet me know if you need more.";
     const memories = parseExtractResponse(wrapped);
@@ -274,7 +271,10 @@ describe("parseSupersedeResponse", () => {
   test("drops malformed pairs (missing fields)", () => {
     const response = JSON.stringify({
       pairs: [
-        { old_id: "11111111-1111-1111-1111-111111111111", new_id: "22222222-2222-2222-2222-222222222222" }, // no reason
+        {
+          old_id: "11111111-1111-1111-1111-111111111111",
+          new_id: "22222222-2222-2222-2222-222222222222",
+        }, // no reason
         { new_id: "22222222-2222-2222-2222-222222222222", reason: "x" }, // no old_id
         {
           old_id: "11111111-1111-1111-1111-111111111111",

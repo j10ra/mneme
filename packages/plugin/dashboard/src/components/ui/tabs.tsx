@@ -15,10 +15,7 @@ import { cn } from "../../lib/cn.ts";
 
 export const Tabs = BaseTabs.Root;
 
-export function TabsList({
-  className,
-  ...props
-}: React.ComponentProps<typeof BaseTabs.List>) {
+export function TabsList({ className, ...props }: React.ComponentProps<typeof BaseTabs.List>) {
   return (
     <BaseTabs.List
       className={cn(
@@ -33,10 +30,7 @@ export function TabsList({
   );
 }
 
-export function TabsTab({
-  className,
-  ...props
-}: React.ComponentProps<typeof BaseTabs.Tab>) {
+export function TabsTab({ className, ...props }: React.ComponentProps<typeof BaseTabs.Tab>) {
   return (
     <BaseTabs.Tab
       className={cn(
@@ -61,17 +55,8 @@ export function TabsTab({
   );
 }
 
-export function TabsPanel({
-  className,
-  ...props
-}: React.ComponentProps<typeof BaseTabs.Panel>) {
+export function TabsPanel({ className, ...props }: React.ComponentProps<typeof BaseTabs.Panel>) {
   return (
-    <BaseTabs.Panel
-      className={cn(
-        "outline-none data-[hidden]:hidden",
-        className,
-      )}
-      {...props}
-    />
+    <BaseTabs.Panel className={cn("outline-none data-[hidden]:hidden", className)} {...props} />
   );
 }

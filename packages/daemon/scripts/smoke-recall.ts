@@ -36,11 +36,9 @@ const tLoad = Date.now();
 const { pipeline, env: tfEnv } = await import("@xenova/transformers");
 tfEnv.useBrowserCache = false;
 tfEnv.allowLocalModels = false;
-const extractor = (await pipeline(
-  "feature-extraction",
-  MODEL_ID,
-  { quantized: true } as never,
-)) as unknown as (
+const extractor = (await pipeline("feature-extraction", MODEL_ID, {
+  quantized: true,
+} as never)) as unknown as (
   texts: string | string[],
   options: { pooling: "mean"; normalize: true },
 ) => Promise<{ tolist(): number[][] | number[][][] }>;

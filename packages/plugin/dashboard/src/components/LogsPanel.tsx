@@ -20,13 +20,7 @@ import { ApiError, apiGet } from "../lib/api.ts";
 import { cn } from "../lib/cn.ts";
 import { Button } from "./ui/button.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.tsx";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./ui/select.tsx";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select.tsx";
 import { Switch } from "./ui/switch.tsx";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -282,8 +276,7 @@ export function LogsPanel() {
     const tick = async () => {
       try {
         const lookbackMs = timeRangeMs ?? SERVER_LOOKBACK_MS;
-        const since =
-          lastTs ?? new Date(Date.now() - lookbackMs).toISOString();
+        const since = lastTs ?? new Date(Date.now() - lookbackMs).toISOString();
         const resp = await apiGet<{
           logs: Array<{
             id: string;
@@ -300,8 +293,7 @@ export function LogsPanel() {
         if (cancelled) return;
         const fresh: ServerEntry[] = resp.logs
           .map((r) => {
-            const tsIso =
-              typeof r.ts === "string" ? r.ts : new Date(r.ts).toISOString();
+            const tsIso = typeof r.ts === "string" ? r.ts : new Date(r.ts).toISOString();
             return {
               kind: "server" as const,
               id: r.id,
@@ -328,8 +320,7 @@ export function LogsPanel() {
               seen.add(e.id);
               dedup.push(e);
             }
-            serverBufferRef.current =
-              dedup.length > MAX_BUFFER ? dedup.slice(-MAX_BUFFER) : dedup;
+            serverBufferRef.current = dedup.length > MAX_BUFFER ? dedup.slice(-MAX_BUFFER) : dedup;
             setPausedCount(serverBufferRef.current.length);
           } else {
             setServerEntries((prev) => {
@@ -341,9 +332,7 @@ export function LogsPanel() {
                 seen.add(e.id);
                 dedup.push(e);
               }
-              return dedup.length > MAX_BUFFER
-                ? dedup.slice(-MAX_BUFFER)
-                : dedup;
+              return dedup.length > MAX_BUFFER ? dedup.slice(-MAX_BUFFER) : dedup;
             });
           }
         }
@@ -398,11 +387,9 @@ export function LogsPanel() {
   // ── Filter pipeline (per-mode) ───────────────────────────────────
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const cutoffMs =
-      timeRangeMs !== null ? Date.now() - timeRangeMs : -Infinity;
+    const cutoffMs = timeRangeMs !== null ? Date.now() - timeRangeMs : -Infinity;
     const inRange = (ts: number): boolean =>
-      ts >= cutoffMs &&
-      (!rangeFilter || (ts >= rangeFilter.start && ts < rangeFilter.end));
+      ts >= cutoffMs && (!rangeFilter || (ts >= rangeFilter.start && ts < rangeFilter.end));
     if (mode === "local") {
       const out: Array<LocalEntry & { parsed: ParsedLine }> = [];
       for (const e of localEntries) {
@@ -420,9 +407,7 @@ export function LogsPanel() {
       if (hiddenMachines.has(machineKey)) continue;
       if (
         q &&
-        !(`${e.message} ${e.span_name ?? ""} ${e.machine_name ?? ""}`)
-          .toLowerCase()
-          .includes(q)
+        !`${e.message} ${e.span_name ?? ""} ${e.machine_name ?? ""}`.toLowerCase().includes(q)
       ) {
         continue;
       }
@@ -444,12 +429,9 @@ export function LogsPanel() {
   // Histogram operates on the unfiltered (sans range) entry list so the
   // user can see the full distribution and click into a bucket. Honors
   // the quick-range cutoff so the histogram + rows scope match.
-  const histogramEntries = useMemo<
-    Array<{ tsMs: number; level: LogLevel }>
-  >(() => {
+  const histogramEntries = useMemo<Array<{ tsMs: number; level: LogLevel }>>(() => {
     const q = query.trim().toLowerCase();
-    const cutoffMs =
-      timeRangeMs !== null ? Date.now() - timeRangeMs : -Infinity;
+    const cutoffMs = timeRangeMs !== null ? Date.now() - timeRangeMs : -Infinity;
     if (mode === "local") {
       const out: Array<{ tsMs: number; level: LogLevel }> = [];
       for (const e of localEntries) {
@@ -467,9 +449,7 @@ export function LogsPanel() {
       if (hiddenMachines.has(machineKey)) continue;
       if (
         q &&
-        !(`${e.message} ${e.span_name ?? ""} ${e.machine_name ?? ""}`)
-          .toLowerCase()
-          .includes(q)
+        !`${e.message} ${e.span_name ?? ""} ${e.machine_name ?? ""}`.toLowerCase().includes(q)
       ) {
         continue;
       }
@@ -477,18 +457,9 @@ export function LogsPanel() {
       out.push({ tsMs: e.tsMs, level: e.level });
     }
     return out;
-  }, [
-    mode,
-    localEntries,
-    serverEntries,
-    levelFilter,
-    hiddenMachines,
-    query,
-    timeRangeMs,
-  ]);
+  }, [mode, localEntries, serverEntries, levelFilter, hiddenMachines, query, timeRangeMs]);
 
-  const totalEntries =
-    mode === "local" ? localEntries.length : serverEntries.length;
+  const totalEntries = mode === "local" ? localEntries.length : serverEntries.length;
 
   // ── Auto-scroll on new content ───────────────────────────────────
   useEffect(() => {
@@ -543,8 +514,7 @@ export function LogsPanel() {
       return;
     }
     const el = e.currentTarget;
-    const distanceFromBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     const atBottom = distanceFromBottom < 24;
     stuckToBottomRef.current = atBottom;
     setShowJump(!atBottom);
@@ -583,10 +553,7 @@ export function LogsPanel() {
         {/* Title row */}
         <div className="flex items-center justify-between gap-2 px-3 pt-2.5 pb-2">
           <div className="flex items-center gap-2">
-            <Select
-              value={mode}
-              onValueChange={(v) => setMode(v as Mode)}
-            >
+            <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
               <SelectTrigger className="min-w-[110px]">
                 <SelectValue />
               </SelectTrigger>
@@ -620,10 +587,7 @@ export function LogsPanel() {
                 +{pausedCount}
               </span>
             )}
-            <Switch
-              checked={stickyTail}
-              onCheckedChange={(v) => setStickyTail(v)}
-            />
+            <Switch checked={stickyTail} onCheckedChange={(v) => setStickyTail(v)} />
           </label>
         </div>
 
@@ -634,9 +598,7 @@ export function LogsPanel() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={
-                mode === "local" ? "filter local logs" : "filter server logs"
-              }
+              placeholder={mode === "local" ? "filter local logs" : "filter server logs"}
               className="flex-1 bg-transparent px-2 text-xs outline-none placeholder:text-muted-foreground/60"
             />
             {query && (
@@ -682,9 +644,7 @@ export function LogsPanel() {
 
         {mode === "server" && machines.length > 0 && (
           <div className="flex flex-wrap items-center gap-1 px-3 pb-2.5 text-[10px]">
-            <span className="text-muted-foreground/70 uppercase tracking-wider mr-1">
-              machines
-            </span>
+            <span className="text-muted-foreground/70 uppercase tracking-wider mr-1">machines</span>
             {machines.map((m) => (
               <MachineChip
                 key={m.id}
@@ -703,9 +663,7 @@ export function LogsPanel() {
             range={rangeFilter}
             onSelectBucket={(start, end) =>
               setRangeFilter((cur) =>
-                cur && cur.start === start && cur.end === end
-                  ? null
-                  : { start, end },
+                cur && cur.start === start && cur.end === end ? null : { start, end },
               )
             }
             onClear={() => setRangeFilter(null)}
@@ -742,11 +700,7 @@ export function LogsPanel() {
       </div>
 
       {showJump && (
-        <Button
-          size="xs"
-          onClick={jumpToBottom}
-          className="absolute bottom-3 right-3 shadow-md"
-        >
+        <Button size="xs" onClick={jumpToBottom} className="absolute bottom-3 right-3 shadow-md">
           <ChevronDown className="h-3 w-3" />
           jump to live
         </Button>
@@ -834,8 +788,7 @@ function Histogram({
           style={{ height: HEIGHT }}
         >
           {data.buckets.map((b, i) => {
-            const isInRange =
-              hasRange && b.start >= range!.start && b.end <= range!.end;
+            const isInRange = hasRange && b.start >= range!.start && b.end <= range!.end;
             const dimmed = hasRange && !isInRange;
             const nonError = b.info + b.warn + b.debug;
             const baseline = HEIGHT - 1;
@@ -865,10 +818,7 @@ function Histogram({
                     y2={baseline}
                     strokeWidth={stroke}
                     strokeLinecap="round"
-                    className={cn(
-                      "stroke-muted-foreground/50",
-                      dimmed && "opacity-30",
-                    )}
+                    className={cn("stroke-muted-foreground/50", dimmed && "opacity-30")}
                   />
                 </g>
               );
@@ -888,10 +838,7 @@ function Histogram({
                   y2={baseline - nonErrH}
                   strokeWidth={stroke}
                   strokeLinecap="round"
-                  className={cn(
-                    "stroke-sky-500",
-                    dimmed && "opacity-30",
-                  )}
+                  className={cn("stroke-sky-500", dimmed && "opacity-30")}
                 />,
               );
             }
@@ -905,10 +852,7 @@ function Histogram({
                   y2={baseline - nonErrH - errH}
                   strokeWidth={stroke}
                   strokeLinecap="round"
-                  className={cn(
-                    "stroke-destructive",
-                    dimmed && "opacity-30",
-                  )}
+                  className={cn("stroke-destructive", dimmed && "opacity-30")}
                 />,
               );
             }
@@ -925,8 +869,7 @@ function Histogram({
                   )}
                 >
                   <title>
-                    {fmt(b.start)} · {b.total}{" "}
-                    {b.total === 1 ? "entry" : "entries"}
+                    {fmt(b.start)} · {b.total} {b.total === 1 ? "entry" : "entries"}
                     {b.error > 0 ? ` · ${b.error} error` : ""}
                     {b.warn > 0 ? ` · ${b.warn} warn` : ""}
                   </title>
@@ -977,12 +920,7 @@ function levelStyles(level: LogLevel): { border: string; level: string; body: st
   };
 }
 
-function LocalRow({
-  parsed,
-}: {
-  entry: LocalEntry;
-  parsed: ParsedLine;
-}) {
+function LocalRow({ parsed }: { entry: LocalEntry; parsed: ParsedLine }) {
   const styles = levelStyles(parsed.level);
   return (
     <li className={cn("border-l-2 px-2 py-1 hover:bg-muted/30", styles.border)}>
@@ -996,19 +934,14 @@ function LocalRow({
         )}
       </div>
       <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono">
-        {parsed.body && (
-          <span className={cn("font-medium", styles.body)}>{parsed.body}</span>
-        )}
+        {parsed.body && <span className={cn("font-medium", styles.body)}>{parsed.body}</span>}
         {parsed.pairs.map(([k, v], i) => (
           <span key={`${k}-${i}`} className="whitespace-nowrap">
             <span className="text-muted-foreground/60">{k}:</span>{" "}
             <span
               className={cn(
                 "break-all",
-                k === "machine_id" ||
-                  k === "traceId" ||
-                  k === "spanId" ||
-                  k === "session"
+                k === "machine_id" || k === "traceId" || k === "spanId" || k === "session"
                   ? "text-muted-foreground"
                   : "text-foreground/90",
               )}
@@ -1017,9 +950,7 @@ function LocalRow({
             </span>
           </span>
         ))}
-        {parsed.errorTail && (
-          <span className="text-destructive">:: {parsed.errorTail}</span>
-        )}
+        {parsed.errorTail && <span className="text-destructive">:: {parsed.errorTail}</span>}
       </div>
     </li>
   );
@@ -1028,8 +959,7 @@ function LocalRow({
 function ServerRow({ entry }: { entry: ServerEntry }) {
   const styles = levelStyles(entry.level);
   const machineLabel =
-    entry.machine_name ??
-    (entry.machine_id ? entry.machine_id.slice(0, 8) : "server");
+    entry.machine_name ?? (entry.machine_id ? entry.machine_id.slice(0, 8) : "server");
   return (
     <li className={cn("border-l-2 px-2 py-1 hover:bg-muted/30", styles.border)}>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground tabular-nums">
@@ -1040,17 +970,13 @@ function ServerRow({ entry }: { entry: ServerEntry }) {
         <span className="rounded bg-muted/60 px-1 text-[9px] font-medium text-foreground/80">
           {machineLabel}
         </span>
-        {entry.span_name && (
-          <span className="font-mono opacity-70">{entry.span_name}</span>
-        )}
+        {entry.span_name && <span className="font-mono opacity-70">{entry.span_name}</span>}
         {entry.trace_id && (
           <span className="font-mono opacity-50">{entry.trace_id.slice(0, 8)}</span>
         )}
       </div>
       <div className="mt-0.5 font-mono">
-        <span className={cn("font-medium break-words", styles.body)}>
-          {entry.message}
-        </span>
+        <span className={cn("font-medium break-words", styles.body)}>{entry.message}</span>
       </div>
     </li>
   );
@@ -1148,7 +1074,8 @@ function RangePicker({
   onChange: (ms: number | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const current = RANGE_OPTIONS.find((o) => o.ms === value) ?? RANGE_OPTIONS[RANGE_OPTIONS.length - 1]!;
+  const current =
+    RANGE_OPTIONS.find((o) => o.ms === value) ?? RANGE_OPTIONS[RANGE_OPTIONS.length - 1]!;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger

@@ -118,13 +118,8 @@ export type DreamInstance = {
   limits: DreamLimits;
   model: string;
   distillCluster: (text: string) => Promise<ClusterDistillation>;
-  findSupersedes?: (
-    candidates: SupersedeCandidate[],
-  ) => Promise<SupersedePair[]>;
-  judgeClusterMerge?: (
-    a: ClusterSummary,
-    b: ClusterSummary,
-  ) => Promise<ClusterMergeJudgment>;
+  findSupersedes?: (candidates: SupersedeCandidate[]) => Promise<SupersedePair[]>;
+  judgeClusterMerge?: (a: ClusterSummary, b: ClusterSummary) => Promise<ClusterMergeJudgment>;
 };
 
 /** Snapshot of every per-provider breaker. Used by /api/_ops/status so the

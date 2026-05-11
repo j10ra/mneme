@@ -19,10 +19,7 @@
 
 import { Hono } from "hono";
 import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
-import {
-  DREAM_CLUSTER_DISTANCE,
-  DREAM_MAX_NEIGHBORS_PER_MEMORY,
-} from "../infra/config.ts";
+import { DREAM_CLUSTER_DISTANCE, DREAM_MAX_NEIGHBORS_PER_MEMORY } from "../infra/config.ts";
 import { sha256Hex, sql } from "../infra/db.ts";
 import { EMBEDDER_DIM } from "../embedder/index.ts";
 
@@ -208,9 +205,7 @@ export async function fetchDreamCandidates(
         content: row.content,
         kind: row.kind,
         created_at:
-          row.created_at instanceof Date
-            ? row.created_at.toISOString()
-            : String(row.created_at),
+          row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
       });
       seenSeed.add(row.id);
     }
@@ -238,9 +233,7 @@ export type ClustersBody = {
   clusters: ClusterSubmission[];
 };
 
-export type ClustersValidation =
-  | { ok: true; body: ClustersBody }
-  | { ok: false; error: string };
+export type ClustersValidation = { ok: true; body: ClustersBody } | { ok: false; error: string };
 
 export function validateClustersBody(input: unknown): ClustersValidation {
   if (!input || typeof input !== "object") {
@@ -274,8 +267,7 @@ export function validateClustersBody(input: unknown): ClustersValidation {
     }
     if (
       c.summary_embedding !== undefined &&
-      (!Array.isArray(c.summary_embedding) ||
-        c.summary_embedding.length !== EMBEDDER_DIM)
+      (!Array.isArray(c.summary_embedding) || c.summary_embedding.length !== EMBEDDER_DIM)
     ) {
       return {
         ok: false,
@@ -298,13 +290,15 @@ export async function writeClusters(
       // Pull the seed memory for inheritance (machine_id, repo on the
       // cluster row mirror the seed). Same shape as the existing dream
       // worker's write path.
-      const [seed] = await tx<{
-        capture_id: string;
-        repo: string | null;
-        machine_id: string;
-        harness: string;
-        agent: string | null;
-      }[]>`
+      const [seed] = await tx<
+        {
+          capture_id: string;
+          repo: string | null;
+          machine_id: string;
+          harness: string;
+          agent: string | null;
+        }[]
+      >`
         SELECT capture_id, repo, machine_id, harness, agent
         FROM memories
         WHERE id = ${cluster.member_ids[0]!}
@@ -434,28 +428,20 @@ export function mountDreamRoutes(app: Hono): void {
     },
   );
 
-  app.post(
-    "/api/dream/lock",
-    mnemeRoute("api.dream.lock"),
-    requireAuth("capture"),
-    async (c) => {
-      const body = (await c.req.json().catch(() => null)) as
-        | { window_key?: unknown }
-        | null;
-      const windowKey =
-        body && typeof body.window_key === "number" ? body.window_key : NaN;
-      if (!Number.isFinite(windowKey)) {
-        return c.json({ error: "window_key required" }, 400);
-      }
-      const auth = currentAuth();
-      if (!auth?.machineId) {
-        return c.json({ error: "dream lock requires per-machine token" }, 400);
-      }
-      const result = await acquireDreamLock(windowKey, auth.machineId);
-      if (result.acquired) return c.json(result);
-      return c.json(result, 409);
-    },
-  );
+  app.post("/api/dream/lock", mnemeRoute("api.dream.lock"), requireAuth("capture"), async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { window_key?: unknown } | null;
+    const windowKey = body && typeof body.window_key === "number" ? body.window_key : NaN;
+    if (!Number.isFinite(windowKey)) {
+      return c.json({ error: "window_key required" }, 400);
+    }
+    const auth = currentAuth();
+    if (!auth?.machineId) {
+      return c.json({ error: "dream lock requires per-machine token" }, 400);
+    }
+    const result = await acquireDreamLock(windowKey, auth.machineId);
+    if (result.acquired) return c.json(result);
+    return c.json(result, 409);
+  });
 
   app.get(
     "/api/dream/candidates",

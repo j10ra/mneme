@@ -51,9 +51,7 @@ export type Bundle = {
   memories: Memory[];
 };
 
-export type HandleCaptureResult =
-  | { ok: true; id: string }
-  | { ok: false; error: string };
+export type HandleCaptureResult = { ok: true; id: string } | { ok: false; error: string };
 
 export type DaemonDeps = {
   outbox: Outbox;
@@ -83,12 +81,7 @@ export type DaemonDeps = {
   shasDir?: string;
 };
 
-const REQUIRED_STRING_FIELDS = [
-  "content",
-  "source",
-  "hostname",
-  "harness",
-] as const;
+const REQUIRED_STRING_FIELDS = ["content", "source", "hostname", "harness"] as const;
 const COALESCE_WINDOW_MS = 5 * 60 * 1000;
 // Max captures per Haiku call. 20 keeps each extract focused enough
 // that observation quality stays high; sessions larger than this
@@ -131,9 +124,7 @@ function scrubCapture(body: CaptureBody): CaptureBody {
 
 function asPermanent(err: unknown): boolean {
   return (
-    err !== null &&
-    typeof err === "object" &&
-    (err as { permanent?: unknown }).permanent === true
+    err !== null && typeof err === "object" && (err as { permanent?: unknown }).permanent === true
   );
 }
 
@@ -163,9 +154,7 @@ export function createRuntime(deps: DaemonDeps) {
   // backlogs are caught by the forceMs trigger (oldest-file age) instead.
   let lastCapturedWriteAt = now();
 
-  async function handleCapture(
-    body: CaptureBody,
-  ): Promise<HandleCaptureResult> {
+  async function handleCapture(body: CaptureBody): Promise<HandleCaptureResult> {
     for (const field of REQUIRED_STRING_FIELDS) {
       const v = body[field];
       if (typeof v !== "string" || !v.trim()) {
@@ -243,9 +232,7 @@ export function createRuntime(deps: DaemonDeps) {
       const enriched: Memory[] = [];
       for (let m = 0; m < file.memories.length; m++) {
         const mem = file.memories[m]!;
-        const flatIdx = origin.findIndex(
-          (o) => o.fileIdx === f && o.memIdx === m,
-        );
+        const flatIdx = origin.findIndex((o) => o.fileIdx === f && o.memIdx === m);
         const vector = flatIdx >= 0 ? allVectors[flatIdx] : undefined;
         const contentHash = await sha256Hex(mem.content);
         const chunkId = await sha256Hex(`${contentHash}:${embedderModel}`);
@@ -342,10 +329,7 @@ export function createRuntime(deps: DaemonDeps) {
     }
   }
 
-  async function appendLedger(
-    sessionId: string,
-    keys: string[],
-  ): Promise<void> {
+  async function appendLedger(sessionId: string, keys: string[]): Promise<void> {
     if (keys.length === 0) return;
     try {
       if (!existsSync(SHAS_DIR)) {
@@ -395,8 +379,7 @@ export function createRuntime(deps: DaemonDeps) {
         const sessionId = capture.session_id ?? null;
         const contentSha = await sha256Hex(capture.content);
         const meta = (capture.raw_meta ?? {}) as Record<string, unknown>;
-        const uuid =
-          typeof meta.message_uuid === "string" ? meta.message_uuid : null;
+        const uuid = typeof meta.message_uuid === "string" ? meta.message_uuid : null;
         entries.push({ id, sessionId, contentSha, uuid });
       } catch {
         continue; // vanished mid-tick
@@ -464,8 +447,7 @@ export function createRuntime(deps: DaemonDeps) {
       if (!c.session_id) continue;
       const sha = await sha256Hex(c.content);
       const meta = c.raw_meta ?? {};
-      const uuid =
-        typeof meta.message_uuid === "string" ? meta.message_uuid : null;
+      const uuid = typeof meta.message_uuid === "string" ? meta.message_uuid : null;
       const arr = bySession.get(c.session_id) ?? [];
       arr.push(`sha:${sha}`);
       if (uuid) arr.push(`uuid:${uuid}`);
@@ -496,8 +478,7 @@ export function createRuntime(deps: DaemonDeps) {
 
     const isFull = ids.length >= batchFull;
     const isIdle = idleMs > 0 && tickNow - lastCapturedWriteAt >= idleMs;
-    const isForced =
-      forceMs > 0 && Number.isFinite(oldestTs) && tickNow - oldestTs >= forceMs;
+    const isForced = forceMs > 0 && Number.isFinite(oldestTs) && tickNow - oldestTs >= forceMs;
 
     if (!isFull && !isIdle && !isForced) {
       // Don't log on every tick to avoid noise. Sentinel return.
@@ -528,8 +509,7 @@ export function createRuntime(deps: DaemonDeps) {
         if (candidate.id === seed.id) continue;
         if (processed.has(candidate.id)) continue;
         if (batch.length >= MAX_BATCH_SIZE) break;
-        const sameSession =
-          candidate.capture.session_id === seed.capture.session_id;
+        const sameSession = candidate.capture.session_id === seed.capture.session_id;
         const sameRepo = candidate.capture.repo === seed.capture.repo;
         const samePrivate = candidate.capture.private === seed.capture.private;
         const inWindow = Math.abs(candidate.ts - seed.ts) <= COALESCE_WINDOW_MS;

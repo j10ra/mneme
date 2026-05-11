@@ -150,15 +150,14 @@ export const buildSurface = mnemeFn(
         AND (private = false OR machine_id = ${callerMachineId})
     `;
 
-    const [pinnedR, rulesR, themesR, decisionsR, sessionsR, supersededR] =
-      await Promise.all([
-        pinnedQ,
-        rulesQ,
-        themesQ,
-        decisionsQ,
-        sessionsQ,
-        supersededQ,
-      ]);
+    const [pinnedR, rulesR, themesR, decisionsR, sessionsR, supersededR] = await Promise.all([
+      pinnedQ,
+      rulesQ,
+      themesQ,
+      decisionsQ,
+      sessionsQ,
+      supersededQ,
+    ]);
 
     const pinned = toSection(pinnedR);
     const rules = toSection(rulesR);
@@ -181,9 +180,7 @@ export const buildSurface = mnemeFn(
       ),
     ];
     const machineNames =
-      machineIds.length > 1
-        ? await loadMachineNames(machineIds)
-        : new Map<string, string>();
+      machineIds.length > 1 ? await loadMachineNames(machineIds) : new Map<string, string>();
 
     const rendered = renderSurface(
       {
@@ -262,9 +259,7 @@ async function computeDelta(
 // (revoked_at NULLS FIRST) and the most recent registration. Multiple
 // active api_keys for the same machine_id is rare but legal — pick one
 // rather than emit duplicates.
-async function loadMachineNames(
-  machineIds: string[],
-): Promise<Map<string, string>> {
+async function loadMachineNames(machineIds: string[]): Promise<Map<string, string>> {
   const rows = await sql<{ machine_id: string; name: string }[]>`
     SELECT DISTINCT ON (machine_id) machine_id, name
     FROM _ops.api_keys
@@ -303,8 +298,7 @@ const KIND_GLYPH: Record<string, string> = {
   claude_memory: "🧠",
   note: "📝",
 };
-const glyph = (kind: string | null): string =>
-  (kind && KIND_GLYPH[kind]) || "•";
+const glyph = (kind: string | null): string => (kind && KIND_GLYPH[kind]) || "•";
 
 // 8-char hex prefix is globally unique at personal scale (and well past it —
 // 2^32 birthday bound). The skill teaches `WHERE id::text LIKE '<prefix>%'`
@@ -361,9 +355,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
     for (const r of s.repos) lines.push(`- ${r}`);
   } else if (s.repos.length === 1) {
     lines.push(
-      `# Mneme · ${s.repos[0]} · across ${machineCount} machine${
-        machineCount === 1 ? "" : "s"
-      }`,
+      `# Mneme · ${s.repos[0]} · across ${machineCount} machine${machineCount === 1 ? "" : "s"}`,
     );
   }
 
@@ -399,9 +391,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
     lines.push("");
     lines.push(sectionHeader("Rules", s.rules));
     for (const i of s.rules.items) {
-      lines.push(
-        `- [${idPrefix(i.id)}] ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`,
-      );
+      lines.push(`- [${idPrefix(i.id)}] ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`);
     }
   }
 
@@ -409,12 +399,8 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
     lines.push("");
     lines.push(sectionHeader("Themes", s.themes));
     for (const i of s.themes.items) {
-      const title = i.cluster_title
-        ? `**${collapse(i.cluster_title)}** — `
-        : "";
-      lines.push(
-        `- [${idPrefix(i.id)}] ${glyph(i.kind)} ${title}${collapse(i.content)}${tag(i)}`,
-      );
+      const title = i.cluster_title ? `**${collapse(i.cluster_title)}** — ` : "";
+      lines.push(`- [${idPrefix(i.id)}] ${glyph(i.kind)} ${title}${collapse(i.content)}${tag(i)}`);
     }
   }
 

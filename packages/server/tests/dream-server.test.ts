@@ -10,9 +10,7 @@ const HAS_DB = Boolean(process.env.DATABASE_URL);
 
 describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
   test("acquireDreamLock: first machine wins, second machine sees the existing claim", async () => {
-    const { acquireDreamLock, releaseDreamLock } = await import(
-      "../src/routes/dream.ts"
-    );
+    const { acquireDreamLock, releaseDreamLock } = await import("../src/routes/dream.ts");
     const windowKey = -999_999_001;
     const machineA = "00000000-0000-0000-0000-00000000a001";
     const machineB = "00000000-0000-0000-0000-00000000a002";
@@ -32,9 +30,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
   });
 
   test("releaseDreamLock marks completed_at and stamps cluster_count", async () => {
-    const { acquireDreamLock, releaseDreamLock } = await import(
-      "../src/routes/dream.ts"
-    );
+    const { acquireDreamLock, releaseDreamLock } = await import("../src/routes/dream.ts");
     const { sql } = await import("../src/infra/db.ts");
     const windowKey = -999_999_002;
     const machineA = "00000000-0000-0000-0000-00000000a003";
@@ -43,9 +39,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
       await acquireDreamLock(windowKey, machineA);
       await releaseDreamLock(windowKey, machineA, 7);
 
-      const rows = await sql<
-        { completed_at: Date | null; cluster_count: number | null }[]
-      >`
+      const rows = await sql<{ completed_at: Date | null; cluster_count: number | null }[]>`
         SELECT completed_at, cluster_count
         FROM _ops.dream_runs
         WHERE window_key = ${windowKey}
@@ -78,9 +72,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
         last_processed_at: new Date(),
       });
 
-      const rows = await sql<
-        { outbox_pending: number; outbox_extracted: number }[]
-      >`
+      const rows = await sql<{ outbox_pending: number; outbox_extracted: number }[]>`
         SELECT outbox_pending, outbox_extracted
         FROM _ops.daemon_heartbeats
         WHERE machine_id = ${machineId}
@@ -96,9 +88,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
   test("validateClustersBody catches missing fields", async () => {
     const { validateClustersBody } = await import("../src/routes/dream.ts");
     expect(validateClustersBody({}).ok).toBe(false);
-    expect(
-      validateClustersBody({ window_key: 1, clusters: [] }).ok,
-    ).toBe(true);
+    expect(validateClustersBody({ window_key: 1, clusters: [] }).ok).toBe(true);
     expect(
       validateClustersBody({
         window_key: 1,

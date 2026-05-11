@@ -11,12 +11,7 @@
 import { useEffect, useState } from "react";
 import { ApiError, apiGet } from "../../lib/api.ts";
 import { cn } from "../../lib/cn.ts";
-import type {
-  CaptureBody,
-  ChainRow,
-  MemoryRowData,
-  RelatedRow,
-} from "./types.ts";
+import type { CaptureBody, ChainRow, MemoryRowData, RelatedRow } from "./types.ts";
 
 type Tab = "content" | "related" | "chain" | "capture";
 
@@ -86,10 +81,7 @@ function ContentMetaTab({ data }: { data: MemoryRowData }) {
         <Meta k="repo" v={data.repo ?? "—"} mono />
         <Meta k="machine" v={data.machine_name ?? data.machine_id ?? "—"} mono />
         <Meta k="created" v={new Date(data.created_at).toLocaleString()} />
-        <Meta
-          k="importance"
-          v={data.importance !== null ? data.importance.toFixed(3) : "—"}
-        />
+        <Meta k="importance" v={data.importance !== null ? data.importance.toFixed(3) : "—"} />
         {data.cluster_id && <Meta k="cluster" v={data.cluster_id.slice(0, 8)} mono />}
         {data.score !== null && <Meta k="score" v={data.score.toFixed(3)} />}
       </dl>
@@ -100,15 +92,16 @@ function ContentMetaTab({ data }: { data: MemoryRowData }) {
 function Meta({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   return (
     <>
-      <dt className="text-muted-foreground uppercase tracking-wider text-[9px] self-center">
-        {k}
-      </dt>
+      <dt className="text-muted-foreground uppercase tracking-wider text-[9px] self-center">{k}</dt>
       <dd className={cn(mono && "font-mono")}>{v}</dd>
     </>
   );
 }
 
-function useLazy<T>(fetcher: () => Promise<T>, deps: unknown[]): {
+function useLazy<T>(
+  fetcher: () => Promise<T>,
+  deps: unknown[],
+): {
   data: T | null;
   error: string | null;
   loading: boolean;
@@ -159,9 +152,7 @@ function RelatedTab({ id }: { id: string }) {
         <li key={r.id} className="rounded-md border border-border/60 bg-card/40 px-2 py-1.5">
           <div className="flex items-center gap-2 text-[9px] text-muted-foreground uppercase tracking-wider">
             {r.kind && <span>{r.kind}</span>}
-            <span className="ml-auto tabular-nums">
-              dist {r.distance.toFixed(3)}
-            </span>
+            <span className="ml-auto tabular-nums">dist {r.distance.toFixed(3)}</span>
           </div>
           <div className="mt-0.5 line-clamp-3 text-foreground/85 leading-snug">
             {r.content_preview}
@@ -174,10 +165,7 @@ function RelatedTab({ id }: { id: string }) {
 
 function ChainTab({ id }: { id: string }) {
   const { data, error, loading } = useLazy(
-    () =>
-      apiGet<{ parents: ChainRow[]; children: ChainRow[] }>(
-        `/memories/${id}/supersede-chain`,
-      ),
+    () => apiGet<{ parents: ChainRow[]; children: ChainRow[] }>(`/memories/${id}/supersede-chain`),
     [id],
   );
   if (loading) return <Pending>Walking supersede chain…</Pending>;
@@ -225,10 +213,11 @@ function ChainList({ rows }: { rows: ChainRow[] }) {
 }
 
 function CaptureTab({ data }: { data: MemoryRowData }) {
-  const { data: capture, error, loading } = useLazy(
-    () => apiGet<{ capture: CaptureBody }>(`/memories/${data.id}/capture`),
-    [data.id],
-  );
+  const {
+    data: capture,
+    error,
+    loading,
+  } = useLazy(() => apiGet<{ capture: CaptureBody }>(`/memories/${data.id}/capture`), [data.id]);
   return (
     <div className="space-y-3 text-[12px]">
       {data.cluster_id && (
@@ -248,8 +237,7 @@ function CaptureTab({ data }: { data: MemoryRowData }) {
         {capture && (
           <div className="rounded-md border border-border/60 bg-muted/20 p-2 max-h-64 overflow-y-auto">
             <div className="text-[9px] text-muted-foreground mb-1">
-              {capture.capture.source} ·{" "}
-              {new Date(capture.capture.captured_at).toLocaleString()}
+              {capture.capture.source} · {new Date(capture.capture.captured_at).toLocaleString()}
             </div>
             <pre className="whitespace-pre-wrap break-words text-[11px] font-mono text-foreground/85 leading-snug">
               {capture.capture.content}
@@ -262,9 +250,7 @@ function CaptureTab({ data }: { data: MemoryRowData }) {
 }
 
 function Pending({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="text-xs text-muted-foreground italic py-2">{children}</div>
-  );
+  return <div className="text-xs text-muted-foreground italic py-2">{children}</div>;
 }
 
 function Failed({ message }: { message: string }) {

@@ -44,14 +44,7 @@ function glowTexture(THREE: any): unknown {
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  const grad = ctx.createRadialGradient(
-    size / 2,
-    size / 2,
-    0,
-    size / 2,
-    size / 2,
-    size / 2,
-  );
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
   grad.addColorStop(0, "rgba(255,255,255,1)");
   grad.addColorStop(0.2, "rgba(255,255,255,0.7)");
   grad.addColorStop(0.5, "rgba(255,255,255,0.15)");
@@ -98,9 +91,7 @@ export const GraphCanvas = forwardRef<
   // Tracks whether bloom has been attached to the composer; the
   // bloom-setup effect was running on every resize, stacking passes.
   const bloomAttachedRef = useRef(false);
-  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
-    "loading",
-  );
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [panMode, setPanMode] = useState(false);
 
@@ -220,10 +211,7 @@ export const GraphCanvas = forwardRef<
       source: e.source,
       target: e.target,
       type: e.type,
-      color:
-        e.type === "supersede"
-          ? "rgba(251, 191, 36, 0.85)"
-          : "rgba(125, 211, 252, 0.32)",
+      color: e.type === "supersede" ? "rgba(251, 191, 36, 0.85)" : "rgba(125, 211, 252, 0.32)",
     }));
     return { nodes: nodeOut, links: linkOut };
   }, [nodes, edges, query]);
@@ -274,12 +262,7 @@ export const GraphCanvas = forwardRef<
     const isTypingTarget = (el: EventTarget | null): boolean => {
       if (!(el instanceof HTMLElement)) return false;
       const tag = el.tagName;
-      return (
-        tag === "INPUT" ||
-        tag === "TEXTAREA" ||
-        tag === "SELECT" ||
-        el.isContentEditable
-      );
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -358,9 +341,7 @@ export const GraphCanvas = forwardRef<
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3">
         <Skeleton className="h-32 w-32 rounded-full" />
-        <span className="text-xs text-muted-foreground">
-          Loading 3D visualization…
-        </span>
+        <span className="text-xs text-muted-foreground">Loading 3D visualization…</span>
       </div>
     );
   }
@@ -447,9 +428,7 @@ export const GraphCanvas = forwardRef<
           // Curve every edge so they read as axonal arcs in 3D rather
           // than ruler lines. Supersede edges arc more sharply so the
           // "newer truth" flow stands out from related neighbours.
-          linkCurvature={(l: Force3DLink) =>
-            l.type === "supersede" ? 0.4 : 0.25
-          }
+          linkCurvature={(l: Force3DLink) => (l.type === "supersede" ? 0.4 : 0.25)}
           // Rotate each curve's plane around the edge axis by a hash
           // of the endpoint pair, so curves between dense clusters
           // don't all twist in the same plane and visually overlap.
@@ -461,9 +440,7 @@ export const GraphCanvas = forwardRef<
             const tId = typeof l.target === "string" ? l.target : l.target?.id;
             return ((hashStr(`${sId}-${tId}`) % 360) * Math.PI) / 180;
           }}
-          linkDirectionalArrowLength={(l: Force3DLink) =>
-            l.type === "supersede" ? 5 : 0
-          }
+          linkDirectionalArrowLength={(l: Force3DLink) => (l.type === "supersede" ? 5 : 0)}
           linkDirectionalArrowRelPos={1}
           linkDirectionalArrowColor={(l: Force3DLink) => l.color}
           linkDirectionalParticles={0}

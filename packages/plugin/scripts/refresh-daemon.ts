@@ -34,10 +34,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  installDaemonService,
-  pickFreePortDeterministic,
-} from "./daemon-install.ts";
+import { installDaemonService, pickFreePortDeterministic } from "./daemon-install.ts";
 
 const LOG = join(homedir(), ".mneme", "logs", "refresh.log");
 const PIDFILE = join(homedir(), ".mneme", "refresh.pid");
@@ -102,10 +99,7 @@ function tryAcquireLock(): boolean {
   }
   try {
     mkdirSync(dirname(PIDFILE), { recursive: true });
-    writeFileSync(
-      PIDFILE,
-      JSON.stringify({ pid: process.pid, ts: new Date().toISOString() }),
-    );
+    writeFileSync(PIDFILE, JSON.stringify({ pid: process.pid, ts: new Date().toISOString() }));
     return true;
   } catch {
     return false;
@@ -139,17 +133,14 @@ async function runRefresh(): Promise<void> {
   try {
     cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
   } catch (err) {
-    logLine(
-      `refresh: config parse failed — ${err instanceof Error ? err.message : err}`,
-    );
+    logLine(`refresh: config parse failed — ${err instanceof Error ? err.message : err}`);
     return;
   }
   if (!cfg.machine?.id) {
     logLine("refresh: config missing machine.id; run /mneme:setup");
     return;
   }
-  const daemonPort =
-    cfg.daemon?.port ?? pickFreePortDeterministic(cfg.machine.id);
+  const daemonPort = cfg.daemon?.port ?? pickFreePortDeterministic(cfg.machine.id);
 
   // Derive the current plugin root from this script's own location.
   // refresh-daemon.ts lives at <pluginRoot>/scripts/refresh-daemon.ts.
@@ -169,9 +160,7 @@ async function runRefresh(): Promise<void> {
       logLine(`refresh: install error — ${result.error}`);
     }
   } catch (err) {
-    logLine(
-      `refresh: crash — ${err instanceof Error ? err.message : String(err)}`,
-    );
+    logLine(`refresh: crash — ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

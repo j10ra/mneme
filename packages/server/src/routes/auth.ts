@@ -21,9 +21,14 @@ import { currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql, sha256Hex } from "../infra/db.ts";
 
 function generateToken(machineName: string): string {
-  const safeName = machineName.replace(/[^a-z0-9-]/gi, "-").toLowerCase().slice(0, 32);
+  const safeName = machineName
+    .replace(/[^a-z0-9-]/gi, "-")
+    .toLowerCase()
+    .slice(0, 32);
   const random = crypto.getRandomValues(new Uint8Array(32));
-  const hex = Array.from(random).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const hex = Array.from(random)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
   return `mneme_pat_${safeName}_${hex}`;
 }
 
@@ -47,9 +52,7 @@ export async function registerOrRotate(input: {
   const { machineName, fingerprint } = input;
 
   if (fingerprint) {
-    const existing = await sql<
-      { machine_id: string; name: string }[]
-    >`
+    const existing = await sql<{ machine_id: string; name: string }[]>`
       SELECT machine_id, name
       FROM _ops.api_keys
       WHERE machine_fingerprint = ${fingerprint}
@@ -138,8 +141,7 @@ export function mountAuthRoutes(app: Hono): void {
           : "";
       if (!machineName) return c.json({ error: "machine_name required" }, 400);
       const fingerprint =
-        typeof body?.machine_fingerprint === "string" &&
-        body.machine_fingerprint.trim()
+        typeof body?.machine_fingerprint === "string" && body.machine_fingerprint.trim()
           ? body.machine_fingerprint.trim()
           : null;
 
@@ -152,28 +154,21 @@ export function mountAuthRoutes(app: Hono): void {
   // POST /api/auth/revoke — revoke a machine's token.
   // Body: { machine_id }. Sets revoked_at on every active key for that machine.
   // ---------------------------------------------------------------------------
-  app.post(
-    "/api/auth/revoke",
-    mnemeRoute("api.auth.revoke"),
-    requireAuth("admin"),
-    async (c) => {
-      const body = (await c.req.json().catch(() => null)) as {
-        machine_id?: unknown;
-      } | null;
-      const machineId =
-        typeof body?.machine_id === "string" && body.machine_id.trim()
-          ? body.machine_id.trim()
-          : "";
-      if (!machineId) return c.json({ error: "machine_id required" }, 400);
+  app.post("/api/auth/revoke", mnemeRoute("api.auth.revoke"), requireAuth("admin"), async (c) => {
+    const body = (await c.req.json().catch(() => null)) as {
+      machine_id?: unknown;
+    } | null;
+    const machineId =
+      typeof body?.machine_id === "string" && body.machine_id.trim() ? body.machine_id.trim() : "";
+    if (!machineId) return c.json({ error: "machine_id required" }, 400);
 
-      const result = await sql`
+    const result = await sql`
         UPDATE _ops.api_keys
         SET revoked_at = now()
         WHERE machine_id = ${machineId} AND revoked_at IS NULL
       `;
-      return c.json({ machine_id: machineId, revoked: result.count });
-    },
-  );
+    return c.json({ machine_id: machineId, revoked: result.count });
+  });
 
   // ---------------------------------------------------------------------------
   // POST /api/auth/rename — change THIS machine's display name in place.
@@ -191,44 +186,36 @@ export function mountAuthRoutes(app: Hono): void {
   // _ops.api_keys.name changes. Avoids the bifurcated-history side effect
   // of revoke+re-register when all the user wants is a rename.
   // ---------------------------------------------------------------------------
-  app.post(
-    "/api/auth/rename",
-    mnemeRoute("api.auth.rename"),
-    requireAuth("capture"),
-    async (c) => {
-      const auth = currentAuth();
-      const machineId = auth?.machineId;
-      if (!machineId) {
-        return c.json(
-          { error: "self-rename requires a per-machine token, not admin" },
-          400,
-        );
-      }
-      const body = (await c.req.json().catch(() => null)) as {
-        machine_name?: unknown;
-      } | null;
-      const machineName =
-        typeof body?.machine_name === "string" && body.machine_name.trim()
-          ? body.machine_name.trim()
-          : "";
-      if (!machineName) return c.json({ error: "machine_name required" }, 400);
+  app.post("/api/auth/rename", mnemeRoute("api.auth.rename"), requireAuth("capture"), async (c) => {
+    const auth = currentAuth();
+    const machineId = auth?.machineId;
+    if (!machineId) {
+      return c.json({ error: "self-rename requires a per-machine token, not admin" }, 400);
+    }
+    const body = (await c.req.json().catch(() => null)) as {
+      machine_name?: unknown;
+    } | null;
+    const machineName =
+      typeof body?.machine_name === "string" && body.machine_name.trim()
+        ? body.machine_name.trim()
+        : "";
+    if (!machineName) return c.json({ error: "machine_name required" }, 400);
 
-      const result = await sql<{ id: string; name: string }[]>`
+    const result = await sql<{ id: string; name: string }[]>`
         UPDATE _ops.api_keys
         SET name = ${machineName}
         WHERE machine_id = ${machineId} AND revoked_at IS NULL
         RETURNING id, name
       `;
-      if (result.length === 0) {
-        return c.json({ error: "no active key for this machine" }, 404);
-      }
-      return c.json({
-        machine_id: machineId,
-        machine_name: machineName,
-        renamed: result.length,
-      });
-    },
-  );
+    if (result.length === 0) {
+      return c.json({ error: "no active key for this machine" }, 404);
+    }
+    return c.json({
+      machine_id: machineId,
+      machine_name: machineName,
+      renamed: result.length,
+    });
+  });
 
   // ---------------------------------------------------------------------------
   // GET /api/auth/machines — list registered machines (active + revoked).

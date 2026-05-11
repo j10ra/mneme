@@ -33,9 +33,7 @@ configureTraceStore(new TraceStore({ sql, scrubber: scrubData }));
 const app = new Hono();
 
 // /health — public, no auth, no scope check.
-app.get("/health", mnemeRoute("health"), (c) =>
-  c.json({ status: "ok", phase: 0 }),
-);
+app.get("/health", mnemeRoute("health"), (c) => c.json({ status: "ok", phase: 0 }));
 
 mountAuthRoutes(app);
 mountBundleRoute(app);

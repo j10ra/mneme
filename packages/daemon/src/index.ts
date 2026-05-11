@@ -15,13 +15,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-  Logger,
-  configureLogger,
-  configureTraceStore,
-  getTraceStore,
-  mnemeFn,
-} from "@mneme/core";
+import { Logger, configureLogger, configureTraceStore, getTraceStore, mnemeFn } from "@mneme/core";
 import { Hono } from "hono";
 import { pickAgent } from "./agents/index.ts";
 import { resumeDreamCycles, runDreamCycle } from "./dream.ts";
@@ -109,9 +103,7 @@ function pushBundleViaServer(serverUrl: string, token: string) {
     });
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
-      const err = new Error(
-        `push failed ${response.status}: ${detail.slice(0, 300)}`,
-      );
+      const err = new Error(`push failed ${response.status}: ${detail.slice(0, 300)}`);
       // 4xx are permanent (bad request, auth); 5xx and network are transient.
       if (response.status >= 400 && response.status < 500) {
         Object.assign(err, { permanent: true });
@@ -151,10 +143,7 @@ export async function startDaemon(): Promise<void> {
     async (captures: Parameters<typeof agent.extract>[0]["captures"]) =>
       agent.extract({ captures }),
   );
-  const tracedEmbed = mnemeFn(
-    "daemon.embed",
-    async (texts: string[]) => embedBatch(texts),
-  );
+  const tracedEmbed = mnemeFn("daemon.embed", async (texts: string[]) => embedBatch(texts));
   const tracedPush = mnemeFn("daemon.push", async (bundle: Bundle) => {
     await realPush(bundle);
     lastProcessedAt = new Date();
@@ -196,9 +185,7 @@ export async function startDaemon(): Promise<void> {
       fetch: (u, init) => fetch(u, init),
       distill: (memories) => {
         if (!agent.distill) {
-          throw new Error(
-            `agent ${agent.name} does not support dream (no distill())`,
-          );
+          throw new Error(`agent ${agent.name} does not support dream (no distill())`);
         }
         return agent.distill(memories);
       },

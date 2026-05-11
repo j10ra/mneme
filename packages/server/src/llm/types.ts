@@ -85,17 +85,12 @@ export type SupersedePair = {
 export type LLMProvider = {
   extractObservations: (captureText: string) => Promise<Observation[]>;
   distillCluster: (memberContents: string) => Promise<ClusterDistillation>;
-  findSupersedes?: (
-    candidates: SupersedeCandidate[],
-  ) => Promise<SupersedePair[]>;
+  findSupersedes?: (candidates: SupersedeCandidate[]) => Promise<SupersedePair[]>;
   /** Cross-cluster merge judgment for the digest worker (#30). Like
    *  `findSupersedes`, only providers we trust to make this call
    *  implement it (today: openrouter only). Local omits to keep the
    *  7B/3B path off a high-stakes decision. */
-  judgeClusterMerge?: (
-    a: ClusterSummary,
-    b: ClusterSummary,
-  ) => Promise<ClusterMergeJudgment>;
+  judgeClusterMerge?: (a: ClusterSummary, b: ClusterSummary) => Promise<ClusterMergeJudgment>;
   extractLimits: ExtractLimits;
   dreamLimits: DreamLimits;
   extractModel: string;

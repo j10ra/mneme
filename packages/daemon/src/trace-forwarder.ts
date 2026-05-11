@@ -12,12 +12,7 @@
 // fails the same way.
 
 import { Logger, errorMessageOf } from "@mneme/core";
-import type {
-  LogRecord,
-  SpanRecord,
-  TraceRecord,
-  TraceSink,
-} from "@mneme/core";
+import type { LogRecord, SpanRecord, TraceRecord, TraceSink } from "@mneme/core";
 import { isNetworkOfflineError } from "./net.ts";
 
 // Same ceilings as TraceStore. Daemon runs alone on a personal box,
@@ -111,9 +106,7 @@ export class TraceForwarder implements TraceSink {
     let bucket = this.pendingSpans.get(s.traceId);
     if (!bucket) {
       if (this.pendingSpans.size >= MAX_PENDING_TRACES) {
-        const firstKey = this.pendingSpans.keys().next().value as
-          | string
-          | undefined;
+        const firstKey = this.pendingSpans.keys().next().value as string | undefined;
         if (firstKey !== undefined) this.pendingSpans.delete(firstKey);
       }
       bucket = [];
@@ -138,9 +131,7 @@ export class TraceForwarder implements TraceSink {
     let bucket = this.pendingLogs.get(l.traceId);
     if (!bucket) {
       if (this.pendingLogs.size >= MAX_PENDING_TRACES) {
-        const firstKey = this.pendingLogs.keys().next().value as
-          | string
-          | undefined;
+        const firstKey = this.pendingLogs.keys().next().value as string | undefined;
         if (firstKey !== undefined) this.pendingLogs.delete(firstKey);
       }
       bucket = [];
@@ -157,16 +148,13 @@ export class TraceForwarder implements TraceSink {
     }
     this.recentlyFinalized.set(traceId, true);
     if (this.recentlyFinalized.size > RECENT_TRACE_LRU_SIZE) {
-      const oldest = this.recentlyFinalized.keys().next().value as
-        | string
-        | undefined;
+      const oldest = this.recentlyFinalized.keys().next().value as string | undefined;
       if (oldest !== undefined) this.recentlyFinalized.delete(oldest);
     }
   }
 
   private maybeFlushOverflow(): void {
-    const total =
-      this.traceBuffer.length + this.spanBuffer.length + this.logBuffer.length;
+    const total = this.traceBuffer.length + this.spanBuffer.length + this.logBuffer.length;
     if (total >= this.maxBatchSize) void this.flush();
   }
 
@@ -178,17 +166,14 @@ export class TraceForwarder implements TraceSink {
 
     const body = JSON.stringify({ traces, spans, logs });
     try {
-      const response = await this.fetchImpl(
-        `${this.serverUrl}/api/ingest/spans`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.token}`,
-          },
-          body,
+      const response = await this.fetchImpl(`${this.serverUrl}/api/ingest/spans`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.token}`,
         },
-      );
+        body,
+      });
       if (!response.ok) {
         const text = await response.text().catch(() => "");
         Logger.warn("trace-forwarder: server rejected batch", undefined, {

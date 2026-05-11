@@ -41,22 +41,18 @@ async function getExtractor(): Promise<FeatureExtractionPipeline> {
     tfEnv.useBrowserCache = false;
     tfEnv.allowLocalModels = false;
   }
-  extractorPromise = pipeline(
-    "feature-extraction",
-    MODEL_ID,
-    { quantized: process.env.MNEME_EMBED_FULL_PREC !== "1" } as never,
-  ) as unknown as Promise<FeatureExtractionPipeline>;
+  extractorPromise = pipeline("feature-extraction", MODEL_ID, {
+    quantized: process.env.MNEME_EMBED_FULL_PREC !== "1",
+  } as never) as unknown as Promise<FeatureExtractionPipeline>;
   void extractorPromise.then(() => {
-    process.stderr.write(
-      `embed-worker: pipeline ready (${Date.now() - t0}ms)\n`,
-    );
+    process.stderr.write(`embed-worker: pipeline ready (${Date.now() - t0}ms)\n`);
   });
   return extractorPromise;
 }
 
-async function handleRequest(
-  req: { texts?: unknown },
-): Promise<{ vectors: number[][] } | { error: string }> {
+async function handleRequest(req: {
+  texts?: unknown;
+}): Promise<{ vectors: number[][] } | { error: string }> {
   if (!req || !Array.isArray(req.texts)) return { error: "texts[] required" };
   const texts = req.texts.filter((t): t is string => typeof t === "string");
   if (texts.length === 0) return { vectors: [] };

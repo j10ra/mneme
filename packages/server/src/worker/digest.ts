@@ -156,9 +156,7 @@ type CrossClusterCandidateRow = {
   created_at: Date;
 };
 
-async function findCrossClusterSupersedeCandidates(): Promise<
-  CrossClusterCandidateRow[]
-> {
+async function findCrossClusterSupersedeCandidates(): Promise<CrossClusterCandidateRow[]> {
   // Pull memories that have at least one cosine-near neighbour in a
   // DIFFERENT cluster. Returns the union of both sides — the LLM scans
   // the batch for actual supersede pairs (existing prompt expects a
@@ -207,145 +205,138 @@ function chunk<T>(arr: T[], n: number): T[][] {
   return out;
 }
 
-export const runDigestOnce = mnemeFn(
-  "worker.digest.once",
-  async (): Promise<DigestResult> => {
-    const dr = pickDream();
-    if (!dr.judgeClusterMerge || !dr.findSupersedes) {
-      Logger.info(
-        "digest: skipped (provider lacks judgeClusterMerge or findSupersedes)",
-        { provider: dr.name },
-      );
-      return {
-        merge_pairs_evaluated: 0,
-        merges_applied: 0,
-        supersede_batches: 0,
-        supersedes_applied: 0,
-      };
-    }
-    const judgeClusterMerge = dr.judgeClusterMerge;
-    const findSupersedes = dr.findSupersedes;
-
-    // ─── Operation 1: cluster merge ─────────────────────────────────
-    const mergePairs = await findMergePairs();
-    let mergesApplied = 0;
-    for (const pair of mergePairs) {
-      const a = await loadCluster(pair.a_id);
-      const b = await loadCluster(pair.b_id);
-      if (!a || !b) continue;
-
-      let judgment: Awaited<ReturnType<typeof judgeClusterMerge>>;
-      try {
-        judgment = await judgeClusterMerge(
-          { title: a.title, summary: a.summary },
-          { title: b.title, summary: b.summary },
-        );
-      } catch (e) {
-        Logger.warn("digest: merge judgment failed", e, {
-          a_id: a.id,
-          b_id: b.id,
-        });
-        continue;
-      }
-
-      if (!judgment.same_topic) {
-        Logger.debug("digest: keep_separate", {
-          a_id: a.id,
-          b_id: b.id,
-          reason: judgment.reason,
-        });
-        continue;
-      }
-
-      // Preserve quality signal. Higher importance wins; tie goes to
-      // the older cluster id (lexically smaller UUID is the older row
-      // here because gen_random_uuid is monotonic-ish under load —
-      // but a strict tiebreak by created_at would need an extra
-      // SELECT, and importance ties at the same imp value are rare
-      // enough that lexical id is acceptable noise).
-      const winner = a.importance >= b.importance ? a : b;
-      const loser = winner === a ? b : a;
-      try {
-        await applyMerge(winner, loser);
-        mergesApplied++;
-        Logger.info("digest: clusters merged", {
-          winner: winner.id,
-          loser: loser.id,
-          winner_imp: winner.importance,
-          loser_imp: loser.importance,
-          reason: judgment.reason,
-        });
-      } catch (e) {
-        Logger.warn("digest: merge apply failed", e, {
-          winner: winner.id,
-          loser: loser.id,
-        });
-      }
-    }
-
-    // ─── Operation 2: cross-cluster supersede ──────────────────────
-    const candidates = await findCrossClusterSupersedeCandidates();
-    let supersedesApplied = 0;
-    let batchCount = 0;
-    for (const batch of chunk(candidates, SUPERSEDE_LLM_BATCH_MAX_MEMBERS)) {
-      batchCount++;
-      const supersedeBatch: SupersedeCandidate[] = batch.map((row) => ({
-        id: row.id,
-        kind: row.kind,
-        content: row.content,
-        created_at: row.created_at.toISOString(),
-      }));
-      const idSet = new Set(supersedeBatch.map((c) => c.id));
-
-      let pairs: SupersedePair[];
-      try {
-        pairs = await findSupersedes(supersedeBatch);
-      } catch (e) {
-        Logger.warn("digest: supersede call failed", e, {
-          batch: batchCount,
-        });
-        continue;
-      }
-
-      for (const pair of pairs) {
-        // Validate: both ids in the batch we sent (no hallucinated ids).
-        if (!idSet.has(pair.old_id) || !idSet.has(pair.new_id)) {
-          Logger.warn("digest: supersede pair invalid (id not in batch)", {
-            pair,
-          });
-          continue;
-        }
-        // Validate: chronology. Same check the daemon dream worker does.
-        const oldRow = supersedeBatch.find((c) => c.id === pair.old_id)!;
-        const newRow = supersedeBatch.find((c) => c.id === pair.new_id)!;
-        if (
-          new Date(oldRow.created_at).getTime() >=
-          new Date(newRow.created_at).getTime()
-        ) {
-          Logger.warn("digest: supersede pair invalid (chronology)", {
-            pair,
-          });
-          continue;
-        }
-        const written = await applySupersede(pair.old_id, pair.new_id);
-        if (written) {
-          supersedesApplied++;
-          Logger.info("digest: cross-cluster supersede written", {
-            old_id: pair.old_id,
-            new_id: pair.new_id,
-            reason: pair.reason,
-          });
-        }
-      }
-    }
-
-    const result: DigestResult = {
-      merge_pairs_evaluated: mergePairs.length,
-      merges_applied: mergesApplied,
-      supersede_batches: batchCount,
-      supersedes_applied: supersedesApplied,
+export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<DigestResult> => {
+  const dr = pickDream();
+  if (!dr.judgeClusterMerge || !dr.findSupersedes) {
+    Logger.info("digest: skipped (provider lacks judgeClusterMerge or findSupersedes)", {
+      provider: dr.name,
+    });
+    return {
+      merge_pairs_evaluated: 0,
+      merges_applied: 0,
+      supersede_batches: 0,
+      supersedes_applied: 0,
     };
-    Logger.info("digest: done", result);
-    return result;
-  },
-);
+  }
+  const judgeClusterMerge = dr.judgeClusterMerge;
+  const findSupersedes = dr.findSupersedes;
+
+  // ─── Operation 1: cluster merge ─────────────────────────────────
+  const mergePairs = await findMergePairs();
+  let mergesApplied = 0;
+  for (const pair of mergePairs) {
+    const a = await loadCluster(pair.a_id);
+    const b = await loadCluster(pair.b_id);
+    if (!a || !b) continue;
+
+    let judgment: Awaited<ReturnType<typeof judgeClusterMerge>>;
+    try {
+      judgment = await judgeClusterMerge(
+        { title: a.title, summary: a.summary },
+        { title: b.title, summary: b.summary },
+      );
+    } catch (e) {
+      Logger.warn("digest: merge judgment failed", e, {
+        a_id: a.id,
+        b_id: b.id,
+      });
+      continue;
+    }
+
+    if (!judgment.same_topic) {
+      Logger.debug("digest: keep_separate", {
+        a_id: a.id,
+        b_id: b.id,
+        reason: judgment.reason,
+      });
+      continue;
+    }
+
+    // Preserve quality signal. Higher importance wins; tie goes to
+    // the older cluster id (lexically smaller UUID is the older row
+    // here because gen_random_uuid is monotonic-ish under load —
+    // but a strict tiebreak by created_at would need an extra
+    // SELECT, and importance ties at the same imp value are rare
+    // enough that lexical id is acceptable noise).
+    const winner = a.importance >= b.importance ? a : b;
+    const loser = winner === a ? b : a;
+    try {
+      await applyMerge(winner, loser);
+      mergesApplied++;
+      Logger.info("digest: clusters merged", {
+        winner: winner.id,
+        loser: loser.id,
+        winner_imp: winner.importance,
+        loser_imp: loser.importance,
+        reason: judgment.reason,
+      });
+    } catch (e) {
+      Logger.warn("digest: merge apply failed", e, {
+        winner: winner.id,
+        loser: loser.id,
+      });
+    }
+  }
+
+  // ─── Operation 2: cross-cluster supersede ──────────────────────
+  const candidates = await findCrossClusterSupersedeCandidates();
+  let supersedesApplied = 0;
+  let batchCount = 0;
+  for (const batch of chunk(candidates, SUPERSEDE_LLM_BATCH_MAX_MEMBERS)) {
+    batchCount++;
+    const supersedeBatch: SupersedeCandidate[] = batch.map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      content: row.content,
+      created_at: row.created_at.toISOString(),
+    }));
+    const idSet = new Set(supersedeBatch.map((c) => c.id));
+
+    let pairs: SupersedePair[];
+    try {
+      pairs = await findSupersedes(supersedeBatch);
+    } catch (e) {
+      Logger.warn("digest: supersede call failed", e, {
+        batch: batchCount,
+      });
+      continue;
+    }
+
+    for (const pair of pairs) {
+      // Validate: both ids in the batch we sent (no hallucinated ids).
+      if (!idSet.has(pair.old_id) || !idSet.has(pair.new_id)) {
+        Logger.warn("digest: supersede pair invalid (id not in batch)", {
+          pair,
+        });
+        continue;
+      }
+      // Validate: chronology. Same check the daemon dream worker does.
+      const oldRow = supersedeBatch.find((c) => c.id === pair.old_id)!;
+      const newRow = supersedeBatch.find((c) => c.id === pair.new_id)!;
+      if (new Date(oldRow.created_at).getTime() >= new Date(newRow.created_at).getTime()) {
+        Logger.warn("digest: supersede pair invalid (chronology)", {
+          pair,
+        });
+        continue;
+      }
+      const written = await applySupersede(pair.old_id, pair.new_id);
+      if (written) {
+        supersedesApplied++;
+        Logger.info("digest: cross-cluster supersede written", {
+          old_id: pair.old_id,
+          new_id: pair.new_id,
+          reason: pair.reason,
+        });
+      }
+    }
+  }
+
+  const result: DigestResult = {
+    merge_pairs_evaluated: mergePairs.length,
+    merges_applied: mergesApplied,
+    supersede_batches: batchCount,
+    supersedes_applied: supersedesApplied,
+  };
+  Logger.info("digest: done", result);
+  return result;
+});

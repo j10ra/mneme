@@ -78,14 +78,9 @@ export function MemoriesFilters({
   /** Active = "this value is being used as a filter". Inactive (the
    *  default for every chip) = "no filter on this dimension". When no
    *  chips are active, no filter is applied → all rows show. */
-  function toggle(
-    field: "repo" | "machine_id" | "kind" | "cluster_status",
-    value: string,
-  ) {
+  function toggle(field: "repo" | "machine_id" | "kind" | "cluster_status", value: string) {
     const cur = filters[field];
-    const next = cur.includes(value)
-      ? cur.filter((v) => v !== value)
-      : cur.concat(value);
+    const next = cur.includes(value) ? cur.filter((v) => v !== value) : cur.concat(value);
     onChange({ ...filters, [field]: next });
   }
 
@@ -100,11 +95,7 @@ export function MemoriesFilters({
     <div className="space-y-2 rounded-md border border-border bg-card/50 px-3 py-2">
       <Row label="time">
         {TIME_CHIPS.map((t) => (
-          <Chip
-            key={t.label}
-            active={activeTime === t.label}
-            onClick={() => setTime(t.days)}
-          >
+          <Chip key={t.label} active={activeTime === t.label} onClick={() => setTime(t.days)}>
             {t.label}
           </Chip>
         ))}
@@ -127,11 +118,7 @@ export function MemoriesFilters({
       {repos.length > 0 && (
         <Row label="repos">
           {repos.map((r) => (
-            <Chip
-              key={r}
-              active={isActive("repo", r)}
-              onClick={() => toggle("repo", r)}
-            >
+            <Chip key={r} active={isActive("repo", r)} onClick={() => toggle("repo", r)}>
               {r}
             </Chip>
           ))}
@@ -141,11 +128,7 @@ export function MemoriesFilters({
       {kinds.length > 0 && (
         <Row label="kind">
           {kinds.map((k) => (
-            <Chip
-              key={k}
-              active={isActive("kind", k)}
-              onClick={() => toggle("kind", k)}
-            >
+            <Chip key={k} active={isActive("kind", k)} onClick={() => toggle("kind", k)}>
               {k}
             </Chip>
           ))}
@@ -167,13 +150,7 @@ export function MemoriesFilters({
   );
 }
 
-function Row({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
       <span className="w-16 shrink-0 text-muted-foreground/70 uppercase tracking-wider">
@@ -208,4 +185,3 @@ function Chip({
     </button>
   );
 }
-

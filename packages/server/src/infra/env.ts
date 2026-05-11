@@ -15,9 +15,7 @@ const Schema = z.object({
 
   // ── Server ────────────────────────────────────────────────────────
   PORT: z.coerce.number().int().positive().default(3100),
-  NODE_ENV: z
-    .enum(["development", "production", "test"])
-    .default("development"),
+  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 
   // ── Auth ──────────────────────────────────────────────────────────
   // ADMIN_PASSWORD is read from process.env.ADMIN_PASSWORD inside
@@ -37,9 +35,7 @@ const Schema = z.object({
 
   // ── OpenRouter (cloud LLM, primary path) ──────────────────────────
   OPENROUTER_API_KEY: z.string().optional(),
-  OPENROUTER_EXTRACT_MODEL: z
-    .string()
-    .default("qwen/qwen-2.5-72b-instruct"),
+  OPENROUTER_EXTRACT_MODEL: z.string().default("qwen/qwen-2.5-72b-instruct"),
   OPENROUTER_DREAM_MODEL: z.string().default("anthropic/claude-sonnet-4"),
   OPENROUTER_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
 
@@ -71,9 +67,7 @@ const Schema = z.object({
 const parsed = (() => {
   const result = Schema.safeParse(process.env);
   if (!result.success) {
-    const lines = result.error.errors.map(
-      (e) => `  ${e.path.join(".")}: ${e.message}`,
-    );
+    const lines = result.error.errors.map((e) => `  ${e.path.join(".")}: ${e.message}`);
     console.error(
       `[env] invalid environment:\n${lines.join("\n")}\n` +
         `Fix the variables above (e.g. in .env or Railway Variables) and restart.`,
@@ -90,18 +84,13 @@ const parsed = (() => {
 const LLM_BEARER_RESOLVED = parsed.LLM_BEARER ?? parsed.AUTH_BEARER ?? "";
 const EMBEDDER_URL_RESOLVED = parsed.EMBEDDER_URL ?? parsed.LLM_URL;
 const EMBEDDER_BEARER_RESOLVED =
-  parsed.EMBEDDER_BEARER ??
-  parsed.AUTH_BEARER ??
-  parsed.LLM_BEARER ??
-  "";
+  parsed.EMBEDDER_BEARER ?? parsed.AUTH_BEARER ?? parsed.LLM_BEARER ?? "";
 
 if (!LLM_BEARER_RESOLVED) {
   throw new Error("env: LLM_BEARER (or AUTH_BEARER) must be set");
 }
 if (!EMBEDDER_BEARER_RESOLVED) {
-  throw new Error(
-    "env: EMBEDDER_BEARER (or AUTH_BEARER, or LLM_BEARER) must be set",
-  );
+  throw new Error("env: EMBEDDER_BEARER (or AUTH_BEARER, or LLM_BEARER) must be set");
 }
 
 export const env = {

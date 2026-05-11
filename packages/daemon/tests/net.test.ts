@@ -53,8 +53,6 @@ describe("isNetworkOfflineError", () => {
   });
 
   test("returns false for unrelated errors with similar shape", () => {
-    expect(
-      isNetworkOfflineError({ code: "SOMETHING_ELSE", message: "ok" }),
-    ).toBe(false);
+    expect(isNetworkOfflineError({ code: "SOMETHING_ELSE", message: "ok" })).toBe(false);
   });
 });

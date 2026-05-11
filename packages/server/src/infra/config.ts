@@ -73,7 +73,7 @@ export const NAP_RELATE_MAX_NEIGHBORS = 5;
 /** Cosine-distance ceiling for cluster membership. Tighter than
  *  NAP_RELATE_DISTANCE — cluster members must be genuinely about the
  *  same thing, not just topically adjacent. */
-export const DREAM_CLUSTER_DISTANCE = 0.10;
+export const DREAM_CLUSTER_DISTANCE = 0.1;
 
 export const DREAM_MIN_CLUSTER_SIZE = 3;
 export const DREAM_MAX_CLUSTER_SIZE = 20;
@@ -138,7 +138,7 @@ export const SUPERSEDE_RECALL_PENALTY = 0.3;
  *  candidate "same topic". Tighter than DREAM_CLUSTER_DISTANCE because
  *  the input is already-distilled cluster summaries — near-duplicates
  *  merit the LLM call; loose adjacency does not. */
-export const DIGEST_MERGE_DISTANCE = 0.10;
+export const DIGEST_MERGE_DISTANCE = 0.1;
 
 /** Max merge candidate pairs per digest cycle. Bounds Sonnet call
  *  count. At ~50 clusters steady state and a tight cosine ceiling,

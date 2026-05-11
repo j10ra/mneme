@@ -27,10 +27,7 @@ function plog(msg: string): void {
   process.stderr.write(`mneme-mcp: ${msg}\n`);
 }
 
-async function substituteEmbedsViaDaemon(
-  cfg: MnemeConfig,
-  sql: string,
-): Promise<string | null> {
+async function substituteEmbedsViaDaemon(cfg: MnemeConfig, sql: string): Promise<string | null> {
   if (!cfg.daemon) {
     plog("substituteEmbeds: no cfg.daemon, forwarding to server");
     return null;
@@ -40,13 +37,9 @@ async function substituteEmbedsViaDaemon(
     return sql; // no embed() in this SQL; nothing to do, but signal "ok, use this sql as-is"
   }
 
-  const rawTexts = Array.from(
-    new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))),
-  );
+  const rawTexts = Array.from(new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))));
   const cleanedTexts = rawTexts.map((t) => scrubData(t) as string);
-  plog(
-    `substituteEmbeds: calling daemon with ${cleanedTexts.length} text(s)`,
-  );
+  plog(`substituteEmbeds: calling daemon with ${cleanedTexts.length} text(s)`);
 
   let vectors: number[][];
   try {
@@ -68,9 +61,7 @@ async function substituteEmbedsViaDaemon(
       return null;
     }
     vectors = body.vectors;
-    plog(
-      `substituteEmbeds: daemon returned ${vectors.length} vector(s), substituting`,
-    );
+    plog(`substituteEmbeds: daemon returned ${vectors.length} vector(s), substituting`);
   } catch (err) {
     plog(
       `substituteEmbeds: daemon unreachable (${err instanceof Error ? err.message : String(err)}), falling back to server`,
@@ -122,17 +113,13 @@ try {
   cfg = loadConfig();
 } catch (e) {
   cfgError = e instanceof Error ? e.message : String(e);
-  process.stderr.write(
-    `mneme-mcp: config load failed (${configPath()}): ${cfgError}\n`,
-  );
+  process.stderr.write(`mneme-mcp: config load failed (${configPath()}): ${cfgError}\n`);
 }
 
 const url = cfg ? serverUrl(cfg, "/mcp") : "";
 const key = cfg?.auth.key ?? "";
 
-process.stderr.write(
-  `mneme-mcp: proxy ready (server=${cfg?.server.url ?? "<unconfigured>"})\n`,
-);
+process.stderr.write(`mneme-mcp: proxy ready (server=${cfg?.server.url ?? "<unconfigured>"})\n`);
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
@@ -251,18 +238,14 @@ for await (const rawLine of rl) {
       } catch {
         // keep raw text
       }
-      process.stdout.write(
-        err(req.id, -32603, `mneme upstream ${resp.status}: ${detail}`) + "\n",
-      );
+      process.stdout.write(err(req.id, -32603, `mneme upstream ${resp.status}: ${detail}`) + "\n");
       continue;
     }
     process.stdout.write(text + "\n");
   } catch (e) {
     if (req.id !== undefined) {
       const msg = e instanceof Error ? e.message : String(e);
-      process.stdout.write(
-        err(req.id, -32603, `mneme upstream error: ${msg}`) + "\n",
-      );
+      process.stdout.write(err(req.id, -32603, `mneme upstream error: ${msg}`) + "\n");
     }
   }
 }

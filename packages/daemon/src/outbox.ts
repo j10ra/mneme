@@ -15,28 +15,12 @@
 // dotfiles to be defensive against crashed-mid-write leftovers.
 
 import { existsSync } from "node:fs";
-import {
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-export type OutboxState =
-  | "captured"
-  | "observations"
-  | "embedded"
-  | "failed";
+export type OutboxState = "captured" | "observations" | "embedded" | "failed";
 
-const STATES: OutboxState[] = [
-  "captured",
-  "observations",
-  "embedded",
-  "failed",
-];
+const STATES: OutboxState[] = ["captured", "observations", "embedded", "failed"];
 
 // Migration map for the pre-rename layout (pending/ → captured/,
 // extracted/ → observations/). Runs once on first ensureDirs(); no-op
@@ -52,12 +36,7 @@ export interface Outbox {
   writeRaw(id: string, data: unknown): Promise<void>;
   list(state: OutboxState): Promise<string[]>;
   read(id: string, state: OutboxState): Promise<unknown>;
-  transition(
-    id: string,
-    from: OutboxState,
-    to: OutboxState,
-    newData: unknown,
-  ): Promise<void>;
+  transition(id: string, from: OutboxState, to: OutboxState, newData: unknown): Promise<void>;
   delete(id: string, state: OutboxState): Promise<void>;
   markFailed(id: string, from: OutboxState, reason: string): Promise<void>;
   /** On daemon startup: move all failed/ entries back to their inferred
@@ -187,9 +166,7 @@ function inferOriginStage(data: unknown): "captured" | "observations" | "embedde
     const memories = (data as { memories?: unknown[] }).memories;
     if (
       Array.isArray(memories) &&
-      memories.some(
-        (m) => m && typeof m === "object" && "embedding" in (m as object),
-      )
+      memories.some((m) => m && typeof m === "object" && "embedding" in (m as object))
     ) {
       return "embedded";
     }

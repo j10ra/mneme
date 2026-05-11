@@ -6,11 +6,5 @@
     "name": "j10ra"
   },
   "repository": "https://github.com/j10ra/mneme",
-  "keywords": [
-    "memory",
-    "context",
-    "mcp",
-    "hooks",
-    "cross-machine"
-  ]
+  "keywords": ["memory", "context", "mcp", "hooks", "cross-machine"]
 }

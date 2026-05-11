@@ -99,9 +99,7 @@ export function StatusPanel() {
       try {
         const [data, schedule] = await Promise.all([
           apiGet<StatusResponse>("/status"),
-          apiGet<DaemonSchedule>("/daemon-schedule").catch(
-            () => null as DaemonSchedule | null,
-          ),
+          apiGet<DaemonSchedule>("/daemon-schedule").catch(() => null as DaemonSchedule | null),
         ]);
         if (cancelled) return;
         setState({ kind: "ok", data, schedule, fetchedAt: Date.now() });
@@ -161,7 +159,8 @@ export function StatusPanel() {
               <Alert variant="warning">
                 <AlertTitle>Stale data</AlertTitle>
                 <AlertDescription>
-                  last updated {fmtAge(Date.now() - state.fetchedAt)} ago — last error: {state.error}
+                  last updated {fmtAge(Date.now() - state.fetchedAt)} ago — last error:{" "}
+                  {state.error}
                 </AlertDescription>
               </Alert>
             )}
@@ -225,12 +224,7 @@ function StatusContent({
             <span>
               <span className="text-muted-foreground">next in:</span>{" "}
               <span className="tabular-nums">
-                {fmtAge(
-                  Math.max(
-                    0,
-                    new Date(schedule.dream.next_run_at).getTime() - Date.now(),
-                  ),
-                )}
+                {fmtAge(Math.max(0, new Date(schedule.dream.next_run_at).getTime() - Date.now()))}
               </span>
             </span>
           )}
@@ -263,9 +257,7 @@ function StatusContent({
             />
             {name}
             {b.open && <span className="opacity-80">· reopens {fmtAge(b.reopensInMs)}</span>}
-            {!b.open && b.failures > 0 && (
-              <span className="opacity-60">· {b.failures} fail</span>
-            )}
+            {!b.open && b.failures > 0 && <span className="opacity-60">· {b.failures} fail</span>}
           </Badge>
         ))}
       </div>
@@ -292,8 +284,7 @@ function WorkerRowItem({ w }: { w: WorkerRow }) {
       <div className="flex items-center gap-3 text-xs text-muted-foreground tabular-nums">
         {w.last_duration_ms !== null && <span>{fmtDuration(w.last_duration_ms)}</span>}
         <span className="whitespace-nowrap">
-          next in{" "}
-          {fmtAge(Math.max(0, new Date(w.next_run_at).getTime() - Date.now()))}
+          next in {fmtAge(Math.max(0, new Date(w.next_run_at).getTime() - Date.now()))}
         </span>
       </div>
     </div>

@@ -6,8 +6,7 @@ console.log = console.error.bind(console);
 var MODEL_ID = "Xenova/bge-small-en-v1.5";
 var extractorPromise = null;
 async function getExtractor() {
-  if (extractorPromise)
-    return extractorPromise;
+  if (extractorPromise) return extractorPromise;
   process.stderr.write(`embed-worker: loading pipeline (${MODEL_ID})
 `);
   const t0 = Date.now();
@@ -16,7 +15,9 @@ async function getExtractor() {
     tfEnv.useBrowserCache = false;
     tfEnv.allowLocalModels = false;
   }
-  extractorPromise = pipeline("feature-extraction", MODEL_ID, { quantized: process.env.MNEME_EMBED_FULL_PREC !== "1" });
+  extractorPromise = pipeline("feature-extraction", MODEL_ID, {
+    quantized: process.env.MNEME_EMBED_FULL_PREC !== "1",
+  });
   extractorPromise.then(() => {
     process.stderr.write(`embed-worker: pipeline ready (${Date.now() - t0}ms)
 `);
@@ -24,11 +25,9 @@ async function getExtractor() {
   return extractorPromise;
 }
 async function handleRequest(req) {
-  if (!req || !Array.isArray(req.texts))
-    return { error: "texts[] required" };
+  if (!req || !Array.isArray(req.texts)) return { error: "texts[] required" };
   const texts = req.texts.filter((t) => typeof t === "string");
-  if (texts.length === 0)
-    return { vectors: [] };
+  if (texts.length === 0) return { vectors: [] };
   try {
     const extractor = await getExtractor();
     const out = await extractor(texts, { pooling: "mean", normalize: true });
@@ -38,21 +37,25 @@ async function handleRequest(req) {
   }
 }
 function writeLine(obj) {
-  process.stdout.write(JSON.stringify(obj) + `
-`);
+  process.stdout.write(
+    JSON.stringify(obj) +
+      `
+`,
+  );
 }
 async function main() {
-  const decoder = new TextDecoder;
+  const decoder = new TextDecoder();
   let buf = "";
   for await (const chunk of process.stdin) {
     buf += decoder.decode(chunk, { stream: true });
     let nl;
-    while ((nl = buf.indexOf(`
-`)) !== -1) {
+    while (
+      (nl = buf.indexOf(`
+`)) !== -1
+    ) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
-      if (!line)
-        continue;
+      if (!line) continue;
       let req;
       try {
         req = JSON.parse(line);
@@ -67,7 +70,7 @@ async function main() {
   process.exit(0);
 }
 main().catch((err) => {
-  process.stderr.write(`embed-worker fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}
+  process.stderr.write(`embed-worker fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}
 `);
   process.exit(1);
 });

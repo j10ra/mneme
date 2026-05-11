@@ -98,9 +98,7 @@ export function MachinesPanel() {
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <CardTitle>Machines</CardTitle>
-          {state.kind === "ok" || state.kind === "stale" ? (
-            <CountBadges data={state.data} />
-          ) : null}
+          {state.kind === "ok" || state.kind === "stale" ? <CountBadges data={state.data} /> : null}
         </div>
         <CardDescription>registered · live = heartbeat &lt; 3m</CardDescription>
       </CardHeader>
@@ -119,7 +117,8 @@ export function MachinesPanel() {
               <Alert variant="warning">
                 <AlertTitle>Stale data</AlertTitle>
                 <AlertDescription>
-                  last updated {fmtAge(Date.now() - state.fetchedAt)} ago — last error: {state.error}
+                  last updated {fmtAge(Date.now() - state.fetchedAt)} ago — last error:{" "}
+                  {state.error}
                 </AlertDescription>
               </Alert>
             )}
@@ -165,13 +164,9 @@ function MachinesContent({ data }: { data: MachinesResponse }) {
   }
   live.sort(
     (a, b) =>
-      (ageMs(a.heartbeat_posted_at) ?? Infinity) -
-      (ageMs(b.heartbeat_posted_at) ?? Infinity),
+      (ageMs(a.heartbeat_posted_at) ?? Infinity) - (ageMs(b.heartbeat_posted_at) ?? Infinity),
   );
-  known.sort(
-    (a, b) =>
-      (ageMs(a.last_used_at) ?? Infinity) - (ageMs(b.last_used_at) ?? Infinity),
-  );
+  known.sort((a, b) => (ageMs(a.last_used_at) ?? Infinity) - (ageMs(b.last_used_at) ?? Infinity));
 
   return (
     <div className="space-y-4">
@@ -223,12 +218,7 @@ function Row({ m, live }: { m: MachineRow; live: boolean }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
       <div className="flex min-w-0 items-center gap-3">
-        <Laptop
-          className={cn(
-            "h-3.5 w-3.5 shrink-0",
-            live ? "text-success" : "text-warning",
-          )}
-        />
+        <Laptop className={cn("h-3.5 w-3.5 shrink-0", live ? "text-success" : "text-warning")} />
         <span className="font-medium truncate">{m.name}</span>
         {m.machine_id && (
           <span className="text-xs text-muted-foreground font-mono shrink-0">
@@ -245,9 +235,7 @@ function Row({ m, live }: { m: MachineRow; live: boolean }) {
           <span className="opacity-60">no heartbeat</span>
         )}
         {pending > 0 && (
-          <Badge variant={pending > 100 ? "warning" : "secondary"}>
-            {pending} pending
-          </Badge>
+          <Badge variant={pending > 100 ? "warning" : "secondary"}>{pending} pending</Badge>
         )}
         {failed > 0 && <Badge variant="destructive">{failed} failed</Badge>}
         <span title="last token use" className="whitespace-nowrap">
@@ -290,10 +278,9 @@ function RevokedSummary({ rows }: { rows: MachineRow[] }) {
       <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-2">
         Revoked
         <span className="font-normal normal-case">
-          · {totalTokens} {totalTokens === 1 ? "token" : "tokens"} across{" "}
-          {groups.size} {groups.size === 1 ? "name" : "names"}
-          {overallMostRecent > 0 &&
-            ` · last ${fmtAge(Date.now() - overallMostRecent)} ago`}
+          · {totalTokens} {totalTokens === 1 ? "token" : "tokens"} across {groups.size}{" "}
+          {groups.size === 1 ? "name" : "names"}
+          {overallMostRecent > 0 && ` · last ${fmtAge(Date.now() - overallMostRecent)} ago`}
         </span>
       </h3>
       <div className="rounded-md border border-border/50 bg-muted/20 divide-y divide-border/30 text-sm">
@@ -311,16 +298,11 @@ function RevokedSummary({ rows }: { rows: MachineRow[] }) {
                 {g.tokenCount} {g.tokenCount === 1 ? "token" : "tokens"}
               </span>
               {g.machineIds.size > 1 && (
-                <Badge
-                  variant="secondary"
-                  title="distinct machine_ids — likely re-install churn"
-                >
+                <Badge variant="secondary" title="distinct machine_ids — likely re-install churn">
                   {g.machineIds.size} machine_ids
                 </Badge>
               )}
-              <span className="whitespace-nowrap">
-                {fmtAge(Date.now() - g.mostRecent)} ago
-              </span>
+              <span className="whitespace-nowrap">{fmtAge(Date.now() - g.mostRecent)} ago</span>
             </div>
           </div>
         ))}

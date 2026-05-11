@@ -70,9 +70,7 @@ export function isBlacklistedPath(cwd: string): boolean {
 /** True if cwd is under a registered project root (exact or path-prefix match). */
 export function isProjectRegistered(cfg: MnemeConfig, cwd: string): boolean {
   const projects = cfg.projects ?? [];
-  return projects.some(
-    (p) => cwd === p.path || cwd.startsWith(`${p.path}/`),
-  );
+  return projects.some((p) => cwd === p.path || cwd.startsWith(`${p.path}/`));
 }
 
 /** Atomic config write: tempfile (mode 0600) + rename. POSIX rename is atomic
@@ -123,18 +121,11 @@ export function machineFingerprint(): string | null {
     if (p === "win32") {
       const result = spawnSync(
         "reg",
-        [
-          "query",
-          "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
-          "/v",
-          "MachineGuid",
-        ],
+        ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"],
         { encoding: "utf8", timeout: 2000 },
       );
       if (result.status !== 0) return null;
-      const match = result.stdout.match(
-        /MachineGuid\s+REG_SZ\s+([0-9A-Fa-f-]{36})/,
-      );
+      const match = result.stdout.match(/MachineGuid\s+REG_SZ\s+([0-9A-Fa-f-]{36})/);
       return match?.[1]?.toLowerCase() ?? null;
     }
     return null;

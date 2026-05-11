@@ -22,14 +22,8 @@ import {
   saveConfig,
   serverUrl,
 } from "./config.ts";
-import {
-  decryptAdminPassword,
-  encryptAdminPassword,
-} from "./admin-secret.ts";
-import {
-  installDaemonService,
-  pickFreePortDeterministic,
-} from "./daemon-install.ts";
+import { decryptAdminPassword, encryptAdminPassword } from "./admin-secret.ts";
+import { installDaemonService, pickFreePortDeterministic } from "./daemon-install.ts";
 import { baseScope } from "./scope.ts";
 
 async function readStdin(): Promise<string> {
@@ -90,15 +84,11 @@ async function postCapture(
   return (await resp.json()) as CaptureResult;
 }
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type MemoryResult = { id: string; created: boolean; pinned: boolean };
 
-async function postMemory(
-  cfg: MnemeConfig,
-  body: Record<string, unknown>,
-): Promise<MemoryResult> {
+async function postMemory(cfg: MnemeConfig, body: Record<string, unknown>): Promise<MemoryResult> {
   const resp = await fetch(serverUrl(cfg, "/api/memory"), {
     method: "POST",
     headers: {
@@ -109,9 +99,7 @@ async function postMemory(
     body: JSON.stringify(body),
   });
   if (!resp.ok) {
-    throw new Error(
-      `POST /api/memory failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
-    );
+    throw new Error(`POST /api/memory failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
   }
   return (await resp.json()) as MemoryResult;
 }
@@ -125,9 +113,7 @@ async function memory(): Promise<void> {
     source: "manual:/memory",
     content: text,
   });
-  console.log(
-    `✓ memory captured (id ${r.id}${r.deduped ? ", deduped" : ""})`,
-  );
+  console.log(`✓ memory captured (id ${r.id}${r.deduped ? ", deduped" : ""})`);
 }
 
 /** Pin: two paths.
@@ -197,17 +183,12 @@ type RegisterResponse = {
  *
  *  Existing config is preserved for `projects[]` only — machine
  *  id/name/token are replaced with what the server returns. */
-async function setup(
-  url: string,
-  adminPassword: string,
-  name?: string,
-): Promise<void> {
+async function setup(url: string, adminPassword: string, name?: string): Promise<void> {
   if (!url) throw new Error("server-url required");
   if (!adminPassword) throw new Error("admin-password required");
 
   const baseUrl = url.replace(/\/$/, "");
-  const machineName =
-    name ?? hostname().toLowerCase().split(".")[0] ?? "unknown";
+  const machineName = name ?? hostname().toLowerCase().split(".")[0] ?? "unknown";
 
   const fingerprint = machineFingerprint();
   const resp = await fetch(`${baseUrl}/api/auth/register`, {
@@ -262,9 +243,7 @@ async function setup(
     adminBlock = { secret: encryptAdminPassword(adminPassword) };
   } catch (e) {
     process.stderr.write(
-      `mneme: skipping admin secret persist (${
-        e instanceof Error ? e.message : e
-      })\n`,
+      `mneme: skipping admin secret persist (${e instanceof Error ? e.message : e})\n`,
     );
   }
 
@@ -303,15 +282,11 @@ async function setup(
   console.log(`  machine: ${reg.machine_name} (${reg.machine_id})`);
   console.log(`  token:   ${reg.token.slice(0, 22)}…`);
   if (!fingerprint) {
-    console.log(
-      "  fingerprint: none (re-installs on this platform create new rows)",
-    );
+    console.log("  fingerprint: none (re-installs on this platform create new rows)");
   }
   console.log("✓ wrote ~/.mneme/config.json (mode 600)");
   if (adminBlock) {
-    console.log(
-      "  admin:   stored encrypted (AES-GCM, machine-fingerprint-derived key)",
-    );
+    console.log("  admin:   stored encrypted (AES-GCM, machine-fingerprint-derived key)");
   }
 
   // Daemon install. Plugin root is the parent of this script's
@@ -323,8 +298,7 @@ async function setup(
   // it as an environment variable for the spawned process — so
   // reading the env was making the whole install path skip silently.
   const pluginRoot =
-    process.env.CLAUDE_PLUGIN_ROOT ??
-    dirname(dirname(fileURLToPath(import.meta.url)));
+    process.env.CLAUDE_PLUGIN_ROOT ?? dirname(dirname(fileURLToPath(import.meta.url)));
   if (pluginRoot) {
     const installResult = await installDaemonService({
       pluginRoot,
@@ -377,10 +351,7 @@ type SlashEntry = {
 };
 
 function pluginRoot(): string {
-  return (
-    process.env.CLAUDE_PLUGIN_ROOT ??
-    dirname(dirname(fileURLToPath(import.meta.url)))
-  );
+  return process.env.CLAUDE_PLUGIN_ROOT ?? dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
 function parseFrontmatter(raw: string): Record<string, string> {
@@ -449,9 +420,7 @@ async function help(): Promise<void> {
     console.log("| command | what it does | usage |");
     console.log("|---|---|---|");
     for (const e of g.rows) {
-      const usage = e.argHint
-        ? `\`/mneme:${e.name} ${e.argHint}\``
-        : `\`/mneme:${e.name}\``;
+      const usage = e.argHint ? `\`/mneme:${e.name} ${e.argHint}\`` : `\`/mneme:${e.name}\``;
       console.log(`| \`/mneme:${e.name}\` | ${e.description} | ${usage} |`);
     }
     console.log("");
@@ -467,9 +436,7 @@ async function help(): Promise<void> {
 async function dashboard(): Promise<void> {
   const cfg = loadConfig();
   if (!cfg.daemon?.port) {
-    throw new Error(
-      "no daemon configured (run /mneme:setup first)",
-    );
+    throw new Error("no daemon configured (run /mneme:setup first)");
   }
   const url = `http://127.0.0.1:${cfg.daemon.port}/dashboard`;
   console.log(url);
@@ -581,7 +548,9 @@ async function status(): Promise<void> {
   if (!r.daemons.length) {
     console.log("(no heartbeats)");
   } else {
-    console.log("| machine | pending | extracted | embedded | failed | last processed | last seen |");
+    console.log(
+      "| machine | pending | extracted | embedded | failed | last processed | last seen |",
+    );
     console.log("|---|---|---|---|---|---|---|");
     for (const d of r.daemons) {
       const label = d.machine_name ?? d.machine_id.slice(0, 8);
@@ -602,7 +571,9 @@ async function status(): Promise<void> {
     : "never";
   console.log(`- last window: ${lastWin}`);
   console.log(`- last cluster count: ${r.dream.last_cluster_count ?? "-"}`);
-  console.log(`- in-flight claims: ${r.dream.in_flight}${r.dream.stuck > 0 ? ` (⚠ ${r.dream.stuck} stuck > 30m)` : ""}`);
+  console.log(
+    `- in-flight claims: ${r.dream.in_flight}${r.dream.stuck > 0 ? ` (⚠ ${r.dream.stuck} stuck > 30m)` : ""}`,
+  );
 
   console.log("");
   console.log("## Breakers");
@@ -733,8 +704,7 @@ function parseSetupArgs(args: string[]): {
   });
   return {
     url: (values["server-url"] as string | undefined) ?? positionals[0] ?? "",
-    adminPassword:
-      (values["admin-password"] as string | undefined) ?? positionals[1] ?? "",
+    adminPassword: (values["admin-password"] as string | undefined) ?? positionals[1] ?? "",
     name: (values.name as string | undefined) ?? positionals[2],
   };
 }
@@ -743,9 +713,7 @@ async function main(): Promise<void> {
   const cmd = process.argv[2];
   switch (cmd) {
     case "setup": {
-      const { url, adminPassword, name } = parseSetupArgs(
-        process.argv.slice(3),
-      );
+      const { url, adminPassword, name } = parseSetupArgs(process.argv.slice(3));
       await setup(url, adminPassword, name);
       return;
     }

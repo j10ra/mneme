@@ -22,10 +22,7 @@ describe.skipIf(!HAS_DB)("surface — SQL smoke (requires DATABASE_URL)", () => 
     // A repo guaranteed to have no memories. The five base queries plus
     // the supersede counter all execute against an empty result set; if
     // any column name is wrong, postgres throws.
-    const result = await buildSurface(
-      ["mneme://test/nonexistent-repo-smoke"],
-      null,
-    );
+    const result = await buildSurface(["mneme://test/nonexistent-repo-smoke"], null);
     expect(result.repos).toEqual(["mneme://test/nonexistent-repo-smoke"]);
     // computeDelta short-circuits without a prior summary, so its inner
     // count queries don't fire on this path. The populated test below

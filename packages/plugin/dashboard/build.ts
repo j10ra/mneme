@@ -58,15 +58,7 @@ if (!jsResult.success) {
 const cssIn = join(SRC, "styles.css");
 const cssOut = join(TMP, "styles.css");
 const cssProc = Bun.spawn(
-  [
-    "bunx",
-    "@tailwindcss/cli",
-    "--input",
-    cssIn,
-    "--output",
-    cssOut,
-    "--minify",
-  ],
+  ["bunx", "@tailwindcss/cli", "--input", cssIn, "--output", cssOut, "--minify"],
   { cwd: HERE, stdout: "inherit", stderr: "inherit" },
 );
 const cssExit = await cssProc.exited;

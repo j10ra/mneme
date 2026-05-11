@@ -106,14 +106,8 @@ export class TraceStore {
     }
     // Drop in-flight pending entries: their trace never finalized, so they'd
     // FK-violate if forced through. Surface the count for visibility.
-    const orphanedSpans = [...this.pendingSpans.values()].reduce(
-      (n, list) => n + list.length,
-      0,
-    );
-    const orphanedLogs = [...this.pendingLogs.values()].reduce(
-      (n, list) => n + list.length,
-      0,
-    );
+    const orphanedSpans = [...this.pendingSpans.values()].reduce((n, list) => n + list.length, 0);
+    const orphanedLogs = [...this.pendingLogs.values()].reduce((n, list) => n + list.length, 0);
     if (orphanedSpans > 0 || orphanedLogs > 0) {
       process.stderr.write(
         `[mneme/core] trace store stop: dropped ${orphanedSpans} pending span(s) and ${orphanedLogs} pending log(s) from in-flight traces\n`,
@@ -238,8 +232,7 @@ export class TraceStore {
   }
 
   private maybeFlushOverflow(): void {
-    const total =
-      this.traceBuffer.length + this.spanBuffer.length + this.logBuffer.length;
+    const total = this.traceBuffer.length + this.spanBuffer.length + this.logBuffer.length;
     if (total >= this.maxBatchSize) {
       void this.flush();
     }
@@ -282,8 +275,7 @@ export class TraceStore {
                 input_size: s.inputSize ?? null,
                 output_size: s.outputSize ?? null,
                 input: s.input === undefined ? null : sql.json(s.input as never),
-                output:
-                  s.output === undefined ? null : sql.json(s.output as never),
+                output: s.output === undefined ? null : sql.json(s.output as never),
               })),
             )}
           `;
@@ -304,9 +296,7 @@ export class TraceStore {
       });
     } catch (err) {
       // Last-resort: write to stderr; drop the batch rather than infinite-retry.
-      process.stderr.write(
-        `[mneme/core] trace flush failed: ${errorMessageOf(err)}\n`,
-      );
+      process.stderr.write(`[mneme/core] trace flush failed: ${errorMessageOf(err)}\n`);
     }
   }
 }

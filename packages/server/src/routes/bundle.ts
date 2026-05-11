@@ -51,9 +51,7 @@ export type BundleBody = {
   memories: MemoryBody[];
 };
 
-export type ValidationResult =
-  | { ok: true; bundle: BundleBody }
-  | { ok: false; error: string };
+export type ValidationResult = { ok: true; bundle: BundleBody } | { ok: false; error: string };
 
 const REQUIRED_CAPTURE_STRINGS = [
   "content",
@@ -112,10 +110,7 @@ export type InsertResult = {
   deduped: boolean[];
 };
 
-export async function insertBundle(
-  bundle: BundleBody,
-  machineId: string,
-): Promise<InsertResult> {
+export async function insertBundle(bundle: BundleBody, machineId: string): Promise<InsertResult> {
   return sql.begin(async (tx) => {
     const captureRows = await tx<{ id: string; created: boolean }[]>`
       INSERT INTO captures (
@@ -177,8 +172,7 @@ export async function insertBundle(
       typeof (meta as { target?: unknown }).target === "string"
     ) {
       const target = (meta as { target: string }).target;
-      const isUuid =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (isUuid.test(target)) {
         const value = (meta as { value?: unknown }).value !== false;
         try {
@@ -198,30 +192,25 @@ export async function insertBundle(
 }
 
 export function mountBundleRoute(app: Hono): void {
-  app.post(
-    "/api/bundle",
-    mnemeRoute("api.bundle"),
-    requireAuth("capture"),
-    async (c) => {
-      const raw = await c.req.json().catch(() => null);
-      const validation = validateBundleBody(raw);
-      if (!validation.ok) {
-        return c.json({ error: validation.error }, 400);
-      }
+  app.post("/api/bundle", mnemeRoute("api.bundle"), requireAuth("capture"), async (c) => {
+    const raw = await c.req.json().catch(() => null);
+    const validation = validateBundleBody(raw);
+    if (!validation.ok) {
+      return c.json({ error: validation.error }, 400);
+    }
 
-      const auth = currentAuth();
-      const machineId = auth?.machineId;
-      if (!machineId) {
-        return c.json({ error: "bundle requires per-machine token" }, 400);
-      }
+    const auth = currentAuth();
+    const machineId = auth?.machineId;
+    if (!machineId) {
+      return c.json({ error: "bundle requires per-machine token" }, 400);
+    }
 
-      const result = await insertBundle(validation.bundle, machineId);
-      Logger.info("bundle inserted", {
-        capture_id: result.capture_id,
-        memory_count: result.memory_ids.length,
-        deduped_count: result.deduped.filter(Boolean).length,
-      });
-      return c.json(result);
-    },
-  );
+    const result = await insertBundle(validation.bundle, machineId);
+    Logger.info("bundle inserted", {
+      capture_id: result.capture_id,
+      memory_count: result.memory_ids.length,
+      deduped_count: result.deduped.filter(Boolean).length,
+    });
+    return c.json(result);
+  });
 }

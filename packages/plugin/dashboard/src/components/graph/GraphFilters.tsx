@@ -38,10 +38,7 @@ export function GraphFilters({
   function setTime(days: number | null) {
     onFilters({
       ...filters,
-      since:
-        days === null
-          ? null
-          : new Date(Date.now() - days * 86_400_000).toISOString(),
+      since: days === null ? null : new Date(Date.now() - days * 86_400_000).toISOString(),
     });
   }
 
@@ -75,11 +72,7 @@ export function GraphFilters({
 
       <div className="flex items-center gap-0.5">
         {TIME_CHIPS.map((t) => (
-          <Chip
-            key={t.label}
-            active={activeTime === t.label}
-            onClick={() => setTime(t.days)}
-          >
+          <Chip key={t.label} active={activeTime === t.label} onClick={() => setTime(t.days)}>
             {t.label}
           </Chip>
         ))}
@@ -88,11 +81,7 @@ export function GraphFilters({
       {knownKinds.length > 0 && (
         <div className="flex flex-wrap items-center gap-0.5">
           {knownKinds.map((k) => (
-            <Chip
-              key={k}
-              active={filters.kind.includes(k)}
-              onClick={() => toggleKind(k)}
-            >
+            <Chip key={k} active={filters.kind.includes(k)} onClick={() => toggleKind(k)}>
               {k}
             </Chip>
           ))}

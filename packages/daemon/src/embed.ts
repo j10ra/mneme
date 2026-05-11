@@ -76,9 +76,7 @@ function workerScriptPath(): string {
   for (const p of candidates) {
     if (existsSync(p)) return p;
   }
-  throw new Error(
-    `embed-worker not found. Checked MNEME_PLUGIN_ROOT and ${candidates.join(", ")}`,
-  );
+  throw new Error(`embed-worker not found. Checked MNEME_PLUGIN_ROOT and ${candidates.join(", ")}`);
 }
 
 function failPending(err: Error): void {
@@ -134,9 +132,7 @@ async function ensureChild(): Promise<ChildHandle> {
 }
 
 async function readStdoutLoop(handle: ChildHandle): Promise<void> {
-  const reader = (
-    handle.proc.stdout as ReadableStream<Uint8Array>
-  ).getReader();
+  const reader = (handle.proc.stdout as ReadableStream<Uint8Array>).getReader();
   const decoder = new TextDecoder();
   let buf = "";
   while (true) {
@@ -200,9 +196,7 @@ export async function embedBatch(texts: string[]): Promise<number[][]> {
   });
 }
 
-export async function disposeIfIdle(
-  idleMs: number = PIPELINE_IDLE_MS,
-): Promise<boolean> {
+export async function disposeIfIdle(idleMs: number = PIPELINE_IDLE_MS): Promise<boolean> {
   if (!child) return false;
   if (inflight || queue.length > 0) return false;
   if (Date.now() - lastUsedAt < idleMs) return false;

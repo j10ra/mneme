@@ -6,12 +6,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,12 +114,9 @@ function sha256Hex(input: string): string {
 // boundary, mirroring the server's intake constraint.
 //
 // Id format matches handleCapture: `<ms-timestamp>-<8-char-sha-prefix>`.
-async function writeToDaemonOutbox(
-  cleaned: Record<string, unknown>,
-): Promise<boolean> {
+async function writeToDaemonOutbox(cleaned: Record<string, unknown>): Promise<boolean> {
   try {
-    const content =
-      typeof cleaned.content === "string" ? cleaned.content : "";
+    const content = typeof cleaned.content === "string" ? cleaned.content : "";
     const hash = sha256Hex(content);
     const id = `${Date.now()}-${hash.slice(0, 8)}`;
     const dir = join(homedir(), ".mneme", "outbox", "capture", "captured");
@@ -171,10 +163,7 @@ function buildLocalRedactor(cfg: MnemeConfig): (s: string) => string {
   };
 }
 
-function redactInPlace(
-  obj: Record<string, unknown>,
-  redact: (s: string) => string,
-): void {
+function redactInPlace(obj: Record<string, unknown>, redact: (s: string) => string): void {
   for (const [k, v] of Object.entries(obj)) {
     if (typeof v === "string") {
       obj[k] = redact(v);
@@ -192,10 +181,7 @@ function redactInPlace(
   }
 }
 
-async function postCapture(
-  cfg: MnemeConfig,
-  body: Record<string, unknown>,
-): Promise<boolean> {
+async function postCapture(cfg: MnemeConfig, body: Record<string, unknown>): Promise<boolean> {
   // Scrub here so every event funnels through one redaction point.
   const cleaned = scrubData(body) as Record<string, unknown>;
   // Second pass: machine-specific literal secrets (admin password,
@@ -360,9 +346,7 @@ async function main(): Promise<void> {
     if (sessionCwd) {
       try {
         if (registerProject(sessionCwd)) {
-          process.stderr.write(
-            `mneme-hook[SessionStart]: registered new project ${sessionCwd}\n`,
-          );
+          process.stderr.write(`mneme-hook[SessionStart]: registered new project ${sessionCwd}\n`);
         }
       } catch (e) {
         process.stderr.write(
@@ -376,8 +360,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const sessionId =
-    typeof payload.session_id === "string" ? payload.session_id : null;
+  const sessionId = typeof payload.session_id === "string" ? payload.session_id : null;
 
   const baseScope = {
     source: "claude_hook",
@@ -450,9 +433,7 @@ async function main(): Promise<void> {
       //    are otherwise captured). Server-side content_sha256 dedup handles
       //    re-runs when Stop/PreCompact fires multiple times in one session.
       const transcriptPath =
-        typeof payload.transcript_path === "string"
-          ? payload.transcript_path
-          : null;
+        typeof payload.transcript_path === "string" ? payload.transcript_path : null;
       if (transcriptPath) {
         try {
           const { readFileSync } = await import("node:fs");
@@ -469,8 +450,7 @@ async function main(): Promise<void> {
             const text = assistantTextFromEntry(entry);
             // Filter very short replies ("ok", "got it") — not memorable.
             if (!text || text.length < 200) continue;
-            const messageUuid =
-              typeof entry.uuid === "string" ? entry.uuid : undefined;
+            const messageUuid = typeof entry.uuid === "string" ? entry.uuid : undefined;
             const turnBody = {
               ...baseScope,
               source: "claude_assistant",
@@ -487,9 +467,7 @@ async function main(): Promise<void> {
           }
         } catch (e) {
           process.stderr.write(
-            `mneme-hook[${event}]: transcript read failed: ${
-              e instanceof Error ? e.message : e
-            }\n`,
+            `mneme-hook[${event}]: transcript read failed: ${e instanceof Error ? e.message : e}\n`,
           );
         }
       }
@@ -563,8 +541,7 @@ async function main(): Promise<void> {
       // tag with the workspace basename (`dir:Pinnacle`) instead of
       // the actual sub-repo, losing provenance.
       const ti = toolInput as Record<string, unknown> | undefined;
-      const filePath =
-        typeof ti?.file_path === "string" ? ti.file_path : null;
+      const filePath = typeof ti?.file_path === "string" ? ti.file_path : null;
       const fileRepo = filePath ? repoForFile(filePath) : null;
       const scope = fileRepo ? { ...baseScope, repo: fileRepo } : baseScope;
 
@@ -589,8 +566,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(
-    `mneme-hook[${event}]: ${err instanceof Error ? err.message : err}\n`,
-  );
+  process.stderr.write(`mneme-hook[${event}]: ${err instanceof Error ? err.message : err}\n`);
   process.exit(0);
 });

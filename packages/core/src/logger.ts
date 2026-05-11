@@ -14,22 +14,14 @@ const LEVEL_RANK: Record<Level, number> = {
 let jsonMode = false;
 let minLevel: Level = "debug";
 
-export function configureLogger(opts: {
-  jsonMode?: boolean;
-  minLevel?: Level;
-}): void {
+export function configureLogger(opts: { jsonMode?: boolean; minLevel?: Level }): void {
   if (opts.jsonMode !== undefined) jsonMode = opts.jsonMode;
   if (opts.minLevel !== undefined) minLevel = opts.minLevel;
 }
 
 type Meta = Record<string, unknown>;
 
-function emit(
-  level: Level,
-  message: string,
-  error?: unknown,
-  meta?: Meta,
-): void {
+function emit(level: Level, message: string, error?: unknown, meta?: Meta): void {
   if (LEVEL_RANK[level] < LEVEL_RANK[minLevel]) return;
 
   const ctx = storage.getStore();

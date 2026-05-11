@@ -19,10 +19,7 @@ import { GraphDetailDrawer } from "./graph/GraphDetailDrawer.tsx";
 import { GraphFilters } from "./graph/GraphFilters.tsx";
 import { GraphFooter } from "./graph/GraphFooter.tsx";
 import { GraphLegend } from "./graph/GraphLegend.tsx";
-import type {
-  GraphFilters as Filters,
-  GraphResponse,
-} from "./graph/types.ts";
+import type { GraphFilters as Filters, GraphResponse } from "./graph/types.ts";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert.tsx";
 import { Skeleton } from "./ui/skeleton.tsx";
 
@@ -119,8 +116,7 @@ export function GraphPanel() {
       if (filters.since) params.set("since", filters.since);
       if (filters.until) params.set("until", filters.until);
       if (filters.repo.length) params.set("repo", filters.repo.join(","));
-      if (filters.machine_id.length)
-        params.set("machine_id", filters.machine_id.join(","));
+      if (filters.machine_id.length) params.set("machine_id", filters.machine_id.join(","));
       if (filters.kind.length) params.set("kind", filters.kind.join(","));
       if (focalId) {
         params.set("focal", focalId);
@@ -131,10 +127,9 @@ export function GraphPanel() {
         params.set("top_n", "300");
       }
 
-      const data = await apiGet<GraphResponse>(
-        `/graph?${params.toString()}`,
-        { signal: ac.signal },
-      );
+      const data = await apiGet<GraphResponse>(`/graph?${params.toString()}`, {
+        signal: ac.signal,
+      });
       setKnownKinds((prev) => {
         const set = new Set<string>(prev);
         for (const n of data.nodes) {
@@ -265,9 +260,7 @@ export function GraphPanel() {
           <div className="flex h-full items-center justify-center p-6">
             <div className="flex flex-col items-center gap-3">
               <Skeleton className="h-32 w-32 rounded-full" />
-              <span className="text-xs text-muted-foreground">
-                Fetching graph…
-              </span>
+              <span className="text-xs text-muted-foreground">Fetching graph…</span>
             </div>
           </div>
         )}
@@ -284,10 +277,7 @@ export function GraphPanel() {
         {data && (
           <>
             {state.kind === "stale" && (
-              <Alert
-                variant="warning"
-                className="absolute left-3 top-3 z-10 max-w-md"
-              >
+              <Alert variant="warning" className="absolute left-3 top-3 z-10 max-w-md">
                 <AlertTitle>Stale data</AlertTitle>
                 <AlertDescription>{state.error}</AlertDescription>
               </Alert>
@@ -313,9 +303,7 @@ export function GraphPanel() {
             <GraphDetailDrawer
               node={selectedNode}
               onClose={() => setSelectedId(null)}
-              onRefocus={
-                selectedNode ? () => handleNodeRefocus(selectedNode.id) : undefined
-              }
+              onRefocus={selectedNode ? () => handleNodeRefocus(selectedNode.id) : undefined}
             />
             {focalId && (
               <button

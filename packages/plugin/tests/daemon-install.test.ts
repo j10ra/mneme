@@ -85,8 +85,7 @@ describe("buildSystemdUnit", () => {
   });
 
   test("injects Environment=CLAUDE_EXECUTABLE_PATH=… when set", () => {
-    const claudePath =
-      "/home/jetz/.nvm/versions/node/v24.11.1/bin/claude";
+    const claudePath = "/home/jetz/.nvm/versions/node/v24.11.1/bin/claude";
     const unit = buildSystemdUnit({ ...cfg, claudePath });
     expect(unit).toContain(`Environment=CLAUDE_EXECUTABLE_PATH=${claudePath}`);
   });
@@ -117,9 +116,7 @@ describe("serviceConfigPath", () => {
     expect(serviceConfigPath("darwin")).toMatch(/Library\/LaunchAgents/);
   });
   test("linux lands under ~/.config/systemd/user", () => {
-    expect(serviceConfigPath("linux")).toMatch(
-      /\.config\/systemd\/user\/mneme-daemon\.service$/,
-    );
+    expect(serviceConfigPath("linux")).toMatch(/\.config\/systemd\/user\/mneme-daemon\.service$/);
   });
   test("win32 lands under AppData/Roaming/Mneme/daemon", () => {
     expect(serviceConfigPath("win32")).toMatch(/AppData\/Roaming\/Mneme/);
@@ -156,26 +153,17 @@ describe("isDaemonConfigStale", () => {
   function fakeFs(content: string | null) {
     return {
       existsSync: (_p: string) => content !== null,
-      readFileSync: (_p: string, _enc: "utf8") =>
-        content !== null ? content : "",
+      readFileSync: (_p: string, _enc: "utf8") => (content !== null ? content : ""),
     };
   }
 
-  const PLUGIN_ROOT_NEW =
-    "/Users/jetz/.claude/plugins/cache/j10ra-mneme/mneme/1.0.65";
-  const PLUGIN_ROOT_OLD =
-    "/Users/jetz/.claude/plugins/cache/j10ra-mneme/mneme/1.0.62";
+  const PLUGIN_ROOT_NEW = "/Users/jetz/.claude/plugins/cache/j10ra-mneme/mneme/1.0.65";
+  const PLUGIN_ROOT_OLD = "/Users/jetz/.claude/plugins/cache/j10ra-mneme/mneme/1.0.62";
 
   test("missing service config returns false (not stale, not installed)", () => {
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(null), "darwin"),
-    ).toBe(false);
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(null), "linux"),
-    ).toBe(false);
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(null), "win32"),
-    ).toBe(false);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(null), "darwin")).toBe(false);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(null), "linux")).toBe(false);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(null), "win32")).toBe(false);
   });
 
   test("darwin: detects stale plist, ignores fresh plist", () => {
@@ -189,12 +177,8 @@ describe("isDaemonConfigStale", () => {
       daemonPort: 53121,
       bunPath: "/Users/jetz/.bun/bin/bun",
     });
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(stalePlist), "darwin"),
-    ).toBe(true);
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshPlist), "darwin"),
-    ).toBe(false);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(stalePlist), "darwin")).toBe(true);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshPlist), "darwin")).toBe(false);
   });
 
   test("linux: detects stale systemd unit, ignores fresh unit", () => {
@@ -208,12 +192,8 @@ describe("isDaemonConfigStale", () => {
       daemonPort: 53121,
       bunPath: "/home/jetz/.bun/bin/bun",
     });
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(staleUnit), "linux"),
-    ).toBe(true);
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshUnit), "linux"),
-    ).toBe(false);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(staleUnit), "linux")).toBe(true);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshUnit), "linux")).toBe(false);
   });
 
   test("linux: matches even when bunPath has changed (only daemon path matters)", () => {
@@ -223,9 +203,7 @@ describe("isDaemonConfigStale", () => {
       daemonPort: 53121,
       bunPath: "/home/jetz/.bun/bin/bun-old-version",
     });
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(unit), "linux"),
-    ).toBe(false);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(unit), "linux")).toBe(false);
   });
 
   test("win32: detects stale Task XML, ignores fresh", () => {
@@ -239,12 +217,8 @@ describe("isDaemonConfigStale", () => {
       daemonPort: 53121,
       bunPath: "C:\\Users\\jetz\\.bun\\bin\\bun.exe",
     });
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(staleXml), "win32"),
-    ).toBe(true);
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshXml), "win32"),
-    ).toBe(false);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(staleXml), "win32")).toBe(true);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshXml), "win32")).toBe(false);
   });
 
   test("darwin: substring of pluginRoot inside another tag doesn't false-match", () => {
@@ -261,20 +235,14 @@ describe("isDaemonConfigStale", () => {
       "</plist>",
       `  <!-- ${PLUGIN_ROOT_NEW}/daemon.js earlier ran here -->\n</plist>`,
     );
-    expect(
-      isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(polluted), "darwin"),
-    ).toBe(true);
+    expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(polluted), "darwin")).toBe(true);
   });
 });
 
 describe("depsSignature", () => {
   test("ignores version field changes", () => {
-    const a = depsSignature(
-      '{"name":"x","version":"1.0.64","dependencies":{"hono":"4"}}',
-    );
-    const b = depsSignature(
-      '{"name":"x","version":"1.0.65","dependencies":{"hono":"4"}}',
-    );
+    const a = depsSignature('{"name":"x","version":"1.0.64","dependencies":{"hono":"4"}}');
+    const b = depsSignature('{"name":"x","version":"1.0.65","dependencies":{"hono":"4"}}');
     expect(a).toBe(b);
   });
 
@@ -294,9 +262,7 @@ describe("depsSignature", () => {
 
   test("differs when trustedDependencies changes", () => {
     const a = depsSignature('{"trustedDependencies":["sharp"]}');
-    const b = depsSignature(
-      '{"trustedDependencies":["sharp","onnxruntime-node"]}',
-    );
+    const b = depsSignature('{"trustedDependencies":["sharp","onnxruntime-node"]}');
     expect(a).not.toBe(b);
   });
 
@@ -322,11 +288,7 @@ describe("findReusableNodeModules", () => {
     rmSync(cacheRoot, { recursive: true, force: true });
   });
 
-  function makeVersionDir(
-    version: string,
-    pkg: string,
-    withNodeModules: boolean,
-  ): string {
+  function makeVersionDir(version: string, pkg: string, withNodeModules: boolean): string {
     const dir = join(cacheRoot, version);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "package.json"), pkg);
@@ -343,16 +305,8 @@ describe("findReusableNodeModules", () => {
   });
 
   test("returns null when sibling deps signature differs", async () => {
-    makeVersionDir(
-      "1.0.64",
-      '{"name":"mneme","dependencies":{"hono":"4.12.18"}}',
-      true,
-    );
-    const me = makeVersionDir(
-      "1.0.65",
-      '{"name":"mneme","dependencies":{"hono":"5.0.0"}}',
-      false,
-    );
+    makeVersionDir("1.0.64", '{"name":"mneme","dependencies":{"hono":"4.12.18"}}', true);
+    const me = makeVersionDir("1.0.65", '{"name":"mneme","dependencies":{"hono":"5.0.0"}}', false);
     expect(await findReusableNodeModules(me)).toBe(null);
   });
 
@@ -369,9 +323,7 @@ describe("findReusableNodeModules", () => {
       '{"name":"mneme","version":"1.0.65","dependencies":{"hono":"4.12.18"}}',
       false,
     );
-    expect(await findReusableNodeModules(me)).toBe(
-      join(sib, "node_modules"),
-    );
+    expect(await findReusableNodeModules(me)).toBe(join(sib, "node_modules"));
   });
 
   test("returns null when sibling has matching pkg but no node_modules", async () => {
@@ -385,9 +337,7 @@ describe("findReusableNodeModules", () => {
     const pkg = '{"name":"mneme","deps":"same"}';
     const sib = makeVersionDir("1.0.64", pkg, true);
     const me = makeVersionDir("1.0.65", pkg, false);
-    expect(await findReusableNodeModules(me)).toBe(
-      join(sib, "node_modules"),
-    );
+    expect(await findReusableNodeModules(me)).toBe(join(sib, "node_modules"));
   });
 
   test("ignores own version dir (would be a self-reference)", async () => {

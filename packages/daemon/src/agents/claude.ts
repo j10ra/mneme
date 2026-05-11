@@ -73,9 +73,7 @@ export function buildClusterPrompt(memories: Memory[]): string {
   return `Distill the following cluster of related memories.\n\n${lines.join("\n")}\n\nReturn JSON only.`;
 }
 
-export function buildSupersedePrompt(
-  candidates: SupersedeCandidate[],
-): string {
+export function buildSupersedePrompt(candidates: SupersedeCandidate[]): string {
   const lines = candidates.map(
     (m) => `id=${m.id} kind=${m.kind} created_at=${m.created_at}: ${m.content}`,
   );
@@ -184,10 +182,7 @@ export function parseExtractResponse(text: string): ExtractedMemory[] {
     if (typeof r.content !== "string" || !r.content.trim()) continue;
     if (typeof r.kind !== "string" || !VALID_KINDS.has(r.kind)) continue;
 
-    const importance =
-      typeof r.importance === "number"
-        ? clamp(r.importance, 0.1, 1.0)
-        : 0.5;
+    const importance = typeof r.importance === "number" ? clamp(r.importance, 0.1, 1.0) : 0.5;
     const topics = Array.isArray(r.topics)
       ? r.topics.filter((t): t is string => typeof t === "string")
       : [];
@@ -236,11 +231,7 @@ export const DREAM_MODEL = "sonnet";
 // Claude Code's default coding-assistant preset — without that override
 // our JSON-output instructions sit under "you are a coding assistant"
 // and the model responds in coding-help style instead.
-function callClaude(
-  prompt: string,
-  model: string,
-  systemPrompt: string,
-): Promise<string> {
+function callClaude(prompt: string, model: string, systemPrompt: string): Promise<string> {
   return streamingCallClaude(prompt, model, systemPrompt);
 }
 
@@ -285,9 +276,7 @@ export const claudeProvider: AgentProvider = {
     return { title: parsed.title, summary: parsed.summary };
   },
 
-  async findSupersedes(
-    candidates: SupersedeCandidate[],
-  ): Promise<SupersedePair[]> {
+  async findSupersedes(candidates: SupersedeCandidate[]): Promise<SupersedePair[]> {
     if (candidates.length < 2) return [];
     const prompt = buildSupersedePrompt(candidates);
     const response = await callClaude(prompt, DREAM_MODEL, SUPERSEDE_PROMPT);

@@ -17,9 +17,7 @@
 //                             before tripping again
 //   any success             → resets both failures and openUntil
 
-export type BreakerGate =
-  | { open: true; pauseMs: number }
-  | { open: false };
+export type BreakerGate = { open: true; pauseMs: number } | { open: false };
 
 export type BreakerReport = {
   /** Failure count immediately before this report was applied. Useful for

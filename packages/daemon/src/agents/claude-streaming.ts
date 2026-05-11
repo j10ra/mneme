@@ -55,7 +55,6 @@ const RECYCLE_MS = 30 * 60 * 1000;
 // positives.
 const TURN_TIMEOUT_MS = 90 * 1000;
 
-
 type SDKUserMessage = {
   type: "user";
   message: { role: "user"; content: string };
@@ -139,9 +138,7 @@ class StreamingClaudeSession {
 
     while (true) {
       if (Date.now() - start > TURN_TIMEOUT_MS) {
-        throw new Error(
-          `streaming-claude: turn timed out after ${TURN_TIMEOUT_MS}ms`,
-        );
+        throw new Error(`streaming-claude: turn timed out after ${TURN_TIMEOUT_MS}ms`);
       }
       const result = await session.next();
       if (result.done) {
@@ -154,8 +151,7 @@ class StreamingClaudeSession {
           assistantError = errField;
           continue;
         }
-        const content = (msg.message as { content?: unknown } | undefined)
-          ?.content;
+        const content = (msg.message as { content?: unknown } | undefined)?.content;
         if (typeof content === "string") {
           response += content;
         } else if (Array.isArray(content)) {
@@ -173,16 +169,13 @@ class StreamingClaudeSession {
       } else if (msg.type === "result") {
         if ((msg as { subtype?: string }).subtype !== "success") {
           const detail =
-            (msg as { error?: unknown }).error ??
-            (msg as { subtype?: unknown }).subtype;
+            (msg as { error?: unknown }).error ?? (msg as { subtype?: unknown }).subtype;
           throw new Error(
             `streaming-claude: non-success result — ${typeof detail === "string" ? detail : JSON.stringify(detail).slice(0, 200)}`,
           );
         }
         if (assistantError && !response.trim()) {
-          throw new Error(
-            `streaming-claude: assistant error — ${assistantError}`,
-          );
+          throw new Error(`streaming-claude: assistant error — ${assistantError}`);
         }
         return response;
       }
@@ -220,9 +213,7 @@ class StreamingClaudeSession {
 
   private shouldRecycle(): boolean {
     return (
-      this.querySession !== null &&
-      this.startedAt > 0 &&
-      Date.now() - this.startedAt > RECYCLE_MS
+      this.querySession !== null && this.startedAt > 0 && Date.now() - this.startedAt > RECYCLE_MS
     );
   }
 

@@ -20,7 +20,10 @@ function cleanErrorBody(body: string): string {
   if (!trimmed) return "";
   // HTML — strip tags and collapse whitespace.
   if (trimmed.startsWith("<")) {
-    const stripped = trimmed.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    const stripped = trimmed
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
     return stripped.slice(0, 200);
   }
   return trimmed.replace(/\s+/g, " ").slice(0, 200);
@@ -31,18 +34,15 @@ export const embedBatch = mnemeFn(
   async (texts: string[]): Promise<number[][]> => {
     if (texts.length === 0) return [];
 
-    const resp = await fetch(
-      `${env.EMBEDDER_URL.replace(/\/$/, "")}/embed/embed`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${env.EMBEDDER_BEARER}`,
-        },
-        body: JSON.stringify({ inputs: texts }),
-        signal: AbortSignal.timeout(env.EMBEDDER_TIMEOUT_MS),
+    const resp = await fetch(`${env.EMBEDDER_URL.replace(/\/$/, "")}/embed/embed`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.EMBEDDER_BEARER}`,
       },
-    );
+      body: JSON.stringify({ inputs: texts }),
+      signal: AbortSignal.timeout(env.EMBEDDER_TIMEOUT_MS),
+    });
 
     const upstream = resp.headers.get("x-mneme-upstream");
     Logger.info("embedder.local.batch: response", {
@@ -63,9 +63,7 @@ export const embedBatch = mnemeFn(
       throw new Error("embedder.local: response is not an array");
     }
     if (vecs.length !== texts.length) {
-      throw new Error(
-        `embedder.local: got ${vecs.length} vectors, want ${texts.length}`,
-      );
+      throw new Error(`embedder.local: got ${vecs.length} vectors, want ${texts.length}`);
     }
     const first = vecs[0];
     if (!Array.isArray(first) || first.length !== EMBEDDER_DIM) {
@@ -77,10 +75,7 @@ export const embedBatch = mnemeFn(
   },
 );
 
-export const embedText = mnemeFn(
-  "embedder.local.one",
-  async (text: string): Promise<number[]> => {
-    const r = await embedBatch([text]);
-    return r[0]!;
-  },
-);
+export const embedText = mnemeFn("embedder.local.one", async (text: string): Promise<number[]> => {
+  const r = await embedBatch([text]);
+  return r[0]!;
+});

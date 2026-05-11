@@ -1,10 +1,7 @@
 import { Switch as BaseSwitch } from "@base-ui-components/react/switch";
 import { cn } from "../../lib/cn.ts";
 
-export type SwitchProps = Omit<
-  React.ComponentProps<typeof BaseSwitch.Root>,
-  "render"
->;
+export type SwitchProps = Omit<React.ComponentProps<typeof BaseSwitch.Root>, "render">;
 
 export function Switch({ className, ...props }: SwitchProps) {
   return (

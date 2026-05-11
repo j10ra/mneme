@@ -92,11 +92,7 @@ export function mountDashboardRoutes(app: Hono): void {
   // so the route can't be coerced into reading other files.
   app.get("/dashboard/:filename", async (c) => {
     const filename = c.req.param("filename");
-    if (
-      !filename.endsWith(".js") ||
-      filename.includes("/") ||
-      filename.includes("..")
-    ) {
+    if (!filename.endsWith(".js") || filename.includes("/") || filename.includes("..")) {
       return c.notFound();
     }
     const filePath = join(distDir, filename);
@@ -192,10 +188,7 @@ export function mountDashboardRoutes(app: Hono): void {
     mnemeRoute("daemon.dashboard.memories.capture"),
     async (c) => {
       const id = c.req.param("id");
-      return forwardPath(
-        `/api/_ops/memories/${id}/capture`,
-        "dashboard.memories.capture",
-      )(c);
+      return forwardPath(`/api/_ops/memories/${id}/capture`, "dashboard.memories.capture")(c);
     },
   );
   app.get(
@@ -218,19 +211,15 @@ export function mountDashboardRoutes(app: Hono): void {
   //
   // ?range=<ms>|all — caps backfill to lines newer than (now - ms).
   // When omitted or "all", falls back to the LOG_BACKFILL_MAX_LINES cap.
-  app.get(
-    "/dashboard/api/logs/stream",
-    mnemeRoute("daemon.dashboard.logs.stream"),
-    (c) => {
-      const rangeRaw = c.req.query("range");
-      let rangeMs: number | null = null;
-      if (rangeRaw && rangeRaw !== "all") {
-        const n = Number(rangeRaw);
-        if (Number.isFinite(n) && n > 0) rangeMs = n;
-      }
-      return streamSSE(c, async (stream) => streamLogs(stream, rangeMs));
-    },
-  );
+  app.get("/dashboard/api/logs/stream", mnemeRoute("daemon.dashboard.logs.stream"), (c) => {
+    const rangeRaw = c.req.query("range");
+    let rangeMs: number | null = null;
+    if (rangeRaw && rangeRaw !== "all") {
+      const n = Number(rangeRaw);
+      if (Number.isFinite(n) && n > 0) rangeMs = n;
+    }
+    return streamSSE(c, async (stream) => streamLogs(stream, rangeMs));
+  });
 }
 
 // ── proxy helper ────────────────────────────────────────────────────
@@ -247,8 +236,7 @@ function proxyHandler(upstreamPath: string, traceTag: string) {
       });
       const body = await resp.text();
       return c.body(body, resp.status as 200, {
-        "content-type":
-          resp.headers.get("content-type") ?? "application/json",
+        "content-type": resp.headers.get("content-type") ?? "application/json",
       });
     } catch (err) {
       Logger.warn(`${traceTag}: upstream fetch failed`, err);
@@ -271,8 +259,7 @@ function forwardQuery(upstreamPath: string, traceTag: string) {
       });
       const body = await resp.text();
       return c.body(body, resp.status as 200, {
-        "content-type":
-          resp.headers.get("content-type") ?? "application/json",
+        "content-type": resp.headers.get("content-type") ?? "application/json",
       });
     } catch (err) {
       Logger.warn(`${traceTag}: upstream fetch failed`, err);
@@ -294,8 +281,7 @@ function forwardPath(upstreamPath: string, traceTag: string) {
       });
       const body = await resp.text();
       return c.body(body, resp.status as 200, {
-        "content-type":
-          resp.headers.get("content-type") ?? "application/json",
+        "content-type": resp.headers.get("content-type") ?? "application/json",
       });
     } catch (err) {
       Logger.warn(`${traceTag}: upstream fetch failed`, err);
@@ -336,7 +322,10 @@ function inferLevel(line: string): "debug" | "info" | "warn" | "error" {
   return "info";
 }
 
-async function readTail(path: string, maxBytes: number): Promise<{
+async function readTail(
+  path: string,
+  maxBytes: number,
+): Promise<{
   text: string;
   size: number;
 }> {
@@ -360,7 +349,10 @@ async function readTail(path: string, maxBytes: number): Promise<{
   }
 }
 
-async function readNewBytes(path: string, fromByte: number): Promise<{
+async function readNewBytes(
+  path: string,
+  fromByte: number,
+): Promise<{
   text: string;
   size: number;
 }> {
@@ -398,10 +390,7 @@ function lineTsMs(line: string, now: number): number | null {
   return d.getTime();
 }
 
-async function streamLogs(
-  stream: SSEStream,
-  rangeMs: number | null,
-): Promise<void> {
+async function streamLogs(stream: SSEStream, rangeMs: number | null): Promise<void> {
   const path = logPath();
   let cursor = 0;
   let id = 0;
@@ -422,8 +411,7 @@ async function streamLogs(
 
   // ── 1. Backfill ──────────────────────────────────────────────────
   try {
-    const readBytes =
-      rangeMs !== null ? LOG_BACKFILL_BYTES_RANGE : LOG_BACKFILL_BYTES;
+    const readBytes = rangeMs !== null ? LOG_BACKFILL_BYTES_RANGE : LOG_BACKFILL_BYTES;
     const { text, size } = await readTail(path, readBytes);
     cursor = size;
     const allLines = text.split("\n");

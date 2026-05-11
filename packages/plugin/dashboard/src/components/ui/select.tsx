@@ -45,12 +45,7 @@ export function SelectValue({
   className,
   ...props
 }: React.ComponentProps<typeof BaseSelect.Value>) {
-  return (
-    <BaseSelect.Value
-      className={cn("truncate text-left", className)}
-      {...props}
-    />
-  );
+  return <BaseSelect.Value className={cn("truncate text-left", className)} {...props} />;
 }
 
 export function SelectContent({

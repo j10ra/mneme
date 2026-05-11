@@ -32,7 +32,10 @@ function cleanErrorBody(body: string): string {
   const trimmed = body.trim();
   if (!trimmed) return "";
   if (trimmed.startsWith("<")) {
-    const stripped = trimmed.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    const stripped = trimmed
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
     return stripped.slice(0, 200);
   }
   return trimmed.replace(/\s+/g, " ").slice(0, 200);
@@ -76,29 +79,26 @@ export const extractObservations = mnemeFn(
   async (captureText: string): Promise<Observation[]> => {
     if (!captureText.trim()) return [];
 
-    const resp = await fetch(
-      `${env.LLM_URL.replace(/\/$/, "")}/llm/v1/chat/completions`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${env.LLM_BEARER}`,
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify({
-          model: env.LLM_MODEL,
-          temperature: 0.2,
-          max_tokens: extractLimits.maxOutputTokens,
-          stream: true,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: captureText },
-          ],
-        }),
-        signal: AbortSignal.timeout(env.LLM_TIMEOUT_MS),
+    const resp = await fetch(`${env.LLM_URL.replace(/\/$/, "")}/llm/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.LLM_BEARER}`,
+        Accept: "text/event-stream",
       },
-    );
+      body: JSON.stringify({
+        model: env.LLM_MODEL,
+        temperature: 0.2,
+        max_tokens: extractLimits.maxOutputTokens,
+        stream: true,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: captureText },
+        ],
+      }),
+      signal: AbortSignal.timeout(env.LLM_TIMEOUT_MS),
+    });
 
     const upstream = resp.headers.get("x-mneme-upstream");
     Logger.info("llm.local.extract: response", {
@@ -144,32 +144,29 @@ export const distillCluster = mnemeFn(
   async (memberContents: string): Promise<ClusterDistillation> => {
     if (!memberContents.trim()) throw new Error("distillCluster: empty input");
 
-    const resp = await fetch(
-      `${env.LLM_URL.replace(/\/$/, "")}/llm/v1/chat/completions`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${env.LLM_BEARER}`,
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify({
-          model: env.LLM_MODEL,
-          temperature: dreamLimits.temperature,
-          // dream is a 24h batch job, latency doesn't matter and a
-          // paragraph-length summary is much more useful at recall time
-          // than a terse 1-3 sentence version.
-          max_tokens: dreamLimits.maxOutputTokens,
-          stream: true,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: CLUSTER_PROMPT },
-            { role: "user", content: memberContents },
-          ],
-        }),
-        signal: AbortSignal.timeout(env.LLM_TIMEOUT_MS),
+    const resp = await fetch(`${env.LLM_URL.replace(/\/$/, "")}/llm/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.LLM_BEARER}`,
+        Accept: "text/event-stream",
       },
-    );
+      body: JSON.stringify({
+        model: env.LLM_MODEL,
+        temperature: dreamLimits.temperature,
+        // dream is a 24h batch job, latency doesn't matter and a
+        // paragraph-length summary is much more useful at recall time
+        // than a terse 1-3 sentence version.
+        max_tokens: dreamLimits.maxOutputTokens,
+        stream: true,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: CLUSTER_PROMPT },
+          { role: "user", content: memberContents },
+        ],
+      }),
+      signal: AbortSignal.timeout(env.LLM_TIMEOUT_MS),
+    });
 
     const upstream = resp.headers.get("x-mneme-upstream");
     Logger.info("llm.local.distill: response", {

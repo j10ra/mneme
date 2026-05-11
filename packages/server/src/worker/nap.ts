@@ -35,14 +35,12 @@ export type NapResult = {
  *  The legacy ingest_jobs resurrect/retire passes were retired with the
  *  ingest_jobs table itself (migration 0021); the daemon's file-based
  *  outbox owns retry semantics now. */
-export const runNapOnce = mnemeFn(
-  "worker.nap.once",
-  async (): Promise<NapResult> => {
-    const result = await sql.begin(async (tx) => {
-      // 1. Decay all non-archived memories. Pinned rows stop at PIN_FLOOR;
-      //    unpinned stop at FLOOR. Skip rows already at their respective
-      //    floor so we don't waste writes on no-op updates.
-      const decayed = await tx`
+export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult> => {
+  const result = await sql.begin(async (tx) => {
+    // 1. Decay all non-archived memories. Pinned rows stop at PIN_FLOOR;
+    //    unpinned stop at FLOOR. Skip rows already at their respective
+    //    floor so we don't waste writes on no-op updates.
+    const decayed = await tx`
         UPDATE memories
         SET importance = GREATEST(
           CASE WHEN COALESCE((meta->>'pinned')::boolean, false)
@@ -58,15 +56,15 @@ export const runNapOnce = mnemeFn(
           END
       `;
 
-      // 2. Exact-text shadows: in each (content_hash, repo, scope) group,
-      //    keep the highest-importance row; mark the rest as
-      //    meta.shadow_of=<keeper>, importance×0.1. Scope is `public` for
-      //    private=false rows (so identical public content from machines A
-      //    and B in the same repo coalesces) and the machine_id for private
-      //    rows (so private content from machine A never shadows machine B's
-      //    private copy of the same string). Repo is part of the key so the
-      //    same observation made in two unrelated repos isn't collapsed.
-      const shadowed = await tx`
+    // 2. Exact-text shadows: in each (content_hash, repo, scope) group,
+    //    keep the highest-importance row; mark the rest as
+    //    meta.shadow_of=<keeper>, importance×0.1. Scope is `public` for
+    //    private=false rows (so identical public content from machines A
+    //    and B in the same repo coalesces) and the machine_id for private
+    //    rows (so private content from machine A never shadows machine B's
+    //    private copy of the same string). Repo is part of the key so the
+    //    same observation made in two unrelated repos isn't collapsed.
+    const shadowed = await tx`
         WITH groups AS (
           SELECT content_hash,
                  COALESCE(repo, '__null__') AS repo_key,
@@ -90,30 +88,31 @@ export const runNapOnce = mnemeFn(
           AND (m.meta->>'shadow_of') IS NULL
       `;
 
-      // 3. Pick the cycle's seed set: NAP_PER_CYCLE_CAP least-recently-napped
-      //    memories. NULLS FIRST means rows that have never been napped go
-      //    first, so a new corpus drains its backlog before round-robining.
-      //    Bounding here is what keeps the relate + supersede passes under
-      //    Railway's 2-min Postgres statement_timeout — without it, both
-      //    queries fan out into ~7k LATERAL HNSW lookups and time out.
-      //    A partial functional index (migration 0019) makes this O(log n).
-      const seedRows = await tx<{ id: string }[]>`
+    // 3. Pick the cycle's seed set: NAP_PER_CYCLE_CAP least-recently-napped
+    //    memories. NULLS FIRST means rows that have never been napped go
+    //    first, so a new corpus drains its backlog before round-robining.
+    //    Bounding here is what keeps the relate + supersede passes under
+    //    Railway's 2-min Postgres statement_timeout — without it, both
+    //    queries fan out into ~7k LATERAL HNSW lookups and time out.
+    //    A partial functional index (migration 0019) makes this O(log n).
+    const seedRows = await tx<{ id: string }[]>`
         SELECT id FROM memories
         WHERE archived_at IS NULL AND embedding IS NOT NULL
         ORDER BY meta->>'last_napped_at' NULLS FIRST,
                  created_at ASC
         LIMIT ${NAP_PER_CYCLE_CAP}
       `;
-      const seedIds = seedRows.map((r) => r.id);
+    const seedIds = seedRows.map((r) => r.id);
 
-      // 4. Semantic relations on the seed set. Inner LATERAL still scans
-      //    the full memories table for HNSW lookups, so each seed gets
-      //    its real nearest neighbours regardless of which seeds were
-      //    picked this cycle. Mutual UNION means an off-page memory N
-      //    that's near a seed S still gets `S` appended to its own
-      //    related_to — pagination doesn't drop edges, only delays
-      //    re-checks of already-paginated rows.
-      const related = seedIds.length === 0
+    // 4. Semantic relations on the seed set. Inner LATERAL still scans
+    //    the full memories table for HNSW lookups, so each seed gets
+    //    its real nearest neighbours regardless of which seeds were
+    //    picked this cycle. Mutual UNION means an off-page memory N
+    //    that's near a seed S still gets `S` appended to its own
+    //    related_to — pagination doesn't drop edges, only delays
+    //    re-checks of already-paginated rows.
+    const related =
+      seedIds.length === 0
         ? { count: 0 }
         : await tx`
             WITH seeds AS (
@@ -164,11 +163,12 @@ export const runNapOnce = mnemeFn(
               AND m.archived_at IS NULL
           `;
 
-      // 5. Rule-based supersede pass on the seed set as the OLDER position.
-      //    Inner LATERAL again has full visibility, so a seed can be
-      //    superseded by a non-seed newer memory. Outer is bounded to the
-      //    seed page; SUPERSEDE_RULE_PER_CYCLE_CAP stays as the OUTPUT cap.
-      const supersededRows = seedIds.length === 0
+    // 5. Rule-based supersede pass on the seed set as the OLDER position.
+    //    Inner LATERAL again has full visibility, so a seed can be
+    //    superseded by a non-seed newer memory. Outer is bounded to the
+    //    seed page; SUPERSEDE_RULE_PER_CYCLE_CAP stays as the OUTPUT cap.
+    const supersededRows =
+      seedIds.length === 0
         ? []
         : await tx<{ older_id: string; newer_id: string }[]>`
             WITH pairs AS (
@@ -203,13 +203,13 @@ export const runNapOnce = mnemeFn(
             RETURNING p.older_id::text, p.newer_id::text
           `;
 
-      // 6. Stamp last_napped_at on every seed, regardless of whether
-      //    relate or supersede found anything for that row. This is what
-      //    drives the round-robin: seeds that find nothing this cycle
-      //    don't get re-picked next cycle ahead of memories that have
-      //    never been napped at all.
-      if (seedIds.length > 0) {
-        await tx`
+    // 6. Stamp last_napped_at on every seed, regardless of whether
+    //    relate or supersede found anything for that row. This is what
+    //    drives the round-robin: seeds that find nothing this cycle
+    //    don't get re-picked next cycle ahead of memories that have
+    //    never been napped at all.
+    if (seedIds.length > 0) {
+      await tx`
           UPDATE memories
           SET meta = jsonb_set(
             COALESCE(meta, '{}'::jsonb),
@@ -218,16 +218,15 @@ export const runNapOnce = mnemeFn(
           )
           WHERE id = ANY(${seedIds})
         `;
-      }
+    }
 
-      return {
-        decayed: decayed.count,
-        shadowed: shadowed.count,
-        related: related.count,
-        superseded: supersededRows.length,
-      };
-    });
-    Logger.info("nap: done", result);
-    return result;
-  },
-);
+    return {
+      decayed: decayed.count,
+      shadowed: shadowed.count,
+      related: related.count,
+      superseded: supersededRows.length,
+    };
+  });
+  Logger.info("nap: done", result);
+  return result;
+});

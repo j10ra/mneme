@@ -170,9 +170,7 @@ export function buildSystemdUnit(cfg: DaemonInstallConfig): string {
   // doesn't include ~/.nvm/versions/node/*/bin, where npm-installed
   // claude often lives — so without this env, findClaudeExecutable in
   // the daemon throws on every extract attempt.
-  const claudeLine = cfg.claudePath
-    ? `\nEnvironment=CLAUDE_EXECUTABLE_PATH=${cfg.claudePath}`
-    : "";
+  const claudeLine = cfg.claudePath ? `\nEnvironment=CLAUDE_EXECUTABLE_PATH=${cfg.claudePath}` : "";
   const oauthLine = cfg.claudeOauthToken
     ? `\nEnvironment=CLAUDE_CODE_OAUTH_TOKEN=${cfg.claudeOauthToken}`
     : "";
@@ -322,19 +320,13 @@ export function serviceConfigPath(platform: Platform): string {
     case "darwin":
       return join(homedir(), "Library/LaunchAgents/dev.mneme.daemon.plist");
     case "linux":
-      return join(
-        homedir(),
-        ".config/systemd/user/mneme-daemon.service",
-      );
+      return join(homedir(), ".config/systemd/user/mneme-daemon.service");
     case "win32":
       return join(homedir(), "AppData/Roaming/Mneme/daemon/task.xml");
   }
 }
 
-export function buildServiceConfig(
-  platform: Platform,
-  cfg: DaemonInstallConfig,
-): string {
+export function buildServiceConfig(platform: Platform, cfg: DaemonInstallConfig): string {
   switch (platform) {
     case "darwin":
       return buildLaunchdPlist(cfg);
@@ -422,12 +414,8 @@ export function depsSignature(pkgJson: string): string {
  *
  *  Returns the absolute node_modules path of a matching sibling, or
  *  null when no reuse opportunity exists. */
-export async function findReusableNodeModules(
-  pluginRoot: string,
-): Promise<string | null> {
-  const { existsSync, readFileSync, readdirSync, statSync } = await import(
-    "node:fs"
-  );
+export async function findReusableNodeModules(pluginRoot: string): Promise<string | null> {
+  const { existsSync, readFileSync, readdirSync, statSync } = await import("node:fs");
   const { dirname: dn, join: jp, basename: bn } = await import("node:path");
 
   const myPkgPath = jp(pluginRoot, "package.json");
@@ -514,35 +502,33 @@ async function ensurePluginDeps(
   // timeout. Five minutes is generous for a real install on a healthy
   // network and short enough that a wedge surfaces early.
   const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
-  const result = await new Promise<{ code: number | null; stderr: string }>(
-    (resolve) => {
-      const proc = spawn(bunPath, ["install", "--production"], {
-        cwd: pluginRoot,
-        stdio: ["ignore", "pipe", "pipe"],
+  const result = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
+    const proc = spawn(bunPath, ["install", "--production"], {
+      cwd: pluginRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr.on("data", (b) => (stderr += b.toString()));
+    const timer = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      resolve({
+        code: -1,
+        stderr: `bun install timed out after ${INSTALL_TIMEOUT_MS / 1000}s (corp proxy / network issue?)`,
       });
-      let stderr = "";
-      proc.stderr.on("data", (b) => (stderr += b.toString()));
-      const timer = setTimeout(() => {
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          // ignore
-        }
-        resolve({
-          code: -1,
-          stderr: `bun install timed out after ${INSTALL_TIMEOUT_MS / 1000}s (corp proxy / network issue?)`,
-        });
-      }, INSTALL_TIMEOUT_MS);
-      proc.on("close", (code) => {
-        clearTimeout(timer);
-        resolve({ code, stderr });
-      });
-      proc.on("error", () => {
-        clearTimeout(timer);
-        resolve({ code: -1, stderr: "spawn failed" });
-      });
-    },
-  );
+    }, INSTALL_TIMEOUT_MS);
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, stderr });
+    });
+    proc.on("error", () => {
+      clearTimeout(timer);
+      resolve({ code: -1, stderr: "spawn failed" });
+    });
+  });
   if (result.code !== 0) {
     return { ok: false, error: `bun install failed: ${result.stderr.slice(0, 400)}` };
   }
@@ -553,9 +539,7 @@ async function ensurePluginDeps(
 // failure logs a clear message and returns ok=false rather than throwing,
 // so /mneme:setup doesn't bail on a service-manager wrinkle and leave
 // the user in a half-configured state.
-export async function installDaemonService(
-  cfg: DaemonInstallConfig,
-): Promise<InstallResult> {
+export async function installDaemonService(cfg: DaemonInstallConfig): Promise<InstallResult> {
   const platform = detectPlatform();
   const servicePath = serviceConfigPath(platform);
   // Auto-resolve the claude binary when the caller didn't pin one. The
@@ -564,8 +548,7 @@ export async function installDaemonService(
   const resolvedCfg: DaemonInstallConfig = {
     ...cfg,
     claudePath: cfg.claudePath ?? findClaudeBinary() ?? undefined,
-    claudeOauthToken:
-      cfg.claudeOauthToken ?? process.env.CLAUDE_CODE_OAUTH_TOKEN ?? undefined,
+    claudeOauthToken: cfg.claudeOauthToken ?? process.env.CLAUDE_CODE_OAUTH_TOKEN ?? undefined,
   };
   const config = buildServiceConfig(platform, resolvedCfg);
 
@@ -648,21 +631,19 @@ export async function installDaemonService(
   const cmds = startCommandsFor(platform);
   const ran: string[] = [];
   for (const cmd of cmds) {
-    const result = await new Promise<{ code: number | null; stderr: string }>(
-      (resolve) => {
-        // shell: true picks /bin/sh on darwin/linux and cmd.exe on
-        // win32, so the same install code path works on every platform
-        // without having to choose a shell ourselves.
-        const proc = spawn(cmd, {
-          stdio: ["ignore", "pipe", "pipe"],
-          shell: true,
-        });
-        let stderr = "";
-        proc.stderr.on("data", (b) => (stderr += b.toString()));
-        proc.on("close", (code) => resolve({ code, stderr }));
-        proc.on("error", () => resolve({ code: -1, stderr: "spawn failed" }));
-      },
-    );
+    const result = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
+      // shell: true picks /bin/sh on darwin/linux and cmd.exe on
+      // win32, so the same install code path works on every platform
+      // without having to choose a shell ourselves.
+      const proc = spawn(cmd, {
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: true,
+      });
+      let stderr = "";
+      proc.stderr.on("data", (b) => (stderr += b.toString()));
+      proc.on("close", (code) => resolve({ code, stderr }));
+      proc.on("error", () => resolve({ code: -1, stderr: "spawn failed" }));
+    });
     ran.push(cmd);
     if (result.code !== 0) {
       return {

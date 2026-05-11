@@ -16,10 +16,7 @@ import { fileURLToPath } from "node:url";
 describe("plugin scrub bundle", () => {
   test("committed bundle matches fresh build of shared/src/scrub.ts", () => {
     const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
-    const committed = readFileSync(
-      join(repoRoot, "packages/plugin/scripts/scrub.ts"),
-      "utf8",
-    );
+    const committed = readFileSync(join(repoRoot, "packages/plugin/scripts/scrub.ts"), "utf8");
 
     const tmp = mkdtempSync(join(tmpdir(), "mneme-bundle-"));
     try {

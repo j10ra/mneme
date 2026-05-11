@@ -15,17 +15,8 @@
 // once the basic distill cycle is healthy.
 
 import { Logger } from "@mneme/core";
-import type {
-  DreamOutput,
-  Memory,
-  SupersedeCandidate,
-  SupersedePair,
-} from "./agents/types.ts";
-import {
-  type DistilledCluster,
-  type DreamOutbox,
-  clusterIdFor,
-} from "./dream-outbox.ts";
+import type { DreamOutput, Memory, SupersedeCandidate, SupersedePair } from "./agents/types.ts";
+import { type DistilledCluster, type DreamOutbox, clusterIdFor } from "./dream-outbox.ts";
 
 const WINDOW_HOURS = 8;
 const WINDOW_SECONDS = WINDOW_HOURS * 3600;
@@ -50,10 +41,7 @@ export function computeCronOffsetMinutes(machineId: string): number {
   return u % WINDOW_MINUTES;
 }
 
-export function buildComponents(
-  nodes: string[],
-  edges: Array<[string, string]>,
-): string[][] {
+export function buildComponents(nodes: string[], edges: Array<[string, string]>): string[][] {
   const parent = new Map<string, string>();
   for (const id of nodes) parent.set(id, id);
 
@@ -131,9 +119,7 @@ export type DreamDeps = {
   embed?: (texts: string[]) => Promise<number[][]>;
   /** Optional supersede pass run after each cluster's distill. Skipped
    *  when omitted (e.g. providers that opt out for safety). */
-  findSupersedes?: (
-    candidates: SupersedeCandidate[],
-  ) => Promise<SupersedePair[]>;
+  findSupersedes?: (candidates: SupersedeCandidate[]) => Promise<SupersedePair[]>;
   /** Per-cluster persistence. When provided, distill + supersede output
    *  is written to outbox/dream/<window>/distilled/<id>.json before any
    *  submit attempt, so a daemon crash doesn't lose Sonnet output.
@@ -177,9 +163,7 @@ async function fetchCandidates(
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(
-      `candidates returned ${response.status}: ${detail.slice(0, 500)}`,
-    );
+    throw new Error(`candidates returned ${response.status}: ${detail.slice(0, 500)}`);
   }
   return (await response.json()) as DreamCandidatesResponse;
 }
@@ -199,9 +183,7 @@ async function submitClusters(
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(
-      `clusters returned ${response.status}: ${detail.slice(0, 500)}`,
-    );
+    throw new Error(`clusters returned ${response.status}: ${detail.slice(0, 500)}`);
   }
   return (await response.json()) as { written: number; supersedes: number };
 }
@@ -222,10 +204,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
 
   const candidates = await fetchCandidates(deps, windowKey);
   const repoCount = Object.keys(candidates.repos).length;
-  const seedCount = Object.values(candidates.repos).reduce(
-    (sum, r) => sum + r.seeds.length,
-    0,
-  );
+  const seedCount = Object.values(candidates.repos).reduce((sum, r) => sum + r.seeds.length, 0);
   Logger.info("dream: candidates fetched", {
     repos: repoCount,
     seeds: seedCount,
@@ -241,10 +220,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     const seedById = new Map<string, DreamSeed>();
     for (const s of repoData.seeds) seedById.set(s.id, s);
 
-    const components = buildComponents(
-      [...seedById.keys()],
-      repoData.edges,
-    );
+    const components = buildComponents([...seedById.keys()], repoData.edges);
     const eligible = components.filter(
       (c) => c.length >= MIN_CLUSTER_SIZE && c.length <= MAX_CLUSTER_SIZE,
     );
@@ -257,10 +233,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     }
 
     for (const memberIds of components) {
-      if (
-        memberIds.length < MIN_CLUSTER_SIZE ||
-        memberIds.length > MAX_CLUSTER_SIZE
-      ) {
+      if (memberIds.length < MIN_CLUSTER_SIZE || memberIds.length > MAX_CLUSTER_SIZE) {
         continue;
       }
       const cluster_id = await clusterIdFor(memberIds);
@@ -269,12 +242,10 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
       // cluster (same member set -> same cluster_id) and crashed before
       // submit, the file is still on disk. Skip re-paying tokens.
       if (deps.outbox) {
-        const existsDistilled = (
-          await deps.outbox.list(windowKey, "distilled")
-        ).includes(cluster_id);
-        const existsEmbedded = (
-          await deps.outbox.list(windowKey, "embedded")
-        ).includes(cluster_id);
+        const existsDistilled = (await deps.outbox.list(windowKey, "distilled")).includes(
+          cluster_id,
+        );
+        const existsEmbedded = (await deps.outbox.list(windowKey, "embedded")).includes(cluster_id);
         if (existsDistilled || existsEmbedded) {
           Logger.info("dream: cluster already persisted, skipping distill", {
             size: memberIds.length,
@@ -334,9 +305,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
           member_ids: memberIds,
           title: distilled.title,
           summary: distilled.summary,
-          ...(supersede_pairs && supersede_pairs.length
-            ? { supersede_pairs }
-            : {}),
+          ...(supersede_pairs && supersede_pairs.length ? { supersede_pairs } : {}),
         };
 
         // Persist BEFORE the embed step, so a crash here keeps the
@@ -367,12 +336,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
       });
     }
     if (deps.outbox) {
-      await deps.outbox.transition(
-        windowKey,
-        "distilled",
-        "embedded",
-        cluster,
-      );
+      await deps.outbox.transition(windowKey, "distilled", "embedded", cluster);
     }
   }
 
@@ -423,10 +387,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
  *  inside it) or has been auto-reaped, in which case the submit will
  *  return an error and the files stay around for human inspection. */
 export async function resumeDreamCycles(
-  deps: Pick<
-    DreamDeps,
-    "serverUrl" | "token" | "machineId" | "fetch" | "embed" | "outbox"
-  >,
+  deps: Pick<DreamDeps, "serverUrl" | "token" | "machineId" | "fetch" | "embed" | "outbox">,
 ): Promise<{ resumed: number; written: number }> {
   if (!deps.outbox) return { resumed: 0, written: 0 };
   const windows = await deps.outbox.listWindows();
@@ -472,9 +433,7 @@ export async function resumeDreamCycles(
       member_ids: c.member_ids,
       title: c.title,
       summary: c.summary,
-      ...(c.summary_embedding
-        ? { summary_embedding: c.summary_embedding }
-        : {}),
+      ...(c.summary_embedding ? { summary_embedding: c.summary_embedding } : {}),
       ...(c.supersede_pairs && c.supersede_pairs.length
         ? { supersede_pairs: c.supersede_pairs }
         : {}),

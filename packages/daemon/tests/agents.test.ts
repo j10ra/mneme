@@ -17,9 +17,7 @@ describe("agent registry", () => {
   });
 
   test("pickAgent throws a clear error on unknown name", () => {
-    expect(() => pickAgent("definitely-not-a-real-provider")).toThrow(
-      /unknown agent provider/i,
-    );
+    expect(() => pickAgent("definitely-not-a-real-provider")).toThrow(/unknown agent provider/i);
   });
 
   test("listAgents enumerates registered provider names", () => {

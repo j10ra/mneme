@@ -43,9 +43,7 @@ type ApiKeyRow = {
 export function requireAuth(scope: string): MiddlewareHandler {
   return async (c, next) => {
     if (!_sql) {
-      Logger.error(
-        "auth not configured: call configureAuth(sql) before using requireAuth",
-      );
+      Logger.error("auth not configured: call configureAuth(sql) before using requireAuth");
       return c.json({ error: "auth_misconfigured" }, 500);
     }
 

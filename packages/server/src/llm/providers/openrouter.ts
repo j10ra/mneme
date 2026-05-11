@@ -51,7 +51,10 @@ function cleanErrorBody(body: string): string {
   const trimmed = body.trim();
   if (!trimmed) return "";
   if (trimmed.startsWith("<")) {
-    const stripped = trimmed.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    const stripped = trimmed
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
     return stripped.slice(0, 200);
   }
   return trimmed.replace(/\s+/g, " ").slice(0, 200);
@@ -126,9 +129,7 @@ export const extractObservations = mnemeFn(
 
     if (!resp.ok) {
       const err = cleanErrorBody(await resp.text());
-      throw new Error(
-        `llm.openrouter extract failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`,
-      );
+      throw new Error(`llm.openrouter extract failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
     }
 
     const raw = await consumeStream(resp);
@@ -184,9 +185,7 @@ export const distillCluster = mnemeFn(
 
     if (!resp.ok) {
       const err = cleanErrorBody(await resp.text());
-      throw new Error(
-        `llm.openrouter distill failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`,
-      );
+      throw new Error(`llm.openrouter distill failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
     }
 
     const raw = await consumeStream(resp);
@@ -196,14 +195,11 @@ export const distillCluster = mnemeFn(
     try {
       parsed = JSON.parse(raw) as { title?: unknown; summary?: unknown };
     } catch {
-      throw new Error(
-        `llm.openrouter distill: bad JSON: ${raw.slice(0, 200)}`,
-      );
+      throw new Error(`llm.openrouter distill: bad JSON: ${raw.slice(0, 200)}`);
     }
 
     const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
-    const summary =
-      typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+    const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
     if (!title || !summary) {
       throw new Error("llm.openrouter distill: missing title or summary");
     }
@@ -248,8 +244,7 @@ export const findSupersedes = mnemeFn(
 
     const userBody = candidates
       .map(
-        (c) =>
-          `id: ${c.id}\nkind: ${c.kind}\ncreated_at: ${c.created_at}\ncontent: ${c.content}`,
+        (c) => `id: ${c.id}\nkind: ${c.kind}\ncreated_at: ${c.created_at}\ncontent: ${c.content}`,
       )
       .join("\n\n---\n\n");
 
@@ -293,9 +288,7 @@ export const findSupersedes = mnemeFn(
     try {
       parsed = JSON.parse(raw) as { pairs?: unknown };
     } catch {
-      throw new Error(
-        `llm.openrouter supersede: bad JSON: ${raw.slice(0, 200)}`,
-      );
+      throw new Error(`llm.openrouter supersede: bad JSON: ${raw.slice(0, 200)}`);
     }
 
     const pairs = parsed.pairs;
@@ -318,10 +311,7 @@ export const findSupersedes = mnemeFn(
  *  judges whether the two summaries describe the same topic. */
 export const judgeClusterMerge = mnemeFn(
   "llm.openrouter.merge",
-  async (
-    a: ClusterSummary,
-    b: ClusterSummary,
-  ): Promise<ClusterMergeJudgment> => {
+  async (a: ClusterSummary, b: ClusterSummary): Promise<ClusterMergeJudgment> => {
     if (!env.HAS_OPENROUTER) throw new Error("OPENROUTER_API_KEY not set");
 
     const userBody = `CLUSTER A\ntitle: ${a.title}\nsummary: ${a.summary}\n\n---\n\nCLUSTER B\ntitle: ${b.title}\nsummary: ${b.summary}`;
@@ -352,9 +342,7 @@ export const judgeClusterMerge = mnemeFn(
 
     if (!resp.ok) {
       const err = cleanErrorBody(await resp.text());
-      throw new Error(
-        `llm.openrouter merge failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`,
-      );
+      throw new Error(`llm.openrouter merge failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
     }
 
     const raw = await consumeStream(resp);

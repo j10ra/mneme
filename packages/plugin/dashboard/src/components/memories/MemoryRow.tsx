@@ -72,11 +72,7 @@ export function MemoryRow({
       >
         {/* Line 1: meta header — single left-aligned flow */}
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
-          {expanded ? (
-            <ChevronDown className="h-3 w-3" />
-          ) : (
-            <ChevronRight className="h-3 w-3" />
-          )}
+          {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
           <span className="tabular-nums">{fmtAge(data.created_at)} ago</span>
           {data.kind && (
             <span
@@ -107,9 +103,7 @@ export function MemoryRow({
           )}
           {data.superseded && <Badge variant="warning">superseded</Badge>}
           {data.importance !== null && data.importance >= 0.7 && (
-            <Badge variant="default">
-              importance {data.importance.toFixed(2)}
-            </Badge>
+            <Badge variant="default">importance {data.importance.toFixed(2)}</Badge>
           )}
           {data.score !== null && (
             <Badge variant="secondary" className="gap-1">

@@ -6,14 +6,11 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default:
-          "border-border bg-card text-foreground hover:bg-muted",
+        default: "border-border bg-card text-foreground hover:bg-muted",
         ghost:
           "border-transparent bg-transparent text-muted-foreground hover:text-foreground hover:bg-muted/40",
-        active:
-          "border-success/40 bg-success/10 text-success hover:bg-success/20",
-        secondary:
-          "border-transparent bg-muted text-muted-foreground hover:bg-muted/70",
+        active: "border-success/40 bg-success/10 text-success hover:bg-success/20",
+        secondary: "border-transparent bg-muted text-muted-foreground hover:bg-muted/70",
       },
       size: {
         sm: "h-8 px-3 text-sm",
@@ -28,18 +25,8 @@ const buttonVariants = cva(
 export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> &
   VariantProps<typeof buttonVariants>;
 
-export function Button({
-  className,
-  variant,
-  size,
-  type = "button",
-  ...props
-}: ButtonProps) {
+export function Button({ className, variant, size, type = "button", ...props }: ButtonProps) {
   return (
-    <button
-      type={type}
-      className={cn(buttonVariants({ variant, size }), className)}
-      {...props}
-    />
+    <button type={type} className={cn(buttonVariants({ variant, size }), className)} {...props} />
   );
 }

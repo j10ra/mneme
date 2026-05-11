@@ -3,9 +3,7 @@ import { scrub, scrubData } from "../src/scrub.ts";
 
 describe("scrub - <private> tags", () => {
   test("strips a basic block", () => {
-    expect(scrub("before <private>shh</private> after")).toBe(
-      "before [private redacted] after",
-    );
+    expect(scrub("before <private>shh</private> after")).toBe("before [private redacted] after");
   });
 
   test("strips multiline blocks", () => {
@@ -60,9 +58,7 @@ describe("scrub - secret patterns", () => {
   });
 
   test("Slack token", () => {
-    expect(scrub("xoxb-1234567890-abcdefghijklmnop")).toBe(
-      "[REDACTED:slack_token]",
-    );
+    expect(scrub("xoxb-1234567890-abcdefghijklmnop")).toBe("[REDACTED:slack_token]");
   });
 
   test("JWT", () => {
@@ -87,9 +83,7 @@ describe("scrub - secret patterns", () => {
   });
 
   test("URL userinfo preserves scheme + host", () => {
-    expect(
-      scrub("clone from https://user:pat_abcdef@example.org/repo.git ok"),
-    ).toBe(
+    expect(scrub("clone from https://user:pat_abcdef@example.org/repo.git ok")).toBe(
       "clone from https://[REDACTED:url_userinfo]@example.org/repo.git ok",
     );
   });
@@ -104,9 +98,7 @@ describe("scrub - secret patterns", () => {
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
 QyNTUxOQAAACBNiPaLs/Mf8...
 -----END OPENSSH PRIVATE KEY-----`;
-    expect(scrub(`pre\n${block}\npost`)).toBe(
-      "pre\n[REDACTED:ssh_private_key]\npost",
-    );
+    expect(scrub(`pre\n${block}\npost`)).toBe("pre\n[REDACTED:ssh_private_key]\npost");
   });
 });
 

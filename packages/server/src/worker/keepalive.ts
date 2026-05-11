@@ -5,9 +5,6 @@ import { sql } from "../infra/db.ts";
  *  inactivity windows; this guarantees a heartbeat even if the ingest queue
  *  drains and the workers idle longer than expected. Registered with the
  *  scheduler at a 24h interval. */
-export const runKeepaliveOnce = mnemeFn(
-  "worker.keepalive.once",
-  async (): Promise<void> => {
-    await sql`SELECT 1`;
-  },
-);
+export const runKeepaliveOnce = mnemeFn("worker.keepalive.once", async (): Promise<void> => {
+  await sql`SELECT 1`;
+});

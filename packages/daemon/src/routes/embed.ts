@@ -13,9 +13,7 @@ import { embedBatch } from "../embed.ts";
 
 export function mountEmbedRoute(app: Hono): void {
   app.post("/embed", mnemeRoute("daemon.embed_route"), async (c) => {
-    const body = (await c.req.json().catch(() => null)) as
-      | { texts?: unknown }
-      | null;
+    const body = (await c.req.json().catch(() => null)) as { texts?: unknown } | null;
     if (!body || !Array.isArray(body.texts)) {
       Logger.warn("embed: invalid body");
       return c.json({ error: "texts[] required" }, 400);

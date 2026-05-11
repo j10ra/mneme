@@ -144,18 +144,12 @@ export type BaseScope = {
   agent: string | null;
 };
 
-export function baseScope(
-  cfg: MnemeConfig,
-  cwd?: string,
-): BaseScope {
+export function baseScope(cfg: MnemeConfig, cwd?: string): BaseScope {
   return {
     machine_id: cfg.machine.id,
     hostname: hostname(),
     repo: canonicalRepo(cwd),
     harness: "claude-code",
-    agent:
-      typeof process.env.CLAUDE_MODEL === "string"
-        ? process.env.CLAUDE_MODEL
-        : null,
+    agent: typeof process.env.CLAUDE_MODEL === "string" ? process.env.CLAUDE_MODEL : null,
   };
 }

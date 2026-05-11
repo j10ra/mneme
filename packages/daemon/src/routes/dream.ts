@@ -9,10 +9,7 @@ import type { Hono } from "hono";
 import { Logger, mnemeRoute } from "@mneme/core";
 import type { DreamCycleResult } from "../dream.ts";
 
-export function mountDreamRoute(
-  app: Hono,
-  runDream: () => Promise<DreamCycleResult>,
-): void {
+export function mountDreamRoute(app: Hono, runDream: () => Promise<DreamCycleResult>): void {
   app.post("/dream/run", mnemeRoute("daemon.dream_run"), async (c) => {
     try {
       const result = await runDream();

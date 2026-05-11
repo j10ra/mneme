@@ -84,9 +84,7 @@ function injectLimit(sql: string): string {
 export async function substituteEmbeds(sql: string): Promise<string> {
   const matches = Array.from(sql.matchAll(EMBED_RE));
   if (matches.length === 0) return sql;
-  const rawTexts = Array.from(
-    new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))),
-  );
+  const rawTexts = Array.from(new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))));
   const cleanedTexts = rawTexts.map(scrub);
   const vectors = await embedBatch(cleanedTexts);
   const embedMap = new Map(rawTexts.map((t, i) => [t, vectors[i]!]));
@@ -114,7 +112,9 @@ function capResult(rows: unknown[]): {
 
 const runSql = mnemeFn(
   "mneme.sql.run",
-  async (rawQuery: string): Promise<{ rows: unknown[]; truncated: boolean; total: number; rewritten_sql: string }> => {
+  async (
+    rawQuery: string,
+  ): Promise<{ rows: unknown[]; truncated: boolean; total: number; rewritten_sql: string }> => {
     const stripped = stripComments(rawQuery).trim();
     if (!stripped) throw new Error("empty query");
 
@@ -158,12 +158,7 @@ const runSql = mnemeFn(
 function ok(id: JsonRpcId, result: unknown): JsonRpcSuccess {
   return { jsonrpc: "2.0", id, result };
 }
-function err(
-  id: JsonRpcId,
-  code: number,
-  message: string,
-  data?: unknown,
-): JsonRpcError {
+function err(id: JsonRpcId, code: number, message: string, data?: unknown): JsonRpcError {
   return { jsonrpc: "2.0", id, error: { code, message, data } };
 }
 

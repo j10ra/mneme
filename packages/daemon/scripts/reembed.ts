@@ -67,29 +67,23 @@ const tModelLoad = Date.now();
 const { pipeline, env: tfEnv } = await import("@xenova/transformers");
 tfEnv.useBrowserCache = false;
 tfEnv.allowLocalModels = false;
-const extractor = (await pipeline(
-  "feature-extraction",
-  TRANSFORMERS_MODEL_ID,
-  { quantized: true } as never,
-)) as unknown as (
+const extractor = (await pipeline("feature-extraction", TRANSFORMERS_MODEL_ID, {
+  quantized: true,
+} as never)) as unknown as (
   texts: string[],
   options: { pooling: "mean"; normalize: true },
 ) => Promise<{ tolist(): number[][] }>;
 console.log(`pipeline ready (${Date.now() - tModelLoad}ms)`);
 
 function chunkIdFor(contentHash: string): string {
-  return createHash("sha256")
-    .update(`${contentHash}:${EMBEDDER_MODEL}`)
-    .digest("hex");
+  return createHash("sha256").update(`${contentHash}:${EMBEDDER_MODEL}`).digest("hex");
 }
 
 let processed = 0;
 const tStart = Date.now();
 
 while (true) {
-  const rows = await sql<
-    { id: string; content: string; content_hash: string }[]
-  >`
+  const rows = await sql<{ id: string; content: string; content_hash: string }[]>`
     SELECT id, content, content_hash
     FROM memories
     WHERE embedding IS NULL
@@ -124,9 +118,7 @@ while (true) {
   const rate = processed / elapsedS;
   const remaining = total - processed;
   const etaS = rate > 0 ? Math.ceil(remaining / rate) : 0;
-  console.log(
-    `progress: ${processed}/${total}  (${rate.toFixed(1)} rows/s, ETA ${etaS}s)`,
-  );
+  console.log(`progress: ${processed}/${total}  (${rate.toFixed(1)} rows/s, ETA ${etaS}s)`);
 }
 
 await sql.end();

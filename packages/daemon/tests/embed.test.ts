@@ -7,12 +7,7 @@
 // appropriate for the default test loop.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import {
-  disposeIfIdle,
-  embedBatch,
-  EMBEDDER_DIM,
-  EMBEDDER_MODEL,
-} from "../src/embed.ts";
+import { disposeIfIdle, embedBatch, EMBEDDER_DIM, EMBEDDER_MODEL } from "../src/embed.ts";
 
 const RUN_LIVE = process.env.MNEME_RUN_LIVE === "1";
 

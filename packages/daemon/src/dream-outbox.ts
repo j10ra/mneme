@@ -37,11 +37,7 @@ export type DistilledCluster = {
 export interface DreamOutbox {
   root: string;
   /** Atomic write to <window>/<stage>/<cluster_id>.json */
-  put(
-    windowKey: number,
-    stage: DreamStage,
-    cluster: DistilledCluster,
-  ): Promise<void>;
+  put(windowKey: number, stage: DreamStage, cluster: DistilledCluster): Promise<void>;
   /** Move from one stage to another with updated content. */
   transition(
     windowKey: number,
@@ -52,24 +48,11 @@ export interface DreamOutbox {
   /** List cluster_ids present in a stage. */
   list(windowKey: number, stage: DreamStage): Promise<string[]>;
   /** Read the full record for a cluster at a stage. */
-  read(
-    windowKey: number,
-    stage: DreamStage,
-    clusterId: string,
-  ): Promise<DistilledCluster>;
+  read(windowKey: number, stage: DreamStage, clusterId: string): Promise<DistilledCluster>;
   /** Drop a cluster's record from a stage (e.g. after server confirms). */
-  delete(
-    windowKey: number,
-    stage: DreamStage,
-    clusterId: string,
-  ): Promise<void>;
+  delete(windowKey: number, stage: DreamStage, clusterId: string): Promise<void>;
   /** Move to failed/ with a reason file alongside. */
-  markFailed(
-    windowKey: number,
-    from: DreamStage,
-    clusterId: string,
-    reason: string,
-  ): Promise<void>;
+  markFailed(windowKey: number, from: DreamStage, clusterId: string, reason: string): Promise<void>;
   /** Walk the whole dream/ tree; useful for resume-on-startup. */
   listWindows(): Promise<number[]>;
   /** Drop an empty window directory. No-op if not empty. */
@@ -108,10 +91,7 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
 
     async put(windowKey, stage, cluster) {
       await ensureWindow(windowKey);
-      await atomicWrite(
-        clusterFile(rootPath, windowKey, stage, cluster.cluster_id),
-        cluster,
-      );
+      await atomicWrite(clusterFile(rootPath, windowKey, stage, cluster.cluster_id), cluster);
     },
 
     async transition(windowKey, from, to, cluster) {
@@ -119,10 +99,7 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
       const src = clusterFile(rootPath, windowKey, from, cluster.cluster_id);
       // Read just to surface ENOENT clearly if the source is gone.
       await readFile(src);
-      await atomicWrite(
-        clusterFile(rootPath, windowKey, to, cluster.cluster_id),
-        cluster,
-      );
+      await atomicWrite(clusterFile(rootPath, windowKey, to, cluster.cluster_id), cluster);
       await rm(src);
     },
 
@@ -139,10 +116,7 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
     },
 
     async read(windowKey, stage, clusterId) {
-      const buf = await readFile(
-        clusterFile(rootPath, windowKey, stage, clusterId),
-        "utf8",
-      );
+      const buf = await readFile(clusterFile(rootPath, windowKey, stage, clusterId), "utf8");
       return JSON.parse(buf) as DistilledCluster;
     },
 
@@ -156,10 +130,7 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
       await ensureWindow(windowKey);
       const src = clusterFile(rootPath, windowKey, from, clusterId);
       const cluster = JSON.parse(await readFile(src, "utf8")) as DistilledCluster;
-      await atomicWrite(
-        clusterFile(rootPath, windowKey, "failed", clusterId),
-        cluster,
-      );
+      await atomicWrite(clusterFile(rootPath, windowKey, "failed", clusterId), cluster);
       await writeFile(
         join(rootPath, String(windowKey), "failed", `${clusterId}.error.txt`),
         reason,

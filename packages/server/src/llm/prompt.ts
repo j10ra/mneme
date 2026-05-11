@@ -116,4 +116,3 @@ Return a single JSON object: {"pairs": [{"old_id": "<uuid>", "new_id": "<uuid>",
 If no supersedes apply, return {"pairs": []}.
 
 Output only the JSON object. No prose, no markdown, no commentary.`;
-

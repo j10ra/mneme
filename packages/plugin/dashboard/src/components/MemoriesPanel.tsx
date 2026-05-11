@@ -59,9 +59,7 @@ export function MemoriesPanel() {
   // Updated on every fetch via union with the response.
   const [knownKinds, setKnownKinds] = useState<Set<string>>(new Set());
   const [knownRepos, setKnownRepos] = useState<Set<string>>(new Set());
-  const [knownMachines, setKnownMachines] = useState<Map<string, string>>(
-    () => new Map(),
-  );
+  const [knownMachines, setKnownMachines] = useState<Map<string, string>>(() => new Map());
 
   const abortRef = useRef<AbortController | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -93,17 +91,15 @@ export function MemoriesPanel() {
       if (filters.since) params.set("since", filters.since);
       if (filters.until) params.set("until", filters.until);
       if (filters.repo.length) params.set("repo", filters.repo.join(","));
-      if (filters.machine_id.length)
-        params.set("machine_id", filters.machine_id.join(","));
+      if (filters.machine_id.length) params.set("machine_id", filters.machine_id.join(","));
       if (filters.kind.length) params.set("kind", filters.kind.join(","));
       if (filters.cluster_status.length)
         params.set("cluster_status", filters.cluster_status.join(","));
       if (debouncedQuery) params.set("q", debouncedQuery);
 
-      const data = await apiGet<{ memories: MemoryRowData[] }>(
-        `/memories?${params.toString()}`,
-        { signal: ac.signal },
-      );
+      const data = await apiGet<{ memories: MemoryRowData[] }>(`/memories?${params.toString()}`, {
+        signal: ac.signal,
+      });
       const got = data.memories.length;
       setHasMore(got >= PAGE_SIZE);
       // Union into the sticky facet sets so chips persist across filter
@@ -145,9 +141,10 @@ export function MemoriesPanel() {
         return changed ? next : prev;
       });
       setState((prev) => {
-        const merged = append && prev.kind !== "loading" && prev.kind !== "error"
-          ? prev.entries.concat(data.memories)
-          : data.memories;
+        const merged =
+          append && prev.kind !== "loading" && prev.kind !== "error"
+            ? prev.entries.concat(data.memories)
+            : data.memories;
         return {
           kind: "ok",
           entries: merged,
@@ -313,23 +310,12 @@ export function MemoriesPanel() {
             {entries.length === 0 ? (
               <Empty>No memories match the current filters.</Empty>
             ) : grouped ? (
-              <ClusterGrouped
-                grouped={grouped}
-                expandedIds={expandedIds}
-                onToggle={toggleExpand}
-              />
+              <ClusterGrouped grouped={grouped} expandedIds={expandedIds} onToggle={toggleExpand} />
             ) : (
-              <Flat
-                entries={entries}
-                expandedIds={expandedIds}
-                onToggle={toggleExpand}
-              />
+              <Flat entries={entries} expandedIds={expandedIds} onToggle={toggleExpand} />
             )}
             {hasMore && (
-              <div
-                ref={sentinelRef}
-                className="py-3 text-center text-xs text-muted-foreground"
-              >
+              <div ref={sentinelRef} className="py-3 text-center text-xs text-muted-foreground">
                 {loadingMore ? "Loading more…" : "scroll for more"}
               </div>
             )}

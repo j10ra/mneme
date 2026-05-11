@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(ts|tsx|js|jsx|mjs|cjs|json|jsonc|css)$' || true)
+[ -z "$staged" ] && exit 0
+
+# Format staged files in place; Biome's --staged restricts to indexed regions.
+bunx --bun biome check --staged --write --no-errors-on-unmatched
+
+# Re-stage any files Biome rewrote so the commit captures the formatted output.
+echo "$staged" | xargs -r git add --

@@ -86,10 +86,9 @@ describe("runDreamCycle", () => {
       fetch: fakeFetch({
         "/api/dream/lock": () => {
           calls.push("lock");
-          return new Response(
-            JSON.stringify({ acquired: false, heldBy: "other" }),
-            { status: 409 },
-          );
+          return new Response(JSON.stringify({ acquired: false, heldBy: "other" }), {
+            status: 409,
+          });
         },
       }),
       distill: async () => ({ title: "x", summary: "y" }),
@@ -128,10 +127,9 @@ describe("runDreamCycle", () => {
       fetch: fakeFetch({
         "/api/dream/lock": () => {
           calls.push("lock");
-          return new Response(
-            JSON.stringify({ acquired: true, window_key: 12345 }),
-            { status: 200 },
-          );
+          return new Response(JSON.stringify({ acquired: true, window_key: 12345 }), {
+            status: 200,
+          });
         },
         "/api/dream/candidates": () => {
           calls.push("candidates");
@@ -181,9 +179,7 @@ describe("runDreamCycle", () => {
               window_key: 1,
               repos: {
                 r: {
-                  seeds: [
-                    { id: "a", content: "x", kind: "note", created_at: "2026" },
-                  ],
+                  seeds: [{ id: "a", content: "x", kind: "note", created_at: "2026" }],
                   edges: [],
                 },
               },

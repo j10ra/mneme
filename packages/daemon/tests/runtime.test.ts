@@ -43,15 +43,18 @@ const validBody = {
   raw_meta: {},
 };
 
-function createMocks(overrides: Partial<{
-  extract: (captures: Capture[]) => Promise<ExtractedMemory[]>;
-  embed: (texts: string[]) => Promise<number[][]>;
-  push: (bundle: unknown) => Promise<void>;
-}> = {}) {
+function createMocks(
+  overrides: Partial<{
+    extract: (captures: Capture[]) => Promise<ExtractedMemory[]>;
+    embed: (texts: string[]) => Promise<number[][]>;
+    push: (bundle: unknown) => Promise<void>;
+  }> = {},
+) {
   const pushed: unknown[] = [];
   return {
     pushed,
-    extract: overrides.extract ??
+    extract:
+      overrides.extract ??
       (async (captures: Capture[]): Promise<ExtractedMemory[]> =>
         captures.map((c) => ({
           content: `summary of: ${c.content.slice(0, 30)}`,
@@ -59,10 +62,11 @@ function createMocks(overrides: Partial<{
           importance: 0.7,
           topics: [],
         }))),
-    embed: overrides.embed ??
-      (async (texts: string[]): Promise<number[][]> =>
-        texts.map(() => Array(1024).fill(0.1))),
-    push: overrides.push ??
+    embed:
+      overrides.embed ??
+      (async (texts: string[]): Promise<number[][]> => texts.map(() => Array(1024).fill(0.1))),
+    push:
+      overrides.push ??
       (async (bundle: unknown): Promise<void> => {
         pushed.push(bundle);
       }),
@@ -77,7 +81,8 @@ describe("handleCapture", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
     });
 
     const result = await runtime.handleCapture(validBody);
@@ -100,7 +105,8 @@ describe("handleCapture", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
     });
 
     const result = await runtime.handleCapture({
@@ -119,11 +125,11 @@ describe("handleCapture", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
     });
 
-    const fakeKey =
-      "sk-ant-api03-" + "x".repeat(48) + "_AbCdEf"; // matches anthropic_key length
+    const fakeKey = "sk-ant-api03-" + "x".repeat(48) + "_AbCdEf"; // matches anthropic_key length
     const result = await runtime.handleCapture({
       ...validBody,
       content: `my token is ${fakeKey}`,
@@ -147,7 +153,8 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
     });
 
     const { id } = (await runtime.handleCapture(validBody)) as {
@@ -183,7 +190,8 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
     });
 
     const { id } = (await runtime.handleCapture(validBody)) as {
@@ -207,7 +215,8 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
     });
 
     const { id } = (await runtime.handleCapture(validBody)) as {
@@ -317,7 +326,8 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
     });
 
     await runtime.runWorkerTick();
@@ -345,7 +355,8 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
     });
 
     // Three captures sharing session_id "session-coal" land in the
@@ -395,7 +406,8 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
       extractBatchFull: 5,
       extractIdleMs: 30_000,
       extractForceMs: 5 * 60_000,
@@ -429,7 +441,8 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
       extractBatchFull: 3,
       extractIdleMs: 30_000,
       extractForceMs: 5 * 60_000,
@@ -463,7 +476,8 @@ describe("runWorkerTick", () => {
       outbox,
       extract: mocks.extract,
       embed: mocks.embed,
-      push: mocks.push, shasDir: join(root, "shas"),
+      push: mocks.push,
+      shasDir: join(root, "shas"),
     });
 
     await runtime.handleCapture({
