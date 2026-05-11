@@ -1,7 +1,7 @@
 // Server-side worker entry. Used to drive a tight extract+embed polling
 // loop too, but as of #22 the per-machine daemon owns extract+embed
 // (and dream coordination via Postgres advisory lock). Server now runs
-// the three brain-trio scheduler-driven jobs:
+// the four scheduler-driven jobs:
 //   - nap       (every 6h): decay importance, shadow-mark exact dupes,
 //                link semantically related memories. Paginated via
 //                meta.last_napped_at round-robin (cap NAP_PER_CYCLE_CAP).
@@ -11,6 +11,8 @@
 //                supersede. Sonnet-grade via openrouter, conservative
 //                refinement (#30). Off by default.
 //   - keepalive (every 24h): SELECT 1 to keep the connection pool warm.
+//   - prune     (every 24h): delete _ops.spans/traces/logs older than
+//                TELEMETRY_RETENTION_DAYS to prevent unbounded growth.
 //
 // startWorker is non-blocking; the scheduler runs until process exit.
 // stopWorker is exported for graceful shutdown in server/index.ts but
@@ -22,6 +24,7 @@ import { env } from "../infra/env.ts";
 import { runDigestOnce } from "./digest.ts";
 import { runKeepaliveOnce } from "./keepalive.ts";
 import { runNapOnce } from "./nap.ts";
+import { runPruneOnce } from "./prune.ts";
 import { register, startScheduler } from "./scheduler.ts";
 
 export function startWorker(): void {
@@ -46,6 +49,13 @@ export function startWorker(): void {
     scheduleMs: 24 * 60 * 60 * 1000,
     run: runKeepaliveOnce,
   });
+
+  register({
+    name: "prune",
+    scheduleMs: 24 * 60 * 60 * 1000,
+    run: runPruneOnce,
+  });
+
   void startScheduler();
 }
 

@@ -41,11 +41,7 @@ export async function withRootTrace<T>(
     rootSpan.errorMessage = errorMessage;
 
     const store = getTraceStore();
-    if (store) {
-      // Note: we always emit even if no child spans fired. The root span
-      // duration is itself a useful timing signal for "embed tick took
-      // 8s with zero work" debugging. If volume becomes a problem, gate
-      // this on rootSpan having children or duration > threshold.
+    if (store && (store.hasChildSpans(traceId) || errorMessage)) {
       store.pushSpan({ ...rootSpan, traceId });
       store.pushTrace({
         traceId,

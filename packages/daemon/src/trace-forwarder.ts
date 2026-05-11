@@ -82,6 +82,10 @@ export class TraceForwarder implements TraceSink {
     await this.flush();
   }
 
+  hasChildSpans(traceId: string): boolean {
+    return (this.pendingSpans.get(traceId)?.length ?? 0) > 0;
+  }
+
   pushTrace(t: TraceRecord): void {
     const spans = this.pendingSpans.get(t.traceId);
     if (spans) {

@@ -8,6 +8,12 @@
 // be backed by a row in `_ops.config` (see issue #1, Phase 4) with the
 // constant below remaining as the fallback default.
 
+// ── Telemetry retention ───────────────────────────────────────────────
+
+/** Prune _ops.spans, _ops.traces, _ops.logs older than this many days.
+ *  Runs daily via the prune scheduler job. */
+export const TELEMETRY_RETENTION_DAYS = 7;
+
 // ── Worker scheduling ─────────────────────────────────────────────────
 
 /** Scheduler tick rate for time-driven workers (nap, dream, keepalive).

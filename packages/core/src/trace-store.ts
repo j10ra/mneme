@@ -36,6 +36,9 @@ export interface TraceSink {
   pushSpan(s: SpanRecord): void;
   pushLog(l: LogRecord): void;
   flush(): Promise<void>;
+  /** True if any child spans have been pushed for this traceId but the trace
+   *  itself hasn't been finalized yet. Used to skip flushing idle root spans. */
+  hasChildSpans(traceId: string): boolean;
 }
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -119,6 +122,10 @@ export class TraceStore {
     this.pendingSpans.clear();
     this.pendingLogs.clear();
     await this.flush();
+  }
+
+  hasChildSpans(traceId: string): boolean {
+    return (this.pendingSpans.get(traceId)?.length ?? 0) > 0;
   }
 
   pushTrace(t: TraceRecord): void {
