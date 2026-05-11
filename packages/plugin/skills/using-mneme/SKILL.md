@@ -79,7 +79,40 @@ FROM memories
 WHERE id = ANY (ARRAY['<id1>', '<id2>', '<id3>']::uuid[]);
 ```
 
-Synthesise across rows. Don't echo metadata back to the user unless the answer depends on it.
+---
+
+## Verify live-state claims before quoting
+
+**Memories age. A memory true at write time can be stale days later** — especially anything that references *live state*. Before quoting back to the user, scan each row and verify what you can. This is the difference between "Mneme said so" and "this is currently true".
+
+**Live-state indicators (watch for these in the content):**
+
+- Numbers paired with status — issue / PR / ticket ids, priorities, "open / closed / merged / pending / in progress"
+- Version numbers
+- Counts — "N captures stranded", "M failed jobs", "K rows remaining"
+- File paths or symbol names
+- Machine identifiers, hostnames, env values
+- Phrasing like "currently", "is open", "remains", "active"
+
+**Verify with whatever tool fits the project.** Don't assume a specific stack — choose based on what's actually available in this repo / harness / session:
+
+- Status of an external resource (issue tracker, board, CI, deployment) → the project's CLI, API, or dashboard if discoverable.
+- File or symbol existence → read or grep the codebase.
+- Counts or DB state → re-run the matching `mneme_sql` query.
+- Versions / config → read the config file.
+
+If you can't verify a claim from this session, **say so explicitly** — "this fact looks stale and I can't verify it from here" — rather than quoting the memory as if it's current.
+
+**Skip verification for:**
+- `kind` ∈ `decision`, `preference`, `constraint` — the *why* ages slowly even when the state changes.
+- Architecture claims (verify against the code, not against a memory).
+- Memories created in the last 24 hours — usually still current.
+
+**When verification disagrees with the memory:**
+
+1. **Quote the live state**, not the memory.
+2. Tell the user plainly: *"Mneme has X but live shows Y — looks like the memory hasn't caught up."*
+3. Suggest the user run `/mneme:memory` to record the correction. Newer fact + supersede keywords (`no longer`, `now`, `closed`, `replaced`) will let nap's rule-based supersede mark the old memory stale on the next 6h cycle.
 
 ---
 

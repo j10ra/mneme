@@ -11,8 +11,11 @@
 // ── Telemetry retention ───────────────────────────────────────────────
 
 /** Prune _ops.spans, _ops.traces, _ops.logs older than this many days.
- *  Runs daily via the prune scheduler job. */
-export const TELEMETRY_RETENTION_DAYS = 7;
+ *  Runs daily via the prune scheduler job. Tightened to 3 days after the
+ *  1.0.96 idle-tick gate landed — even with the gate dropping inflow by
+ *  ~92%, public-schema growth + observability tail at 7 days pushed the
+ *  free-tier 500 MB cap; 3 days gives comfortable headroom. */
+export const TELEMETRY_RETENTION_DAYS = 3;
 
 // ── Worker scheduling ─────────────────────────────────────────────────
 
