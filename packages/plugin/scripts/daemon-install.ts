@@ -107,6 +107,14 @@ export type DaemonInstallConfig = {
    *  When omitted, generators omit the env var and the daemon falls
    *  back to its runtime resolver. */
   claudePath?: string;
+  /** Claude Code OAuth token to bake into the service env as
+   *  CLAUDE_CODE_OAUTH_TOKEN. Service managers (launchd, systemd) don't
+   *  source ~/.bashrc, so a token exported there is invisible to the
+   *  daemon. Injecting it at install time ensures the daemon always has
+   *  direct API access regardless of the service manager's PATH/env.
+   *  When omitted, the daemon falls back to subprocess mode (inherits
+   *  the claude CLI's own OAuth session). */
+  claudeOauthToken?: string;
 };
 
 const DEFAULT_LABEL = "dev.mneme.daemon";
@@ -117,6 +125,9 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   const logsDir = join(homedir(), ".mneme", "logs");
   const claudeEnv = cfg.claudePath
     ? `\n    <key>CLAUDE_EXECUTABLE_PATH</key>\n    <string>${cfg.claudePath}</string>`
+    : "";
+  const oauthEnv = cfg.claudeOauthToken
+    ? `\n    <key>CLAUDE_CODE_OAUTH_TOKEN</key>\n    <string>${cfg.claudeOauthToken}</string>`
     : "";
   // MNEME_PLUGIN_ROOT lets the dashboard route resolve <plugin-root>/
   // dashboard/dist/ deterministically, regardless of how Bun bundles
@@ -145,7 +156,7 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>${homedir()}</string>${pluginRootEnv}${claudeEnv}
+    <string>${homedir()}</string>${pluginRootEnv}${claudeEnv}${oauthEnv}
   </dict>
 </dict>
 </plist>
@@ -162,6 +173,9 @@ export function buildSystemdUnit(cfg: DaemonInstallConfig): string {
   const claudeLine = cfg.claudePath
     ? `\nEnvironment=CLAUDE_EXECUTABLE_PATH=${cfg.claudePath}`
     : "";
+  const oauthLine = cfg.claudeOauthToken
+    ? `\nEnvironment=CLAUDE_CODE_OAUTH_TOKEN=${cfg.claudeOauthToken}`
+    : "";
   // MNEME_PLUGIN_ROOT lets the dashboard route resolve dist/ paths
   // deterministically across Bun bundle / dev source layouts.
   const pluginRootLine = `\nEnvironment=MNEME_PLUGIN_ROOT=${cfg.pluginRoot}`;
@@ -177,7 +191,7 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=append:${homedir()}/.mneme/logs/daemon.log
 StandardError=append:${homedir()}/.mneme/logs/daemon.log
-Environment=HOME=${homedir()}${pluginRootLine}${claudeLine}
+Environment=HOME=${homedir()}${pluginRootLine}${claudeLine}${oauthLine}
 
 [Install]
 WantedBy=default.target
@@ -547,9 +561,12 @@ export async function installDaemonService(
   // Auto-resolve the claude binary when the caller didn't pin one. The
   // install-time PATH (the slash-command's interactive shell) usually
   // has nvm/asdf/bun shims that the runtime daemon's PATH lacks.
-  const resolvedCfg: DaemonInstallConfig = cfg.claudePath
-    ? cfg
-    : { ...cfg, claudePath: findClaudeBinary() ?? undefined };
+  const resolvedCfg: DaemonInstallConfig = {
+    ...cfg,
+    claudePath: cfg.claudePath ?? findClaudeBinary() ?? undefined,
+    claudeOauthToken:
+      cfg.claudeOauthToken ?? process.env.CLAUDE_CODE_OAUTH_TOKEN ?? undefined,
+  };
   const config = buildServiceConfig(platform, resolvedCfg);
 
   const { existsSync, mkdirSync, writeFileSync } = await import("node:fs");

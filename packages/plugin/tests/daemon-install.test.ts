@@ -52,6 +52,23 @@ describe("buildLaunchdPlist", () => {
     );
     expect(envBlock).toContain("CLAUDE_EXECUTABLE_PATH");
   });
+
+  test("omits CLAUDE_CODE_OAUTH_TOKEN when no claudeOauthToken provided", () => {
+    const plist = buildLaunchdPlist(cfg);
+    expect(plist).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  });
+
+  test("injects CLAUDE_CODE_OAUTH_TOKEN inside EnvironmentVariables when set", () => {
+    const claudeOauthToken = "sk-ant-oat01-fake-token";
+    const plist = buildLaunchdPlist({ ...cfg, claudeOauthToken });
+    expect(plist).toContain("<key>CLAUDE_CODE_OAUTH_TOKEN</key>");
+    expect(plist).toContain(`<string>${claudeOauthToken}</string>`);
+    const envBlock = plist.slice(
+      plist.indexOf("<key>EnvironmentVariables</key>"),
+      plist.indexOf("</dict>\n</dict>"),
+    );
+    expect(envBlock).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  });
 });
 
 describe("buildSystemdUnit", () => {
@@ -72,6 +89,17 @@ describe("buildSystemdUnit", () => {
       "/home/jetz/.nvm/versions/node/v24.11.1/bin/claude";
     const unit = buildSystemdUnit({ ...cfg, claudePath });
     expect(unit).toContain(`Environment=CLAUDE_EXECUTABLE_PATH=${claudePath}`);
+  });
+
+  test("omits CLAUDE_CODE_OAUTH_TOKEN when no claudeOauthToken provided", () => {
+    const unit = buildSystemdUnit(cfg);
+    expect(unit).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  });
+
+  test("injects Environment=CLAUDE_CODE_OAUTH_TOKEN=… when set", () => {
+    const claudeOauthToken = "sk-ant-oat01-fake-token";
+    const unit = buildSystemdUnit({ ...cfg, claudeOauthToken });
+    expect(unit).toContain(`Environment=CLAUDE_CODE_OAUTH_TOKEN=${claudeOauthToken}`);
   });
 });
 
