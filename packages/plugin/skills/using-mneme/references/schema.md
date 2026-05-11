@@ -74,9 +74,9 @@ Column types, jsonb shapes, and the source taxonomy. Load when you need to const
 
 ---
 
-## `_ops.machines` — name → machine_id (view)
+## `machines` — name → machine_id (public view)
 
-Read-only view exposing `(machine_id, name, created_at, last_used_at, revoked_at)` from `_ops.api_keys`.
+Read-only public view exposing `(machine_id, name, created_at, last_used_at, revoked_at)`. Backed by the curated `_ops.machines` projection over `_ops.api_keys`, but only the safe columns ship here — tokens and auth metadata stay invisible to `mneme_reader`.
 
 | Column | Notes |
 |---|---|
@@ -84,7 +84,7 @@ Read-only view exposing `(machine_id, name, created_at, last_used_at, revoked_at
 | `name` | Friendly name set at `/mneme:setup` time, mutable via `/mneme:rename` |
 | `revoked_at` | NULL = active. A revoked-and-re-registered machine shows two rows; filter `revoked_at IS NULL` to pick the live one. |
 
-Always schema-qualify (`_ops.machines`, never bare `machines`).
+Use the bare name `machines` (e.g. `SELECT name FROM machines WHERE machine_id = ...`). The underlying `_ops.machines` is **not** agent-visible — `mneme_reader` lacks USAGE on the `_ops` schema by design, so `FROM _ops.machines` returns `permission denied for schema _ops`.
 
 ---
 

@@ -14,7 +14,7 @@ Real failure patterns observed in production. Load when you hit a SQL error or a
 | `FROM observations` | No `observations` table — that's claude-mem's schema, not Mneme. | Use `memories` (chunked + embedded) or `captures` (raw events). |
 | `captures.kind` / `captures.embedding` / `captures.tsv` | These columns are **only on `memories`**, not `captures`. | If you need kind filtering, embeddings, or BM25, query `memories`. If `memories` is empty for your query, fall back to `ILIKE` on `captures.content`. |
 | `WHERE source = 'note'` | `source` is the *event origin* (`claude_hook`, `claude_summary`, `manual:/memory`, etc.); `note` is a *kind* on memories. | `source = 'manual:/memory'` (capture) or `kind = 'note'` (memory). |
-| `WHERE machines.name = ...` | No `machines` table at the public schema; the view lives in `_ops.machines`. | Always schema-qualify: `FROM _ops.machines`. |
+| `FROM _ops.machines` | `mneme_reader` lacks USAGE on the `_ops` schema — `permission denied for schema _ops`. | Use the public `machines` view: `FROM machines` (no schema qualifier needed). |
 
 ---
 
@@ -23,7 +23,7 @@ Real failure patterns observed in production. Load when you hit a SQL error or a
 | Mistake | Why it fails | Fix |
 |---|---|---|
 | `WHERE private = false` | Reader role's RLS already enforces this physically. Adding the filter is redundant and confuses the query plan. | Don't add it. The role can't see `private = true` rows. |
-| Adding `WHERE machine_id = '...'` to find "my" memories | If you don't already know your `machine_id`, this filter pre-filters to nothing. | Resolve via `_ops.machines` first, OR drop the filter entirely (cross-machine recall is the default). |
+| Adding `WHERE machine_id = '...'` to find "my" memories | If you don't already know your `machine_id`, this filter pre-filters to nothing. | Resolve via `machines` first (`SELECT machine_id FROM machines WHERE name = 'macbook.pro' AND revoked_at IS NULL`), OR drop the filter entirely (cross-machine recall is the default). |
 
 ---
 

@@ -130,12 +130,12 @@ Resolve a friendly machine name first:
 
 ```sql
 WITH m AS (
-  SELECT machine_id FROM _ops.machines
+  SELECT machine_id FROM machines
   WHERE name = 'qube-laptop' AND revoked_at IS NULL LIMIT 1
 )
 SELECT c.captured_at, c.source, substring(c.content, 1, 200) AS preview
 FROM captures c, m
-WHERE c.machine_id = m.machine_id AND c.archived_at IS NULL
+WHERE c.machine_id::uuid = m.machine_id::uuid AND c.archived_at IS NULL
 ORDER BY c.captured_at DESC LIMIT 20;
 ```
 
