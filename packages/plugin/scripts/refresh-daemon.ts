@@ -135,7 +135,7 @@ async function runRefresh(): Promise<void> {
     logLine("refresh: no config; run /mneme:setup first");
     return;
   }
-  let cfg: { machine?: { id?: string }; daemon?: { port?: number } };
+  let cfg: { machine?: { id?: string }; daemon?: { port?: number; claudeOauthToken?: string } };
   try {
     cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
   } catch (err) {
@@ -161,6 +161,7 @@ async function runRefresh(): Promise<void> {
       pluginRoot,
       daemonPort,
       bunPath: process.execPath,
+      claudeOauthToken: cfg.daemon?.claudeOauthToken,
     });
     if (result.ok) {
       logLine(`refresh: success — service at ${result.servicePath}`);

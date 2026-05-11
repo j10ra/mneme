@@ -275,6 +275,11 @@ async function setup(
     daemon: {
       port: daemonPort,
       agent_provider: existing.daemon?.agent_provider ?? "claude",
+      ...(process.env.CLAUDE_CODE_OAUTH_TOKEN
+        ? { claudeOauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN }
+        : existing.daemon?.claudeOauthToken
+          ? { claudeOauthToken: existing.daemon.claudeOauthToken }
+          : {}),
     },
     ...(adminBlock ? { admin: adminBlock } : {}),
     ...(existing.projects ? { projects: existing.projects } : {}),

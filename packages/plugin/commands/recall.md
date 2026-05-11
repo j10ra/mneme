@@ -43,6 +43,32 @@ Style:
 
 Length: match the question. A specific question gets 1-3 sentences. A broader "what was I working on" gets a short paragraph.
 
+**Machine-scoped queries:** if the query names a specific machine (e.g. "what was I working on macbook-air-bc"), resolve the name first, then filter by the top-level `machine_id` column — NOT `meta->>'machine_id'` (that key doesn't exist):
+
+```sql
+-- Step 1: resolve name → UUID
+SELECT machine_id FROM _ops.machines
+WHERE name = 'macbook-air-bc' AND revoked_at IS NULL;
+
+-- Step 2a: query memories by machine_id (top-level column)
+SELECT id, content, kind, repo, importance, created_at
+FROM memories
+WHERE archived_at IS NULL
+  AND (meta->>'shadow_of') IS NULL
+  AND (meta->>'superseded_by') IS NULL
+  AND machine_id = '<uuid from step 1>'
+ORDER BY created_at DESC
+LIMIT 15;
+
+-- Step 2b: if memories are sparse, query captures instead
+SELECT source, repo, captured_at, substring(content, 1, 300) AS preview
+FROM captures
+WHERE archived_at IS NULL
+  AND machine_id = '<uuid from step 1>'
+ORDER BY captured_at DESC
+LIMIT 20;
+```
+
 **Fallback when memories is empty:** if the query above returns 0 rows, the `memories` table likely hasn't been populated yet for this corpus (the extractor + embedder workers haven't processed the captures). Re-run against `captures.content` with ILIKE before declaring no results:
 
 ```sql

@@ -13,7 +13,7 @@ export type MnemeConfig = {
   /** Daemon block, present once /mneme:setup has installed the daemon
    *  service. The hook checks for this and, when present, posts captures
    *  to the daemon at 127.0.0.1:port instead of the cloud server. */
-  daemon?: { port: number; agent_provider: string };
+  daemon?: { port: number; agent_provider: string; claudeOauthToken?: string };
   /** Optional admin block. Present only on machines where the operator
    *  ran /mneme:setup with the admin password and wants admin slash
    *  commands (machines/revoke/status) to run without re-prompting.
