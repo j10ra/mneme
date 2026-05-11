@@ -60,6 +60,9 @@ export interface Outbox {
   ): Promise<void>;
   delete(id: string, state: OutboxState): Promise<void>;
   markFailed(id: string, from: OutboxState, reason: string): Promise<void>;
+  /** On daemon startup: move all failed/ entries back to their inferred
+   *  origin stage so they get a fresh retry budget. Returns the count moved. */
+  rehydrateFailed(): Promise<number>;
 }
 
 function fileFor(root: string, state: OutboxState, id: string): string {
@@ -155,5 +158,42 @@ export function createOutbox(rootPath: string): Outbox {
       await writeFile(join(rootPath, "failed", `${id}.error.txt`), reason);
       await rm(src);
     },
+
+    async rehydrateFailed() {
+      await ensureDirs();
+      const ids = await this.list("failed");
+      let moved = 0;
+      for (const id of ids) {
+        try {
+          const data = await this.read(id, "failed");
+          const target = inferOriginStage(data);
+          await atomicWrite(fileFor(rootPath, target, id), data);
+          await rm(fileFor(rootPath, "failed", id), { force: true });
+          await rm(join(rootPath, "failed", `${id}.error.txt`), {
+            force: true,
+          });
+          moved++;
+        } catch {
+          // Leave it — don't lose the file if shape is unreadable.
+        }
+      }
+      return moved;
+    },
   };
+}
+
+function inferOriginStage(data: unknown): "captured" | "observations" | "embedded" {
+  if (data && typeof data === "object" && "capture" in data) {
+    const memories = (data as { memories?: unknown[] }).memories;
+    if (
+      Array.isArray(memories) &&
+      memories.some(
+        (m) => m && typeof m === "object" && "embedding" in (m as object),
+      )
+    ) {
+      return "embedded";
+    }
+    return "observations";
+  }
+  return "captured";
 }

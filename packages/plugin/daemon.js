@@ -1535,8 +1535,36 @@ function createOutbox(rootPath) {
       await atomicWrite2(fileFor(rootPath, "failed", id), data);
       await writeFile2(join2(rootPath, "failed", `${id}.error.txt`), reason);
       await rm2(src);
+    },
+    async rehydrateFailed() {
+      await ensureDirs();
+      const ids = await this.list("failed");
+      let moved = 0;
+      for (const id of ids) {
+        try {
+          const data = await this.read(id, "failed");
+          const target = inferOriginStage(data);
+          await atomicWrite2(fileFor(rootPath, target, id), data);
+          await rm2(fileFor(rootPath, "failed", id), { force: true });
+          await rm2(join2(rootPath, "failed", `${id}.error.txt`), {
+            force: true
+          });
+          moved++;
+        } catch {}
+      }
+      return moved;
     }
   };
+}
+function inferOriginStage(data) {
+  if (data && typeof data === "object" && "capture" in data) {
+    const memories = data.memories;
+    if (Array.isArray(memories) && memories.some((m) => m && typeof m === "object" && ("embedding" in m))) {
+      return "embedded";
+    }
+    return "observations";
+  }
+  return "captured";
 }
 
 // packages/daemon/src/routes/capture.ts
@@ -2902,6 +2930,10 @@ async function startDaemon() {
     dream_outbox: dreamOutboxRoot,
     server: config.server_url
   });
+  const rehydrated = await outbox.rehydrateFailed();
+  if (rehydrated > 0) {
+    Logger.info("outbox: rehydrated failed captures", { count: rehydrated });
+  }
   const runDream = () => runDreamCycle({
     serverUrl: config.server_url,
     token: config.token,

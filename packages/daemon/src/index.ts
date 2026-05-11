@@ -179,6 +179,11 @@ export async function startDaemon(): Promise<void> {
     server: config.server_url,
   });
 
+  const rehydrated = await outbox.rehydrateFailed();
+  if (rehydrated > 0) {
+    Logger.info("outbox: rehydrated failed captures", { count: rehydrated });
+  }
+
   // ── HTTP listener ────────────────────────────────────────────────────
   // Single closure that the dream route + scheduler both call so the
   // manual /dream/run and the scheduled "dream" job share exactly the
