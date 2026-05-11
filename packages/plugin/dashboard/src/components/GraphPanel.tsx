@@ -33,8 +33,12 @@ const MAX_HOPS = 6;
 // from the camera to origin tracks how far you've zoomed out.
 const ZOOM_THRESHOLDS = [180, 320, 520, 780, 1100, 1500];
 
+// `loading.previous` carries the last successfully-loaded graph so the
+// canvas stays mounted during refetches. Without this, every hop or
+// depth bump unmounted the entire <GraphCanvas/>, replaced it with a
+// skeleton, and remounted it on response — the visible "flicker".
 type FetchState =
-  | { kind: "loading" }
+  | { kind: "loading"; previous: GraphResponse | null }
   | { kind: "ok"; data: GraphResponse; fetchedAt: number }
   | { kind: "stale"; data: GraphResponse; fetchedAt: number; error: string }
   | { kind: "error"; error: string };
@@ -58,7 +62,10 @@ export function GraphPanel() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focalId, setFocalId] = useState<string | null>(null);
   const [depth, setDepth] = useState(1);
-  const [state, setState] = useState<FetchState>({ kind: "loading" });
+  const [state, setState] = useState<FetchState>({
+    kind: "loading",
+    previous: null,
+  });
   const [knownKinds, setKnownKinds] = useState<string[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
@@ -97,7 +104,15 @@ export function GraphPanel() {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
-    setState({ kind: "loading" });
+    setState((prev) => {
+      const previous =
+        prev.kind === "ok" || prev.kind === "stale"
+          ? prev.data
+          : prev.kind === "loading"
+            ? prev.previous
+            : null;
+      return { kind: "loading", previous };
+    });
 
     try {
       const params = new URLSearchParams();
@@ -164,7 +179,13 @@ export function GraphPanel() {
     if (depth >= MAX_HOPS) return;
     let lastTarget = depth;
     let stableSince = 0;
+    // Grace period after focal/depth change: don't bump while the
+    // camera is still flying to the new focal. Without this, the
+    // poll catches the OLD camera distance (still positioned over
+    // the previous focal) and triggers a spurious second fetch.
+    const startedAt = Date.now();
     const interval = setInterval(() => {
+      if (Date.now() - startedAt < 1500) return;
       const fg = fgRef.current;
       if (!fg) return;
       try {
@@ -217,7 +238,12 @@ export function GraphPanel() {
     setSelectedId(id);
   }
 
-  const data = state.kind === "ok" || state.kind === "stale" ? state.data : null;
+  const data =
+    state.kind === "ok" || state.kind === "stale"
+      ? state.data
+      : state.kind === "loading"
+        ? state.previous
+        : null;
 
   const selectedNode = useMemo(() => {
     if (!selectedId || !data) return null;

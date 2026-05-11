@@ -159,11 +159,25 @@ export const GraphCanvas = forwardRef<
 
   // Translate API data to react-force-graph shape, reusing cached
   // node objects by id so the force simulation keeps existing
-  // positions on refetch.
+  // positions on refetch. Fresh nodes (those not in the cache) are
+  // pre-seeded with positions near the focal — without this they
+  // get random initial coords from d3-force and "fly in" from
+  // arbitrary spots, which read as a flicker when neighbors land
+  // after a hop.
   const graphData = useMemo(() => {
     const q = query.trim().toLowerCase();
     const cache = nodeCacheRef.current;
     const seen = new Set<string>();
+    // Anchor for seeding fresh nodes: focal's current position if we
+    // have one cached, else origin (landscape mode tends to centre on
+    // origin anyway).
+    const anchor = focalId ? cache.get(focalId) : null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ax = (anchor as any)?.x ?? 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ay = (anchor as any)?.y ?? 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const az = (anchor as any)?.z ?? 0;
     const nodeOut: Force3DNode[] = nodes.map((n) => {
       const baseColor = colorForNode(n);
       const dim = q.length > 0 && !n.content_preview.toLowerCase().includes(q);
@@ -185,6 +199,15 @@ export const GraphCanvas = forwardRef<
         val: sizeForImportance(n.importance),
         dim,
       };
+      // Seed within a small jittered shell around the anchor so the
+      // sim has a non-degenerate starting cloud (avoids overlap on
+      // the same point but stays local to the focal).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fresh as any).x = ax + (Math.random() - 0.5) * 30;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fresh as any).y = ay + (Math.random() - 0.5) * 30;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fresh as any).z = az + (Math.random() - 0.5) * 30;
       cache.set(n.id, fresh);
       return fresh;
     });
@@ -300,15 +323,28 @@ export const GraphCanvas = forwardRef<
     };
   }, [loadState]);
 
-  // Camera focus on selection change.
+  // Camera focus on selection change. The effect lists graphData.nodes
+  // as a dep so we can wait for a freshly-fetched node to land in the
+  // dataset before flying — but we gate on `prevFlownIdRef` so we only
+  // fly ONCE per actual selection change. Without the gate, every
+  // refetch (which produces a fresh graphData.nodes reference) re-fires
+  // the fly, even when the user's selectedId didn't change. That
+  // double-fly looked like a flicker mid-transition.
+  const prevFlownIdRef = useRef<string | null>(null);
   useEffect(() => {
+    if (!selectedId) {
+      prevFlownIdRef.current = null;
+      return;
+    }
+    if (prevFlownIdRef.current === selectedId) return;
     const fg = fgRef.current;
-    if (!fg || !selectedId) return;
+    if (!fg) return;
     const node = graphData.nodes.find((n) => n.id === selectedId);
     if (!node) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const n = node as any;
     if (typeof n.x !== "number") return;
+    prevFlownIdRef.current = selectedId;
     const distance = 90;
     const distRatio = 1 + distance / Math.hypot(n.x, n.y, n.z);
     fg.cameraPosition(
