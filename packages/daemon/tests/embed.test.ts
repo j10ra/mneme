@@ -1,13 +1,18 @@
-// In-process embedder tests.
+// Embedder tests.
 //
-// The unit tests here cover the wrapper logic (empty input, dimension
-// constant, model name constant). The "live" test that actually loads
-// the BAAI/bge-large-en-v1.5 ONNX model is gated behind MNEME_RUN_LIVE=1
-// because the first run downloads ~1.3GB and warms up an ONNX runtime —
-// not appropriate for the default test loop.
+// The default suite covers the wrapper logic (empty input, constants).
+// The live test that actually spawns the subprocess and loads the
+// bge-large ONNX model is gated behind MNEME_RUN_LIVE=1 because the
+// first run downloads ~1.3GB and warms up an ONNX runtime — not
+// appropriate for the default test loop.
 
-import { describe, expect, test } from "bun:test";
-import { EMBEDDER_DIM, EMBEDDER_MODEL, embedBatch } from "../src/embed.ts";
+import { afterAll, describe, expect, test } from "bun:test";
+import {
+  disposeIfIdle,
+  embedBatch,
+  EMBEDDER_DIM,
+  EMBEDDER_MODEL,
+} from "../src/embed.ts";
 
 const RUN_LIVE = process.env.MNEME_RUN_LIVE === "1";
 
@@ -21,12 +26,14 @@ describe("embed", () => {
   });
 
   test("embedBatch returns an empty array for empty input", async () => {
+    // Empty input must short-circuit before spawning the worker so
+    // callers can cheaply ask for an empty batch.
     const result = await embedBatch([]);
     expect(result).toEqual([]);
   });
 
   test.skipIf(!RUN_LIVE)(
-    "embedBatch returns 1024-dim normalized vectors for real text",
+    "embedBatch returns 1024-dim normalized vectors via subprocess",
     async () => {
       const result = await embedBatch(["hello world", "the quick brown fox"]);
       expect(result).toHaveLength(2);
@@ -39,4 +46,25 @@ describe("embed", () => {
     },
     120_000,
   );
+
+  test.skipIf(!RUN_LIVE)(
+    "disposeIfIdle kills the worker and the next call re-spawns",
+    async () => {
+      // Warm the worker, then force-dispose with idleMs=0.
+      await embedBatch(["warmup"]);
+      const disposed = await disposeIfIdle(0);
+      expect(disposed).toBe(true);
+
+      // Second call must succeed (re-spawn path).
+      const result = await embedBatch(["after dispose"]);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toHaveLength(EMBEDDER_DIM);
+    },
+    180_000,
+  );
+
+  // Ensure we don't leave an orphaned worker behind between test files.
+  afterAll(async () => {
+    if (RUN_LIVE) await disposeIfIdle(0);
+  });
 });

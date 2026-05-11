@@ -4,7 +4,7 @@ var __require = import.meta.require;
 // packages/daemon/src/index.ts
 import { readFile as readFile4 } from "fs/promises";
 import { homedir as homedir5 } from "os";
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 
 // packages/core/src/context.ts
 import { AsyncLocalStorage } from "async_hooks";
@@ -70,6 +70,9 @@ class TraceStore {
     this.pendingSpans.clear();
     this.pendingLogs.clear();
     await this.flush();
+  }
+  hasChildSpans(traceId) {
+    return (this.pendingSpans.get(traceId)?.length ?? 0) > 0;
   }
   pushTrace(t) {
     const spans = this.pendingSpans.get(t.traceId);
@@ -1393,59 +1396,181 @@ async function resumeDreamCycles(deps) {
 }
 
 // packages/daemon/src/embed.ts
+import { existsSync as existsSync2 } from "fs";
+import { dirname, join as join2 } from "path";
+import { fileURLToPath } from "url";
 var EMBEDDER_MODEL = "BAAI/bge-large-en-v1.5";
-var TRANSFORMERS_MODEL_ID = "Xenova/bge-large-en-v1.5";
 var PIPELINE_IDLE_MS = 60 * 1000;
-var pipelinePromise = null;
+var DISPOSE_GRACE_MS = 2000;
+var child = null;
+var readLoop = null;
+var inflight = null;
+var queue = [];
 var lastUsedAt = 0;
-async function getPipeline() {
-  if (!pipelinePromise) {
-    Logger.info("embedder: loading pipeline", { model: EMBEDDER_MODEL });
-    const { pipeline, env: tfEnv } = await import("@xenova/transformers");
-    if (process.env.MNEME_EMBED_FULL_PREC !== "1") {
-      tfEnv.useBrowserCache = false;
-      tfEnv.allowLocalModels = false;
-    }
-    pipelinePromise = pipeline("feature-extraction", TRANSFORMERS_MODEL_ID, {
-      quantized: process.env.MNEME_EMBED_FULL_PREC !== "1"
+function workerScriptPath() {
+  const fromEnv = process.env.MNEME_PLUGIN_ROOT;
+  if (fromEnv && fromEnv.trim()) {
+    const p = join2(fromEnv.trim(), "embed-worker.js");
+    if (existsSync2(p))
+      return p;
+  }
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join2(here, "embed-worker.js"),
+    join2(here, "embed-worker.ts"),
+    join2(here, "..", "..", "..", "packages", "plugin", "embed-worker.js")
+  ];
+  for (const p of candidates) {
+    if (existsSync2(p))
+      return p;
+  }
+  throw new Error(`embed-worker not found. Checked MNEME_PLUGIN_ROOT and ${candidates.join(", ")}`);
+}
+function failPending(err) {
+  if (inflight) {
+    inflight.reject(err);
+    inflight = null;
+  }
+  while (queue.length > 0)
+    queue.shift().reject(err);
+}
+async function ensureChild() {
+  if (child && child.proc.exitCode === null)
+    return child;
+  const script = workerScriptPath();
+  const bunBin = process.execPath;
+  Logger.info("embedder: spawning worker", { script, bun: bunBin });
+  const proc = Bun.spawn([bunBin, script], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "inherit",
+    env: process.env
+  });
+  if (!proc.stdin || !proc.stdout) {
+    throw new Error("embed-worker spawn did not return stdio pipes");
+  }
+  const handle = {
+    proc,
+    stdin: proc.stdin
+  };
+  child = handle;
+  readLoop = readStdoutLoop(handle).catch((err) => {
+    Logger.warn("embedder: read loop crashed", {
+      err: err instanceof Error ? err.message : String(err)
     });
+  });
+  proc.exited.then((code) => {
+    if (child === handle)
+      child = null;
+    if (code !== 0 && code !== null) {
+      Logger.warn("embed-worker exited unexpectedly", { code });
+      failPending(new Error(`embed-worker exited (code=${code})`));
+    }
+  });
+  return handle;
+}
+async function readStdoutLoop(handle) {
+  const reader = handle.proc.stdout.getReader();
+  const decoder = new TextDecoder;
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done)
+      return;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf(`
+`)) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line)
+        continue;
+      const handler = inflight;
+      inflight = null;
+      if (!handler) {
+        Logger.warn("embedder: stray response from worker", {
+          preview: line.slice(0, 200)
+        });
+        continue;
+      }
+      try {
+        const resp = JSON.parse(line);
+        if (resp.error)
+          handler.reject(new Error(resp.error));
+        else if (resp.vectors)
+          handler.resolve(resp.vectors);
+        else
+          handler.reject(new Error("invalid embed-worker response"));
+      } catch (err) {
+        handler.reject(err);
+      }
+      pumpQueue();
+    }
+  }
+}
+function pumpQueue() {
+  if (inflight || queue.length === 0 || !child)
+    return;
+  const next = queue.shift();
+  inflight = next;
+  const line = JSON.stringify({ texts: next.texts }) + `
+`;
+  const enc = new TextEncoder;
+  try {
+    child.stdin.write(enc.encode(line));
+    child.stdin.flush();
+  } catch (err) {
+    if (inflight === next)
+      inflight = null;
+    next.reject(err instanceof Error ? err : new Error(String(err)));
+    return;
   }
   lastUsedAt = Date.now();
-  return pipelinePromise;
-}
-async function disposeIfIdle(idleMs = PIPELINE_IDLE_MS) {
-  if (!pipelinePromise)
-    return false;
-  if (Date.now() - lastUsedAt < idleMs)
-    return false;
-  Logger.info("embedder: disposing idle pipeline", {
-    idle_seconds: Math.round((Date.now() - lastUsedAt) / 1000)
-  });
-  try {
-    const p = await pipelinePromise;
-    const dispose = p.dispose;
-    if (typeof dispose === "function") {
-      await dispose.call(p);
-    }
-  } catch (err) {
-    Logger.warn("embedder: pipeline.dispose threw, dropping reference anyway", { err: err instanceof Error ? err.message : String(err) });
-  }
-  pipelinePromise = null;
-  if (typeof Bun !== "undefined" && Bun.gc)
-    Bun.gc(true);
-  return true;
 }
 async function embedBatch(texts) {
   if (texts.length === 0)
     return [];
-  const extractor = await getPipeline();
-  const output = await extractor(texts, { pooling: "mean", normalize: true });
-  const flat = output.tolist();
-  return flat;
+  await ensureChild();
+  return new Promise((resolve, reject) => {
+    queue.push({ texts, resolve, reject });
+    pumpQueue();
+  });
+}
+async function disposeIfIdle(idleMs = PIPELINE_IDLE_MS) {
+  if (!child)
+    return false;
+  if (inflight || queue.length > 0)
+    return false;
+  if (Date.now() - lastUsedAt < idleMs)
+    return false;
+  Logger.info("embedder: disposing idle worker", {
+    idle_seconds: Math.round((Date.now() - lastUsedAt) / 1000)
+  });
+  const handle = child;
+  child = null;
+  try {
+    handle.stdin.end();
+  } catch (err) {
+    Logger.warn("embedder: stdin end threw", {
+      err: err instanceof Error ? err.message : String(err)
+    });
+  }
+  const timeout = new Promise((resolve) => setTimeout(() => resolve("timeout"), DISPOSE_GRACE_MS));
+  const winner = await Promise.race([handle.proc.exited, timeout]);
+  if (winner === "timeout") {
+    Logger.warn("embed-worker did not exit on stdin close, sending SIGTERM");
+    handle.proc.kill();
+    await handle.proc.exited;
+  }
+  if (readLoop) {
+    await readLoop.catch(() => {});
+    readLoop = null;
+  }
+  return true;
 }
 
 // packages/daemon/src/outbox.ts
-import { existsSync as existsSync2 } from "fs";
+import { existsSync as existsSync3 } from "fs";
 import {
   mkdir as mkdir2,
   readFile as readFile2,
@@ -1454,7 +1579,7 @@ import {
   rm as rm2,
   writeFile as writeFile2
 } from "fs/promises";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 var STATES = [
   "captured",
   "observations",
@@ -1466,12 +1591,12 @@ var LEGACY_MOVES = [
   { from: "extracted", to: "observations" }
 ];
 function fileFor(root, state, id) {
-  return join2(root, state, `${id}.json`);
+  return join3(root, state, `${id}.json`);
 }
 async function atomicWrite2(path, data) {
   const dir = path.substring(0, path.lastIndexOf("/"));
   const name = path.substring(path.lastIndexOf("/") + 1);
-  const tmp = join2(dir, `.${name}.tmp`);
+  const tmp = join3(dir, `.${name}.tmp`);
   await writeFile2(tmp, JSON.stringify(data));
   await rename2(tmp, path);
 }
@@ -1479,16 +1604,16 @@ function createOutbox(rootPath) {
   let initialized = false;
   async function migrateLegacy() {
     for (const { from, to } of LEGACY_MOVES) {
-      const oldDir = join2(rootPath, from);
-      const newDir = join2(rootPath, to);
-      if (!existsSync2(oldDir))
+      const oldDir = join3(rootPath, from);
+      const newDir = join3(rootPath, to);
+      if (!existsSync3(oldDir))
         continue;
-      if (!existsSync2(newDir)) {
+      if (!existsSync3(newDir)) {
         await rename2(oldDir, newDir);
       } else {
         const entries = await readdir2(oldDir);
         for (const f of entries) {
-          await rename2(join2(oldDir, f), join2(newDir, f));
+          await rename2(join3(oldDir, f), join3(newDir, f));
         }
         await rm2(oldDir, { recursive: true, force: true });
       }
@@ -1499,7 +1624,7 @@ function createOutbox(rootPath) {
       return;
     await migrateLegacy();
     for (const state of STATES) {
-      await mkdir2(join2(rootPath, state), { recursive: true });
+      await mkdir2(join3(rootPath, state), { recursive: true });
     }
     initialized = true;
   }
@@ -1511,7 +1636,7 @@ function createOutbox(rootPath) {
     },
     async list(state) {
       await ensureDirs();
-      const entries = await readdir2(join2(rootPath, state));
+      const entries = await readdir2(join3(rootPath, state));
       return entries.filter((f) => !f.startsWith(".") && f.endsWith(".json")).map((f) => f.slice(0, -".json".length));
     },
     async read(id, state) {
@@ -1533,7 +1658,7 @@ function createOutbox(rootPath) {
       const src = fileFor(rootPath, from, id);
       const data = JSON.parse(await readFile2(src, "utf8"));
       await atomicWrite2(fileFor(rootPath, "failed", id), data);
-      await writeFile2(join2(rootPath, "failed", `${id}.error.txt`), reason);
+      await writeFile2(join3(rootPath, "failed", `${id}.error.txt`), reason);
       await rm2(src);
     },
     async rehydrateFailed() {
@@ -1546,7 +1671,7 @@ function createOutbox(rootPath) {
           const target = inferOriginStage(data);
           await atomicWrite2(fileFor(rootPath, target, id), data);
           await rm2(fileFor(rootPath, "failed", id), { force: true });
-          await rm2(join2(rootPath, "failed", `${id}.error.txt`), {
+          await rm2(join3(rootPath, "failed", `${id}.error.txt`), {
             force: true
           });
           moved++;
@@ -1581,27 +1706,27 @@ function mountCaptureRoute(app, runtime) {
 }
 
 // packages/daemon/src/routes/dashboard.ts
-import { existsSync as existsSync3, statSync } from "fs";
+import { existsSync as existsSync4, statSync } from "fs";
 import { open as fsOpen } from "fs/promises";
 import { homedir as homedir2 } from "os";
-import { dirname, join as join3 } from "path";
-import { fileURLToPath } from "url";
+import { dirname as dirname2, join as join4 } from "path";
+import { fileURLToPath as fileURLToPath2 } from "url";
 import { streamSSE } from "hono/streaming";
 function dashboardDist() {
   const fromEnv = process.env.MNEME_PLUGIN_ROOT;
   if (fromEnv && fromEnv.trim()) {
-    const p = join3(fromEnv.trim(), "dashboard", "dist");
-    if (existsSync3(join3(p, "index.html")))
+    const p = join4(fromEnv.trim(), "dashboard", "dist");
+    if (existsSync4(join4(p, "index.html")))
       return p;
   }
-  const here = dirname(fileURLToPath(import.meta.url));
+  const here = dirname2(fileURLToPath2(import.meta.url));
   const candidates = [
-    join3(here, "..", "..", "..", "..", "packages", "plugin", "dashboard", "dist"),
-    join3(here, "dashboard", "dist"),
-    join3(here, "..", "dashboard", "dist")
+    join4(here, "..", "..", "..", "..", "packages", "plugin", "dashboard", "dist"),
+    join4(here, "dashboard", "dist"),
+    join4(here, "..", "dashboard", "dist")
   ];
   for (const p of candidates) {
-    if (existsSync3(join3(p, "index.html")))
+    if (existsSync4(join4(p, "index.html")))
       return p;
   }
   return candidates[1];
@@ -1622,8 +1747,8 @@ the bundle, or you're running from a fresh dev checkout where
 function mountDashboardRoutes(app) {
   const distDir = dashboardDist();
   app.get("/dashboard", mnemeRoute("daemon.dashboard"), async (c) => {
-    const indexPath = join3(distDir, "index.html");
-    if (!existsSync3(indexPath)) {
+    const indexPath = join4(distDir, "index.html");
+    if (!existsSync4(indexPath)) {
       Logger.warn("dashboard: dist/index.html not found", undefined, {
         looked_at: indexPath
       });
@@ -1636,8 +1761,8 @@ function mountDashboardRoutes(app) {
     if (!filename.endsWith(".js") || filename.includes("/") || filename.includes("..")) {
       return c.notFound();
     }
-    const filePath = join3(distDir, filename);
-    if (!existsSync3(filePath)) {
+    const filePath = join4(distDir, filename);
+    if (!existsSync4(filePath)) {
       return c.text("// not found", 404);
     }
     const bytes = await Bun.file(filePath).bytes();
@@ -1651,7 +1776,7 @@ function mountDashboardRoutes(app) {
   app.get("/dashboard/api/daemon-schedule", mnemeRoute("daemon.dashboard.daemon_schedule"), async (c) => {
     try {
       const { readFile: readFile3 } = await import("fs/promises");
-      const path = join3(homedir2(), ".mneme", "schedule.json");
+      const path = join4(homedir2(), ".mneme", "schedule.json");
       const raw = await readFile3(path, "utf8");
       return c.body(raw, 200, { "content-type": "application/json" });
     } catch (err) {
@@ -1752,7 +1877,7 @@ var LOG_BACKFILL_BYTES = 256 * 1024;
 var LOG_BACKFILL_BYTES_RANGE = 16 * 1024 * 1024;
 var LOG_BACKFILL_MAX_LINES = 500;
 function logPath() {
-  return join3(homedir2(), ".mneme", "logs", "daemon.log");
+  return join4(homedir2(), ".mneme", "logs", "daemon.log");
 }
 function inferLevel(line) {
   if (line.includes(" ERROR "))
@@ -1764,7 +1889,7 @@ function inferLevel(line) {
   return "info";
 }
 async function readTail(path, maxBytes) {
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return { text: "", size: 0 };
   const st = statSync(path);
   const size = st.size;
@@ -1788,7 +1913,7 @@ async function readTail(path, maxBytes) {
   }
 }
 async function readNewBytes(path, fromByte) {
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return { text: "", size: fromByte };
   const st = statSync(path);
   const size = st.size;
@@ -1912,7 +2037,7 @@ async function readDaemonConfig() {
   try {
     const { readFile: readFile3 } = await import("fs/promises");
     const { homedir: homedir3 } = await import("os");
-    const path = join3(homedir3(), ".mneme", "config.json");
+    const path = join4(homedir3(), ".mneme", "config.json");
     const raw = await readFile3(path, "utf8");
     const cfg = JSON.parse(raw);
     if (!cfg.server?.url || !cfg.auth?.key)
@@ -1979,10 +2104,10 @@ function mountOpsRoutes(app, runtime) {
 }
 
 // packages/daemon/src/runtime.ts
-import { existsSync as existsSync4 } from "fs";
+import { existsSync as existsSync5 } from "fs";
 import { appendFile, mkdir as mkdir3, readFile as fsReadFile } from "fs/promises";
 import { homedir as homedir3 } from "os";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 
 // packages/shared/src/scrub.ts
 var SECRET_PATTERNS = [
@@ -2194,13 +2319,13 @@ function createRuntime(deps) {
       }));
     }
   }
-  const SHAS_DIR = deps.shasDir ?? join4(homedir3(), ".mneme", "shas");
+  const SHAS_DIR = deps.shasDir ?? join5(homedir3(), ".mneme", "shas");
   function shasFile(sessionId) {
-    return join4(SHAS_DIR, `${sessionId}.txt`);
+    return join5(SHAS_DIR, `${sessionId}.txt`);
   }
   async function loadSessionLedger(sessionId) {
     const file = shasFile(sessionId);
-    if (!existsSync4(file))
+    if (!existsSync5(file))
       return new Set;
     try {
       const buf = await fsReadFile(file, "utf8");
@@ -2214,7 +2339,7 @@ function createRuntime(deps) {
     if (keys.length === 0)
       return;
     try {
-      if (!existsSync4(SHAS_DIR)) {
+      if (!existsSync5(SHAS_DIR)) {
         await mkdir3(SHAS_DIR, { recursive: true, mode: 448 });
       }
       await appendFile(shasFile(sessionId), `${keys.join(`
@@ -2459,9 +2584,9 @@ function createRuntime(deps) {
 // packages/daemon/src/scheduler.ts
 import { mkdir as mkdir4, readFile as readFile3, rename as rename3, writeFile as writeFile3 } from "fs/promises";
 import { homedir as homedir4 } from "os";
-import { dirname as dirname2, join as join5 } from "path";
+import { dirname as dirname3, join as join6 } from "path";
 var TICK_MS = 60000;
-var STATE_PATH = join5(homedir4(), ".mneme", "schedule.json");
+var STATE_PATH = join6(homedir4(), ".mneme", "schedule.json");
 var STALE_NEW_JOB_SLACK_MS = 5 * 60000;
 var registry = new Map;
 var state = {};
@@ -2481,7 +2606,7 @@ async function loadState() {
   }
 }
 async function saveState(s) {
-  await mkdir4(dirname2(STATE_PATH), { recursive: true });
+  await mkdir4(dirname3(STATE_PATH), { recursive: true });
   const tmp = `${STATE_PATH}.tmp`;
   await writeFile3(tmp, JSON.stringify(s, null, 2));
   await rename3(tmp, STATE_PATH);
@@ -2687,6 +2812,9 @@ class TraceForwarder {
     this.pendingLogs.clear();
     await this.flush();
   }
+  hasChildSpans(traceId) {
+    return (this.pendingSpans.get(traceId)?.length ?? 0) > 0;
+  }
   pushTrace(t) {
     const spans = this.pendingSpans.get(t.traceId);
     if (spans) {
@@ -2834,7 +2962,7 @@ async function withRootTrace(name, source, fn) {
     rootSpan.durationMs = durationMs;
     rootSpan.errorMessage = errorMessage;
     const store = getTraceStore();
-    if (store) {
+    if (store && (store.hasChildSpans(traceId) || errorMessage)) {
       store.pushSpan({ ...rootSpan, traceId });
       store.pushTrace({
         traceId,
@@ -2860,7 +2988,7 @@ var DREAM_SCHEDULE_MS = 8 * 3600000;
 var HEARTBEAT_SCHEDULE_MS = 60000;
 var EMBEDDER_REAP_SCHEDULE_MS = 60000;
 async function readConfig() {
-  const path = join6(homedir5(), ".mneme", "config.json");
+  const path = join7(homedir5(), ".mneme", "config.json");
   const raw = await readFile4(path, "utf8");
   const shaped = JSON.parse(raw);
   if (!shaped.daemon) {
@@ -2896,8 +3024,8 @@ function pushBundleViaServer(serverUrl, token) {
 }
 async function startDaemon() {
   const config = await readConfig();
-  const captureOutboxRoot = join6(homedir5(), ".mneme", "outbox", "capture");
-  const dreamOutboxRoot = join6(homedir5(), ".mneme", "outbox", "dream");
+  const captureOutboxRoot = join7(homedir5(), ".mneme", "outbox", "capture");
+  const dreamOutboxRoot = join7(homedir5(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
   const agent = pickAgent(config.agent_provider);

@@ -27,9 +27,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");
 const entry = join(repoRoot, "packages/daemon/src/index.ts");
 const outfile = join(repoRoot, "packages/plugin/daemon.js");
+const workerEntry = join(repoRoot, "packages/daemon/src/embed-worker.ts");
+const workerOutfile = join(repoRoot, "packages/plugin/embed-worker.js");
 
 if (!existsSync(entry)) {
   console.error(`daemon entry missing: ${entry}`);
+  process.exit(1);
+}
+if (!existsSync(workerEntry)) {
+  console.error(`embed-worker entry missing: ${workerEntry}`);
   process.exit(1);
 }
 
@@ -48,12 +54,20 @@ const externals = [
   "postgres",
 ];
 
-console.log(`bundling ${entry} → ${outfile}`);
 const externalArgs = externals.flatMap((p) => ["--external", p]);
-await $`bun build ${entry} --target=bun ${externalArgs} --outfile=${outfile}`;
 
-const stat = await Bun.file(outfile).size;
-console.log(`✓ bundle: ${(stat / 1024).toFixed(1)} KB`);
+console.log(`bundling ${entry} → ${outfile}`);
+await $`bun build ${entry} --target=bun ${externalArgs} --outfile=${outfile}`;
+const daemonSize = await Bun.file(outfile).size;
+console.log(`✓ daemon bundle: ${(daemonSize / 1024).toFixed(1)} KB`);
+
+// embed-worker is a separate subprocess entry (see #33). It runs the
+// ONNX session in isolation so the daemon's RSS stays bounded.
+console.log(`bundling ${workerEntry} → ${workerOutfile}`);
+await $`bun build ${workerEntry} --target=bun ${externalArgs} --outfile=${workerOutfile}`;
+const workerSize = await Bun.file(workerOutfile).size;
+console.log(`✓ embed-worker bundle: ${(workerSize / 1024).toFixed(1)} KB`);
+
 console.log(
-  `next: bump packages/plugin/.claude-plugin/plugin.json version, commit daemon.js + package.json`,
+  `next: bump packages/plugin/.claude-plugin/plugin.json version, commit daemon.js + embed-worker.js + package.json`,
 );

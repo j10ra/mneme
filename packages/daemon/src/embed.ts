@@ -1,112 +1,241 @@
-// In-process embedder.
+// Subprocess-backed embedder.
 //
-// Loads BAAI/bge-large-en-v1.5 via Transformers.js (ONNX runtime under the
-// hood). Phase 1 retires the separate TEI service: each daemon embeds
-// in-process. Model auto-downloads to Transformers.js's cache directory
-// on first call (~1.3GB, one-time per machine). Subsequent calls are
-// in-memory inference.
+// Lifts the bge-large ONNX session out of the daemon process into a
+// child (`embed-worker.ts`). The daemon's own RSS stays at ~100MB
+// baseline; the embedder process only exists while embedding work is
+// happening, and on idle disposal the OS reclaims everything (no
+// MALLOC_LARGE fragmentation, see #33).
 //
-// The pipeline is lazy-initialized and shared across calls. After
-// PIPELINE_IDLE_MS without an embed, disposeIfIdle() can be called from
-// the daemon's tick to release the ONNX session and free RAM. Next
-// call reloads it transparently. This is the "laptops stop sweating"
-// lever: the heaviest object in the daemon's memory only lives during
-// active use.
+// Public surface is unchanged from the in-process version: callers
+// see `embedBatch(texts) -> Promise<number[][]>` and the daemon's
+// scheduler still calls `disposeIfIdle()` on a tick.
 
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Logger } from "@mneme/core";
 
-// `BAAI/bge-large-en-v1.5` is the canonical model name we record in
-// `meta.embedding_model` and use in `chunk_id = sha256(content_hash + ":"
-// + EMBEDDER_MODEL)`. Transformers.js fetches an ONNX-converted mirror at
-// `Xenova/bge-large-en-v1.5`; the mirror is an implementation detail of
-// the runtime, not part of the schema.
+// Canonical model name written into `meta.embedding_model` and used in
+// `chunk_id = sha256(content_hash + ":" + EMBEDDER_MODEL)`. The
+// Transformers.js mirror ID (`Xenova/bge-large-en-v1.5`) is an
+// implementation detail of the worker.
 export const EMBEDDER_MODEL = "BAAI/bge-large-en-v1.5";
-const TRANSFORMERS_MODEL_ID = "Xenova/bge-large-en-v1.5";
 export const EMBEDDER_DIM = 1024;
 
-type FeatureExtractionPipeline = (
-  texts: string | string[],
-  options?: { pooling?: "mean" | "cls"; normalize?: boolean },
-) => Promise<{ tolist(): number[][] | number[][][]; data: Float32Array; dims: number[] }>;
-
-// Idle window after which disposeIfIdle() will release the loaded
-// pipeline. Tuned aggressively: extract pipeline gates wait minutes
-// between batches anyway, and laptop fans light up fast under a 1GB
-// resident model. 60s keeps the model warm across coalesced extract
-// bursts but reclaims it during normal idle. Cold start on next call
-// is ~1-2s, which is invisible against extract latency and acceptable
-// on the MCP `embed("...")` hot path.
+// Idle window after which `disposeIfIdle()` will kill the worker. Cold
+// start on the next embed is ~1-2s (model load); same idle threshold
+// the in-process version used so behaviour stays unchanged.
 const PIPELINE_IDLE_MS = 60 * 1000;
 
-let pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
+// How long to wait after closing stdin before SIGTERM. The worker
+// should exit promptly on EOF; this is the safety net.
+const DISPOSE_GRACE_MS = 2000;
+
+type Pending = {
+  texts: string[];
+  resolve: (v: number[][]) => void;
+  reject: (e: Error) => void;
+};
+
+type ChildHandle = {
+  proc: ReturnType<typeof Bun.spawn>;
+  // Bun.spawn(stdin: "pipe") returns a FileSink, not a web WritableStream.
+  // It has synchronous .write() / .end() and an async .flush(). Keep
+  // the type loose to avoid leaking Bun internals into the public file.
+  stdin: { write(data: Uint8Array): number; end(): void; flush(): void | Promise<number> };
+};
+
+let child: ChildHandle | null = null;
+let readLoop: Promise<void> | null = null;
+let inflight: Pending | null = null;
+const queue: Pending[] = [];
 let lastUsedAt = 0;
 
-async function getPipeline(): Promise<FeatureExtractionPipeline> {
-  if (!pipelinePromise) {
-    Logger.info("embedder: loading pipeline", { model: EMBEDDER_MODEL });
-    const { pipeline, env: tfEnv } = await import("@xenova/transformers");
-    // Default to int8-quantized weights. bge-large-en-v1.5 quantized
-    // is ~3-4x lighter on RAM and noticeably faster on CPU than the
-    // full-precision ONNX, with negligible quality drop for our use
-    // (cosine search of 1024-dim vectors). Set MNEME_EMBED_FULL_PREC=1
-    // to opt back into full precision.
-    if (process.env.MNEME_EMBED_FULL_PREC !== "1") {
-      tfEnv.useBrowserCache = false;
-      tfEnv.allowLocalModels = false;
-    }
-    pipelinePromise = pipeline(
-      "feature-extraction",
-      TRANSFORMERS_MODEL_ID,
-      {
-        quantized: process.env.MNEME_EMBED_FULL_PREC !== "1",
-      } as never,
-    ) as unknown as Promise<FeatureExtractionPipeline>;
+function workerScriptPath(): string {
+  // Production install: daemon-install.ts sets MNEME_PLUGIN_ROOT to
+  // <plugin-root>, where build-plugin.ts deposits embed-worker.js
+  // alongside daemon.js.
+  const fromEnv = process.env.MNEME_PLUGIN_ROOT;
+  if (fromEnv && fromEnv.trim()) {
+    const p = join(fromEnv.trim(), "embed-worker.js");
+    if (existsSync(p)) return p;
   }
-  lastUsedAt = Date.now();
-  return pipelinePromise;
+  // Dev / fallback resolution: walk known relative shapes from this
+  // module's URL. Mirrors routes/dashboard.ts.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    // bundled: <plugin-root>/daemon.js sibling
+    join(here, "embed-worker.js"),
+    // dev: packages/daemon/src/embed.ts → embed-worker.ts in same dir
+    join(here, "embed-worker.ts"),
+    // dev from workspace root
+    join(here, "..", "..", "..", "packages", "plugin", "embed-worker.js"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  throw new Error(
+    `embed-worker not found. Checked MNEME_PLUGIN_ROOT and ${candidates.join(", ")}`,
+  );
 }
 
-// Drop the loaded pipeline if it has been idle long enough. Returns
-// true if it actually disposed something. Called from the daemon tick.
-// Safe to call when no pipeline is loaded (no-op).
-export async function disposeIfIdle(
-  idleMs: number = PIPELINE_IDLE_MS,
-): Promise<boolean> {
-  if (!pipelinePromise) return false;
-  if (Date.now() - lastUsedAt < idleMs) return false;
-
-  Logger.info("embedder: disposing idle pipeline", {
-    idle_seconds: Math.round((Date.now() - lastUsedAt) / 1000),
-  });
-  try {
-    const p = await pipelinePromise;
-    const dispose = (p as { dispose?: () => Promise<void> | void }).dispose;
-    if (typeof dispose === "function") {
-      await dispose.call(p);
-    }
-  } catch (err) {
-    Logger.warn(
-      "embedder: pipeline.dispose threw, dropping reference anyway",
-      { err: err instanceof Error ? err.message : String(err) },
-    );
+function failPending(err: Error): void {
+  if (inflight) {
+    inflight.reject(err);
+    inflight = null;
   }
-  pipelinePromise = null;
-  // Native ONNX session memory is held in C++; V8's GC can't reach
-  // it. dispose() above is supposed to release it. Bun.gc(true) cleans
-  // up the JS-side handles so the reference graph collapses fully.
-  if (typeof Bun !== "undefined" && Bun.gc) Bun.gc(true);
-  return true;
+  while (queue.length > 0) queue.shift()!.reject(err);
+}
+
+async function ensureChild(): Promise<ChildHandle> {
+  if (child && child.proc.exitCode === null) return child;
+  const script = workerScriptPath();
+  // Use the same Bun binary that's running the daemon. launchd / systemd
+  // unit files only put a minimal PATH on the env, so plain "bun" won't
+  // resolve; `process.execPath` is bulletproof.
+  const bunBin = process.execPath;
+  Logger.info("embedder: spawning worker", { script, bun: bunBin });
+  const proc = Bun.spawn([bunBin, script], {
+    stdin: "pipe",
+    stdout: "pipe",
+    // stderr inherits so transformers.js load logs land in the daemon's
+    // stderr stream alongside the rest of the daemon's logs.
+    stderr: "inherit",
+    env: process.env as Record<string, string>,
+  });
+  if (!proc.stdin || !proc.stdout) {
+    throw new Error("embed-worker spawn did not return stdio pipes");
+  }
+  const handle: ChildHandle = {
+    proc,
+    stdin: proc.stdin as unknown as ChildHandle["stdin"],
+  };
+  child = handle;
+
+  readLoop = readStdoutLoop(handle).catch((err) => {
+    Logger.warn("embedder: read loop crashed", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  });
+
+  // If the worker exits unexpectedly, fail any in-flight + queued
+  // requests so callers see a clear error instead of hanging forever.
+  void proc.exited.then((code) => {
+    if (child === handle) child = null;
+    if (code !== 0 && code !== null) {
+      Logger.warn("embed-worker exited unexpectedly", { code });
+      failPending(new Error(`embed-worker exited (code=${code})`));
+    }
+  });
+
+  return handle;
+}
+
+async function readStdoutLoop(handle: ChildHandle): Promise<void> {
+  const reader = (
+    handle.proc.stdout as ReadableStream<Uint8Array>
+  ).getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      const handler = inflight;
+      inflight = null;
+      if (!handler) {
+        Logger.warn("embedder: stray response from worker", {
+          preview: line.slice(0, 200),
+        });
+        continue;
+      }
+      try {
+        const resp = JSON.parse(line) as {
+          vectors?: number[][];
+          error?: string;
+        };
+        if (resp.error) handler.reject(new Error(resp.error));
+        else if (resp.vectors) handler.resolve(resp.vectors);
+        else handler.reject(new Error("invalid embed-worker response"));
+      } catch (err) {
+        handler.reject(err as Error);
+      }
+      pumpQueue();
+    }
+  }
+}
+
+function pumpQueue(): void {
+  if (inflight || queue.length === 0 || !child) return;
+  const next = queue.shift()!;
+  inflight = next;
+  const line = JSON.stringify({ texts: next.texts }) + "\n";
+  const enc = new TextEncoder();
+  try {
+    child.stdin.write(enc.encode(line));
+    // FileSink buffers writes; flush so the worker actually receives
+    // the request without waiting for more data.
+    void child.stdin.flush();
+  } catch (err) {
+    if (inflight === next) inflight = null;
+    next.reject(err instanceof Error ? err : new Error(String(err)));
+    return;
+  }
+  lastUsedAt = Date.now();
 }
 
 export async function embedBatch(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
-  const extractor = await getPipeline();
-  const output = await extractor(texts, { pooling: "mean", normalize: true });
+  await ensureChild();
+  return new Promise<number[][]>((resolve, reject) => {
+    queue.push({ texts, resolve, reject });
+    pumpQueue();
+  });
+}
 
-  // Transformers.js returns a Tensor whose .tolist() shape depends on input
-  // arity. For an array of strings the result is number[][] (batch × dim);
-  // for a single string it's number[] (dim only). We always pass an array,
-  // so the cast to number[][] is safe.
-  const flat = output.tolist();
-  return flat as number[][];
+export async function disposeIfIdle(
+  idleMs: number = PIPELINE_IDLE_MS,
+): Promise<boolean> {
+  if (!child) return false;
+  if (inflight || queue.length > 0) return false;
+  if (Date.now() - lastUsedAt < idleMs) return false;
+
+  Logger.info("embedder: disposing idle worker", {
+    idle_seconds: Math.round((Date.now() - lastUsedAt) / 1000),
+  });
+
+  const handle = child;
+  child = null;
+
+  // Closing stdin signals the worker's `for await (chunk of stdin)`
+  // loop to terminate and the worker exits with code 0. SIGTERM is
+  // the safety net if it doesn't honor that quickly.
+  try {
+    handle.stdin.end();
+  } catch (err) {
+    Logger.warn("embedder: stdin end threw", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const timeout = new Promise<"timeout">((resolve) =>
+    setTimeout(() => resolve("timeout"), DISPOSE_GRACE_MS),
+  );
+  const winner = await Promise.race([handle.proc.exited, timeout]);
+  if (winner === "timeout") {
+    Logger.warn("embed-worker did not exit on stdin close, sending SIGTERM");
+    handle.proc.kill();
+    await handle.proc.exited;
+  }
+  // Allow the read loop to wind down (reader will see done=true).
+  if (readLoop) {
+    await readLoop.catch(() => {});
+    readLoop = null;
+  }
+  return true;
 }
