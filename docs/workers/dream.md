@@ -24,27 +24,31 @@ Three reasons, all rooted in cost and authentication:
 
 ```mermaid
 flowchart TD
-    A[daemon scheduler · 8h] --> B{advisory lock<br/>_ops.dream_runs}
-    B -- "got lock" --> C[POST /api/dream/candidates<br/>per repo, eligible memories]
-    B -- "lock held" --> Z[skip · another machine is dreaming]
-    C --> D[Build cosine-NN edges<br/>distance < 0.10, same repo<br/>via HNSW LATERAL JOIN]
-    D --> E[Union-find connected components]
-    E --> F{size 3..20?}
-    F -- "no" --> G[skip cluster]
-    F -- "yes" --> H[Claude SDK · streaming JSON<br/>{title, summary}]
-    H --> I[POST /api/dream/clusters<br/>insert kind='cluster' memory<br/>+ mark members meta.in_cluster]
-    I --> J[server enqueues embed for cluster row]
-    I --> K{cloud LLM available?}
-    K -- "yes" --> L[supersede pass<br/>cluster + cosine-near neighbours]
-    L --> M[validate pairs → meta.superseded_by]
-    K -- "no" --> N[skip · 7B/3B too risky for declaring obsolescence]
+    A["daemon scheduler · 8h"] --> B{"advisory lock<br/>_ops.dream_runs"}
+    B -- "got lock" --> C["POST /api/dream/candidates<br/>per repo, eligible memories"]
+    B -- "lock held" --> Z["skip · another machine is dreaming"]
+    C --> D["cosine-NN edges<br/>distance under 0.10, same repo,<br/>across all machines (privacy-filtered)<br/>via HNSW LATERAL JOIN"]
+    D --> E["union-find connected components"]
+    E --> F{"size 3..20?"}
+    F -- "no" --> G["skip cluster"]
+    F -- "yes" --> H["Claude SDK · distill<br/>title + summary"]
+    H --> L["Claude SDK · supersede pass<br/>cluster members + cosine-near neighbours"]
+    L --> P["embed cluster summary<br/>bge-small subprocess"]
+    P --> I["POST /api/dream/clusters<br/>summary + member_ids + supersede_pairs"]
+    I --> M["server tx · insert kind=cluster row,<br/>mark members meta.in_cluster,<br/>write meta.superseded_by pairs"]
 ```
+
+---
+
+## Scope: cross-machine, per-repo
+
+Candidates are pulled **across every machine** (Mneme's whole point), scoped by `repo IS NOT DISTINCT FROM` so memories about different codebases don't bleed into each other. The only machine-aware filter is the privacy guard `(private = false OR machine_id = caller)` — a machine sees public rows from anywhere, plus its own private rows, never anyone else's privates. (`private = true` isn't wired at the capture layer yet, but the filter is in place for when it ships.)
 
 ---
 
 ## Eligibility skip-list
 
-These never enter a cluster:
+On top of the scope filter, these never enter a cluster:
 - `kind='cluster'` rows (the cluster summaries themselves)
 - Pinned memories (user-curated, shouldn't be subsumed)
 - Shadowed rows (`meta.shadow_of IS NOT NULL`)

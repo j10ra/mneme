@@ -22,7 +22,7 @@
 //      fact in Cluster A is invisible to the daemon — it never sees
 //      them together.
 //
-// This worker runs weekly (Sunday cron), takes a global view of the
+// This worker runs every 48h, takes a global view of the
 // cluster graph, and does two things:
 //
 //   Operation 1 — Cluster merge.

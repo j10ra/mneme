@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Mneme">
+  <style>
+    .edge { stroke: #1a1a1a; stroke-width: 1.5; opacity: 0.55; fill: none; stroke-linecap: round; }
+    .node { fill: #1a1a1a; stroke: none; }
+    .pin-ring { stroke: #1a1a1a; stroke-width: 1.5; fill: none; opacity: 0.45; }
+    @media (prefers-color-scheme: dark) {
+      .edge { stroke: #f0f0f0; }
+      .node { fill: #f0f0f0; }
+      .pin-ring { stroke: #f0f0f0; }
+    }
+  </style>
+
+  <line class="edge" x1="60" y1="28" x2="30" y2="54"/>
+  <line class="edge" x1="60" y1="28" x2="90" y2="54"/>
+  <line class="edge" x1="30" y1="54" x2="60" y2="66"/>
+  <line class="edge" x1="90" y1="54" x2="60" y2="66"/>
+  <line class="edge" x1="30" y1="54" x2="44" y2="90"/>
+  <line class="edge" x1="60" y1="66" x2="44" y2="90"/>
+  <line class="edge" x1="60" y1="66" x2="80" y2="90"/>
+  <line class="edge" x1="90" y1="54" x2="80" y2="90"/>
+  <line class="edge" x1="44" y1="90" x2="80" y2="90"/>
+
+  <circle class="node" cx="30" cy="54" r="4"/>
+  <circle class="node" cx="90" cy="54" r="4"/>
+  <circle class="node" cx="60" cy="66" r="4"/>
+  <circle class="node" cx="44" cy="90" r="4"/>
+  <circle class="node" cx="80" cy="90" r="4"/>
+
+  <circle class="pin-ring" cx="60" cy="28" r="9"/>
+  <circle class="node" cx="60" cy="28" r="5"/>
+</svg>

@@ -128,7 +128,7 @@ export const SUPERSEDE_LLM_BATCH_MAX_MEMBERS = 30;
  *  templates / using-mneme skill read this. */
 export const SUPERSEDE_RECALL_PENALTY = 0.3;
 
-// ── Digest (cross-cluster consolidator, weekly) ───────────────────────
+// ── Digest (cross-cluster consolidator, every 48h) ────────────────────
 // Issue #30. Third worker in the brain trio (nap → dream → digest).
 // Where dream synthesises clusters from one window's memories, digest
 // rises above the per-cluster view to merge duplicate clusters and

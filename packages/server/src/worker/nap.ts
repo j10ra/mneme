@@ -30,11 +30,7 @@ export type NapResult = {
  *    6. stamp meta.last_napped_at on every seed (round-robin gate)
  *  Steps 4 + 5 are bounded by the seed cap so the whole transaction
  *  stays under Railway's 2-min Postgres statement_timeout regardless
- *  of corpus size.
- *
- *  The legacy ingest_jobs resurrect/retire passes were retired with the
- *  ingest_jobs table itself (migration 0021); the daemon's file-based
- *  outbox owns retry semantics now. */
+ *  of corpus size. */
 export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult> => {
   const result = await sql.begin(async (tx) => {
     // 1. Decay all non-archived memories. Pinned rows stop at PIN_FLOOR;

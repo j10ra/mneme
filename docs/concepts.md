@@ -23,7 +23,7 @@ The vocabulary used everywhere else. Read this first if other docs use a term yo
 | **Embed macro** | `embed('text')` inside SQL passed to `mneme_sql`. The MCP tool replaces it with a vector literal from the configured embedder before execution. |
 | **Nap** | Server-side, every 6h, pure SQL. Decay + shadow + relate + rule-based supersede. See [`workers/nap.md`](./workers/nap.md). |
 | **Dream** | Daemon-side, every 8h, LLM-driven clustering. Distributed-leader via Postgres advisory lock. See [`workers/dream.md`](./workers/dream.md). |
-| **Digest** | Server-side, weekly, opt-in (`MNEME_DIGEST_ENABLED=1`). Cross-cluster merge + supersede. See [`workers/digest.md`](./workers/digest.md). |
+| **Digest** | Server-side, every 48h, opt-in (`MNEME_DIGEST_ENABLED=1`). Cross-cluster merge + supersede. See [`workers/digest.md`](./workers/digest.md). |
 | **Surface** | Per-session injection. `/api/session/start` returns five sections of memory pointers (Pinned, Rules, Themes, Recent, Sessions); the SessionStart hook prints them as Claude Code's `additionalContext`. Never writes to user files. See [`surface.md`](./surface.md). |
 | **Recall** | Read path via the MCP `mneme_sql` tool. Hybrid score (cosine + ts_rank + importance) with rank-down for superseded. See [`recall.md`](./recall.md). |
 | **Source** | Origin tag on a capture row. Today: `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`, `manual:/memory`, `manual:/api/memory`. |

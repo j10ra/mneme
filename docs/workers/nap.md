@@ -65,12 +65,12 @@ The same reasoning applies to [`prune.md`](./prune.md) (telemetry retention), wh
 
 ## Retry semantics
 
-Retries live in the **daemon's outbox**, not in nap. A failed push leaves the file in `embedded/` for the next tick; a permanent failure moves the file to `failed/<reason>/`. The legacy `ingest_jobs` queue (and the nap pass that retired its errors) was dropped in migration 0021 along with the table itself.
+Retries live in the **daemon's outbox**, not in nap. A failed push leaves the file in `embedded/` for the next tick; a permanent failure moves the file to `failed/<reason>/`.
 
 ---
 
 ## See also
 
 - [`dream.md`](./dream.md) — clustering pass that runs every 8h on the daemon.
-- [`digest.md`](./digest.md) — weekly cross-cluster pass on the server (opt-in).
+- [`digest.md`](./digest.md) — 48h cross-cluster pass on the server (opt-in).
 - [`../recall.md`](../recall.md) — how nap's outputs (importance, shadow, related_to, superseded_by) interact at recall time.

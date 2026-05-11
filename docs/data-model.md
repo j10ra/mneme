@@ -54,8 +54,6 @@ erDiagram
 
 ```
 
-(A legacy `ingest_jobs` table existed pre-#22 as the server's extract/embed queue. The daemon's file-based outbox replaced it; the table was dropped in migration 0021.)
-
 ---
 
 ## What lives in `meta jsonb` instead of dedicated tables

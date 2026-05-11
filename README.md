@@ -1,10 +1,12 @@
 <div align="center">
 
+<img src="docs/images/mneme-logo.svg" alt="Mneme" width="120" height="120" />
+
 # Mneme
 
 **Cross-machine memory for your AI coding assistant.**
 
-*Greek muse of memory. Your assistant remembers everything you've worked on, across every machine, every harness, every model.*
+*Pronounced **NEE-mee**. One of the three original Greek Muses; her name means "memory" itself. Your assistant remembers everything you've worked on, across every machine, every harness, every model.*
 
 </div>
 
@@ -12,15 +14,73 @@
 
 You open Claude Code on your laptop. Before you type a single word, the agent already sees a tight digest of what you decided last week, what's pinned, what bug you fixed yesterday, and what summaries the agent wrote at the end of recent sessions.
 
-Later that day on your desktop, you open Claude Code again. Same digest. Same memory.
+That digest is **light by design** — short previews, not full memories. The agent only pulls the full content on the ones it actually needs (the same just-in-time retrieval pattern from Anthropic's meta-harness work). Your context window stays free for the work in front of you.
+
+Later that day on your desktop, you open Claude Code again. The same surface, freshly assembled — whatever you worked on is already in it. One continuous memory across every machine — for now inside Claude Code, with every harness and model on the roadmap.
 
 That's Mneme.
 
-> Want to know **how** it works? The full design and rationale lives in [`docs/`](./docs/README.md) — start at the router, it's a few-minute read. This README is for **installing and using** Mneme.
+<p align="center">
+  <img src="docs/screenshots/dashboard-memories.png" alt="Mneme dashboard — Memories tab" width="820" />
+  <br />
+  <sub><i><code>/mneme:dashboard</code> — Memories tab. Browse, filter, and pivot through everything Mneme has captured.</i></sub>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/dashboard-activity.png" alt="Mneme dashboard — Activity tab" width="820" />
+  <br />
+  <sub><i>Activity tab. Worker status, breakers, registered machines, and the live span feed.</i></sub>
+</p>
 
 ---
 
-## What it feels like to use
+## ⚙️ How it works
+
+The data plumbing under the brain trio below: hooks scrub and post captures to a local file outbox; the per-machine daemon coalesces same-session captures, calls Claude (via the Agent SDK on your existing `claude` login) to distill atomic observations, embeds with `bge-small-en-v1.5` in an isolated subprocess so the ONNX session can't fragment the daemon's address space, then pushes pre-built bundles to the server. The server is a single Bun process — it inserts in one transaction, runs the workers below, and exposes one MCP tool (`mneme_sql`) so any agent on any harness can read. One Postgres holds it all.
+
+```mermaid
+flowchart LR
+    H([hook]) --> C["daemon · /capture"]
+    C --> O[(outbox)]
+    O --> B["server · /api/bundle"]
+    B --> M[(memories)]
+    M --> N["nap<br/><sub>6h · SQL</sub>"]
+    M --> D["dream<br/><sub>8h · Sonnet</sub>"]
+    M --> G["digest<br/><sub>48h · opt-in</sub>"]
+    T[("_ops<br/>telemetry")] --> P["prune<br/><sub>24h</sub>"]
+```
+
+For the long version — capture pipeline, the three brain workers (nap / dream / digest), retention, recall, schema, surfaces — go to [`docs/`](./docs/README.md).
+
+---
+
+## 🧠 Why memory stays useful
+
+Most "agent memory" tools are a write-only log: capture → embed → retrieve. That works for a week. Then the recall surface fills with stale duplicates, contradicting facts both rank, and there's no higher-level view of what you've been working on. Mneme keeps the corpus alive with three background workers — the brain trio — each solving a different decay problem.
+
+### 💤 Nap — every 6h, on the server *(SQL, no LLM in the loop)*
+
+**The maintenance pass.** *Without it: importance never decays, exact duplicates pile up, related memories never link, replaced facts keep ranking.*
+
+Each cycle: importance decays with a ~30-day timescale, exact-text duplicates get shadowed onto a canonical row, every memory gets `meta.related_to` edges to cosine-near neighbours in the same repo, and rule-based supersede fires when a newer row clearly replaces an older one (tight cosine + keyword overlap + 12h gap). Pure SQL in one transaction, round-robin paginated via `meta.last_napped_at` so it scales with the corpus.
+
+### 💭 Dream — every 8h, on the daemon *(Sonnet via your `claude` login — no extra cost)*
+
+**The synthesis pass.** *Without it: agents see only atomic captures — never "what's going on with repo X this week" as a theme.*
+
+Each cycle finds tight cosine groups of memories in the same repo, calls Sonnet to write a one-paragraph title + summary per cluster, and persists each summary as a queryable `kind='cluster'` row that outranks its members for broad recall queries. **Cross-machine by design:** a memory captured on your laptop and one on your desktop, both about the same repo and close in embedding space, cluster together. Distributed-leader via Postgres advisory lock — exactly one of your daemons wins the window.
+
+### 🔮 Digest — every 48h, on the server *(opt-in, Sonnet via OpenRouter)*
+
+**The cross-cluster consolidator.** *Without it: two machines independently capture "we use X" then "we use Y" in different dream windows, form two unrelated clusters, never reconcile.*
+
+Each cycle takes a global view of the cluster graph and does two things: merges duplicate clusters that formed independently across machines or windows, and reconciles contradictions that span cluster boundaries via LLM-driven supersede. Off by default (`MNEME_DIGEST_ENABLED=0`) because at one-user/three-machine scale the per-machine dream is usually enough; flip it on when the cluster graph drifts.
+
+**Net effect:** recall doesn't degrade over months. The corpus refines itself in the background while you work.
+
+---
+
+## ✨ What it feels like to use
 
 | When | What happens |
 |---|---|
@@ -32,7 +92,7 @@ That's Mneme.
 
 ---
 
-## Install
+## 📦 Install
 
 You need a Postgres database, a host that runs Bun, and Claude Code on at least one machine. Mneme is host-agnostic: Postgres can be Railway / Supabase / Neon / RDS / a $5 VPS / your own box; the Bun process can run on Railway / Fly.io / Render / a VPS / your homelab.
 
@@ -91,7 +151,7 @@ bun run dev                # local dev; for prod, deploy to any Bun-capable host
 <details>
 <summary><b>Provider configuration</b> — what to put in <code>.env</code></summary>
 
-Most LLM and embedder work happens **on the user's machine inside the daemon**, not on the server. The daemon uses the Claude Agent SDK (inheriting your existing `claude` OAuth) for extract + dream, and runs `BAAI/bge-small-en-v1.5` in an isolated subprocess for embeddings — neither needs a server-side env var. The server only needs LLM/embedder env vars if you opt into the **digest** worker (weekly cross-cluster pass), in which case the picker uses OpenRouter or any OpenAI-compatible fallback.
+Most LLM and embedder work happens **on the user's machine inside the daemon**, not on the server. The daemon uses the Claude Agent SDK (inheriting your existing `claude` OAuth) for extract + dream, and runs `BAAI/bge-small-en-v1.5` in an isolated subprocess for embeddings — neither needs a server-side env var. The server only needs LLM/embedder env vars if you opt into the **digest** worker (every-48h cross-cluster pass), in which case the picker uses OpenRouter or any OpenAI-compatible fallback.
 
 ```env
 # Database (required)
@@ -146,7 +206,7 @@ The plugin's SessionStart hook detects the new version and self-heals the servic
 
 ---
 
-## Daily use
+## ⚡ Daily use
 
 | Command | Effect |
 |---|---|
@@ -167,25 +227,7 @@ Hooks fire on their own. You shouldn't have to think about them.
 
 ---
 
-## How it works
-
-Per-machine daemons own the hot path: hooks scrub + post to a local outbox, the daemon coalesces same-session captures, calls Claude (via the Agent SDK on your existing `claude` login) for atomic observations, embeds with `bge-small-en-v1.5` in a subprocess, then pushes pre-built bundles to the server. The server is a single Bun process — it inserts in one transaction, runs a `nap` pass every 6 h (decay, shadow, supersede), and exposes one MCP tool (`mneme_sql`) so any agent on any harness can read. One Postgres holds it all.
-
-```
-hook → daemon /capture → outbox → /api/bundle → memories
-                                                  │
-                                                  ├─ 6h ─▶ nap     (server, SQL)
-                                                  ├─ 8h ─▶ dream   (daemon, Sonnet)
-                                                  └─ 7d ─▶ digest  (server, opt-in)
-
-_ops.{spans,traces,logs} ── 24h ─▶ prune (server, telemetry retention)
-```
-
-For the long version — capture pipeline, the three brain workers (nap / dream / digest), retention, recall, schema, surfaces — go to [`docs/`](./docs/README.md).
-
----
-
-## What's in this repo
+## 📁 What's in this repo
 
 | Path | Purpose |
 |---|---|
@@ -199,7 +241,7 @@ For the long version — capture pipeline, the three brain workers (nap / dream 
 
 ---
 
-## Status
+## 🚦 Status
 
 Mneme is a personal tool. One user, several machines. **Phases 0–9 shipped:** capture, extract, embed, surface, nap (decay + shadow + relate + supersede), dream (cluster + distil + supersede, distributed-leader), distributed daemon (extract + embed + dream moved to per-machine), dashboard + ops surface, digest (opt-in cross-cluster pass). Multi-harness rollout (Codex / Cursor / OpenCode) tracked at [#6](https://github.com/j10ra/mneme/issues/6).
 

@@ -5,7 +5,7 @@
 //   - nap       (every 6h): decay importance, shadow-mark exact dupes,
 //                link semantically related memories. Paginated via
 //                meta.last_napped_at round-robin (cap NAP_PER_CYCLE_CAP).
-//   - digest    (every 7d, gated by MNEME_DIGEST_ENABLED): global
+//   - digest    (every 48h, gated by MNEME_DIGEST_ENABLED): global
 //                cross-cluster operations the per-machine daemon dream
 //                can't do — merge duplicate clusters, run cross-cluster
 //                supersede. Sonnet-grade via openrouter, conservative
@@ -37,7 +37,7 @@ export function startWorker(): void {
   if (env.DIGEST_ENABLED) {
     register({
       name: "digest",
-      scheduleMs: 7 * 24 * 60 * 60 * 1000,
+      scheduleMs: 48 * 60 * 60 * 1000,
       run: runDigestOnce,
     });
   } else {

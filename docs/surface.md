@@ -76,7 +76,6 @@ _Since last session (2h ago): 24 captures, 11 memories · 3 superseded all-time_
 - [c1d2e3f4] 💬 The user prefers terse responses, no preamble
 
 ## Themes (3 of 16)
-- [31752bec] 🧩 **ingest_jobs table drained, server workers obsolete** — Daemon-side processing has fully replaced the server's extract+embed loops; only historical rows remain.
 - [5b1ed144] 🧩 **Trace forwarding (Phase A) shipped in 1.0.59** — Daemon batches spans every 5s/100 items to /api/ingest/spans; covers stage ticks, Claude SDK calls, scheduler jobs.
 
 ## Recent (last 14 days)

@@ -2,9 +2,9 @@
 --
 -- 0012 dropped it in `public` because mneme_reader already had blanket
 -- SELECT on public.* — but it doesn't belong there. `public` holds user
--- data (memories, captures, ingest_jobs); the skill teaches those as the
--- schema and a fourth admin-flavoured view in the same namespace surprises
--- the agent. `_ops` is the convention for everything observability/admin.
+-- data (memories, captures); the skill teaches those as the schema and a
+-- third admin-flavoured view in the same namespace surprises the agent.
+-- `_ops` is the convention for everything observability/admin.
 -- mneme_reader already has narrow USAGE + SELECT precedent there
 -- (_ops.worker_runs from migration 0007), so this fits the same pattern.
 --

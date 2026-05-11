@@ -86,8 +86,3 @@ Read-only public view exposing `(machine_id, name, created_at, last_used_at, rev
 
 Use the bare name `machines` (e.g. `SELECT name FROM machines WHERE machine_id = ...`). The underlying `_ops.machines` is **not** agent-visible — `mneme_reader` lacks USAGE on the `_ops` schema by design, so `FROM _ops.machines` returns `permission denied for schema _ops`.
 
----
-
-## ~~`ingest_jobs`~~ — removed
-
-The legacy `ingest_jobs` queue was dropped in migration 0021. The per-machine daemon's file-based outbox (`~/.mneme/outbox/`) owns the pipeline now. Don't reference this table.
