@@ -54,10 +54,12 @@ The inner `LATERAL JOIN` for relate-pass still scans the full memories table for
 
 Same reason any process loop lives in code:
 - Shares the same observability stream (logs and spans go to `_ops.*`).
-- Doesn't depend on a Postgres extension (keeps Mneme provider-portable).
+- Doesn't depend on a Postgres extension (keeps Mneme provider-portable across Railway / Neon / Supabase / self-host without needing `pg_cron` available).
 - The scheduler in `worker/scheduler.ts` persists `next_run_at` to `_ops.worker_runs` so a Railway redeploy mid-cycle doesn't skip the schedule.
 
 The per-cycle SQL runs in **one transaction** — atomic, no LLM in the loop, no external dependencies.
+
+The same reasoning applies to [`prune.md`](./prune.md) (telemetry retention), which used to run as a `pg_cron` job on Supabase and has since moved fully to app-level for the same portability win.
 
 ---
 

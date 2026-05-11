@@ -21,11 +21,19 @@ ALTER TABLE _ops.logs
   ADD CONSTRAINT logs_trace_id_fkey
   FOREIGN KEY (trace_id) REFERENCES _ops.traces (trace_id) ON DELETE CASCADE;
 
--- 4. Permanent: schedule a sibling cron for traceless logs (age-only, since
---    they have no parent to cascade from). Runs 5 minutes after the traces
---    prune to avoid lock contention with the cascade pass.
-SELECT cron.schedule(
-  'mneme_ops_logs_prune',
-  '5 3 * * *',
-  $$DELETE FROM _ops.logs WHERE trace_id IS NULL AND ts < now() - interval '14 days'$$
-);
+-- 4. Permanent: schedule a sibling cron for traceless logs (age-only,
+--    since they have no parent to cascade from). Runs 5 minutes after
+--    the traces prune to avoid lock contention with the cascade pass.
+--    NO-OPs without pg_cron — app-level prune covers it regardless.
+DO $pgcron_optional$
+BEGIN
+  PERFORM cron.schedule(
+    'mneme_ops_logs_prune',
+    '5 3 * * *',
+    $cron_body$DELETE FROM _ops.logs WHERE trace_id IS NULL AND ts < now() - interval '14 days'$cron_body$
+  );
+  RAISE NOTICE 'scheduled mneme_ops_logs_prune via pg_cron';
+EXCEPTION WHEN undefined_schema OR undefined_function OR undefined_table THEN
+  RAISE NOTICE 'pg_cron not installed; mneme_ops_logs_prune skipped (app-level prune is canonical)';
+END;
+$pgcron_optional$;

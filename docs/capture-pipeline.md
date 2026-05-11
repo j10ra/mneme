@@ -14,7 +14,7 @@ sequenceDiagram
     participant Daemon as Daemon · 127.0.0.1:port
     participant Outbox as ~/.mneme/outbox/
     participant Agent as Claude Agent SDK
-    participant EMB as bge-large in-process
+    participant EMB as bge-small subprocess
     participant Server as POST /api/bundle
     participant DB as Postgres
 
@@ -107,7 +107,7 @@ The agent provider (`packages/daemon/src/agents/claude.ts`) calls the Claude Age
 
 ### Stage 3 · Embed
 
-`embed.ts` lazily loads `BAAI/bge-large-en-v1.5` from `@xenova/transformers` — auto-downloaded once per machine (~1.3 GB), cached under `~/.cache/transformers/`. `embedBatch(texts)` runs quantised int8 inference inline; on a modern laptop this is faster than a TEI HTTP hop. After 60 seconds idle, the embedder is reaped from RAM (`disposeIfIdle` runs every 60s via the daemon's scheduler) so the daemon's resident set drops to ~50 MB between bursts.
+`embed.ts` spawns `embed-worker.ts` as a child process on first request (`Bun.spawn` with JSON-lines stdio). The worker lazily loads `BAAI/bge-small-en-v1.5` (384-dim, quantised int8 ONNX) from `@xenova/transformers` — auto-downloaded once per machine (~33 MB), cached under `~/.cache/transformers/`. `embedBatch(texts)` enqueues a request, the parent serialises one batch at a time over the pipe, and the worker writes JSON responses back. After 60 seconds idle, `disposeIfIdle` closes the worker's stdin; the worker exits cleanly on EOF and the OS reclaims the entire ONNX heap (this is the architectural payoff of #33: in-process disposal left ~500 MB of `MALLOC_LARGE` fragmentation in the daemon's address space — subprocess disposal collapses to zero). Daemon's steady-state RSS stays at ~80-100 MB regardless of embed bursts.
 
 Each memory gets stamped with:
 - `content_hash = sha256(content)`

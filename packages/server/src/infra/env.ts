@@ -9,13 +9,9 @@
 import { z } from "zod";
 
 const Schema = z.object({
-  // ── Postgres / Supabase ───────────────────────────────────────────
+  // ── Postgres ──────────────────────────────────────────────────────
   DATABASE_URL: z.string().url(),
   MNEME_READER_DATABASE_URL: z.string().url(),
-  // Supabase project keys are present in `.env` but currently unused by
-  // the server runtime. Kept optional so they don't gate startup.
-  SUPABASE_URL: z.string().url().optional(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
 
   // ── Server ────────────────────────────────────────────────────────
   PORT: z.coerce.number().int().positive().default(3100),
@@ -60,11 +56,15 @@ const Schema = z.object({
   // supersede pass run against the live corpus.
   MNEME_DIGEST_ENABLED: z.enum(["0", "1"]).default("0"),
 
-  // ── Embedder (local TEI via compute.jalipalo.dev) ─────────────────
-  EMBEDDER_PROVIDER: z.string().default("local"),
+  // ── Embedder (server-side TEI fallback for non-daemon callers) ────
+  // Canonical embedder runs in each per-machine daemon (bge-small via
+  // packages/daemon/src/embed-worker.ts). The server-side TEI path
+  // below is only exercised when a client bypasses the daemon's MCP
+  // proxy. Defaults match what the daemon emits so chunk_id hashing
+  // stays consistent.
   EMBEDDER_URL: z.string().url().optional(),
   EMBEDDER_BEARER: z.string().optional(),
-  EMBEDDER_MODEL: z.string().default("BAAI/bge-large-en-v1.5"),
+  EMBEDDER_MODEL: z.string().default("BAAI/bge-small-en-v1.5"),
   EMBEDDER_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 });
 
