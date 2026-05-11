@@ -1571,21 +1571,9 @@ async function disposeIfIdle(idleMs = PIPELINE_IDLE_MS) {
 
 // packages/daemon/src/outbox.ts
 import { existsSync as existsSync3 } from "fs";
-import {
-  mkdir as mkdir2,
-  readFile as readFile2,
-  readdir as readdir2,
-  rename as rename2,
-  rm as rm2,
-  writeFile as writeFile2
-} from "fs/promises";
+import { mkdir as mkdir2, readFile as readFile2, readdir as readdir2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "fs/promises";
 import { join as join3 } from "path";
-var STATES = [
-  "captured",
-  "observations",
-  "embedded",
-  "failed"
-];
+var STATES = ["captured", "observations", "embedded", "failed"];
 var LEGACY_MOVES = [
   { from: "pending", to: "captured" },
   { from: "extracted", to: "observations" }
@@ -2155,12 +2143,7 @@ function scrubData(data) {
   return data;
 }
 // packages/daemon/src/runtime.ts
-var REQUIRED_STRING_FIELDS = [
-  "content",
-  "source",
-  "hostname",
-  "harness"
-];
+var REQUIRED_STRING_FIELDS = ["content", "source", "hostname", "harness"];
 var COALESCE_WINDOW_MS = 5 * 60 * 1000;
 var MAX_BATCH_SIZE = 20;
 var DEFAULT_EXTRACT_BATCH_FULL = 1;

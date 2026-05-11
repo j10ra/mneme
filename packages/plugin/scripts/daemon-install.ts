@@ -37,14 +37,22 @@ import { join } from "node:path";
  *  the daemon's process happens to have a usable PATH.
  */
 function readOauthTokenFromCredentials(): string | null {
+  // 1. ~/.claude/.credentials.json (CC's own credential store)
   try {
-    const path = join(homedir(), ".claude", ".credentials.json");
-    if (!existsSync(path)) return null;
-    const raw = JSON.parse(require("node:fs").readFileSync(path, "utf8"));
-    return raw?.claudeAiOauth?.accessToken ?? null;
-  } catch {
-    return null;
-  }
+    const credPath = join(homedir(), ".claude", ".credentials.json");
+    if (existsSync(credPath)) {
+      const raw = JSON.parse(require("node:fs").readFileSync(credPath, "utf8"));
+      const token = raw?.claudeAiOauth?.accessToken;
+      if (token) return token;
+    }
+  } catch {}
+  // 2. ~/.bashrc export (common WSL pattern where CC doesn't inject into hooks)
+  try {
+    const bashrc = require("node:fs").readFileSync(join(homedir(), ".bashrc"), "utf8");
+    const m = bashrc.match(/export\s+CLAUDE_CODE_OAUTH_TOKEN=["']?([^"'\s]+)["']?/);
+    if (m?.[1]) return m[1];
+  } catch {}
+  return null;
 }
 
 export function findClaudeBinary(): string | null {
