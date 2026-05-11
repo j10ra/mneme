@@ -1,13 +1,16 @@
 // Local embedder — HuggingFace Text Embeddings Inference (TEI) shape behind
-// a Caddy/Cloudflare-tunnel proxy. Today this points at the homelab TEI
-// service running BAAI/bge-large-en-v1.5 (1024-dim, drop-in for our pgvector
-// schema). Any TEI-compatible endpoint works by changing EMBEDDER_URL.
+// a Caddy/Cloudflare-tunnel proxy. Historical: pointed at the homelab TEI
+// service running BAAI/bge-large-en-v1.5 (1024-dim). Post-#36 Phase 1 the
+// canonical embedder is BAAI/bge-small-en-v1.5 (384-dim) running locally
+// per-daemon; this server-side provider is retained for the non-daemon
+// embed() macro path and would need a matching 384-dim TEI endpoint to be
+// useful again. Any TEI-compatible endpoint works by changing EMBEDDER_URL.
 
 import { Logger, mnemeFn } from "@mneme/core";
 import { env } from "../infra/env.ts";
 
 export const EMBEDDER_MODEL = env.EMBEDDER_MODEL;
-export const EMBEDDER_DIM = 1024;
+export const EMBEDDER_DIM = 384;
 
 /** Reduce an upstream error body to a single, log-friendly line. Cloudflare
  *  error pages and other proxy responses come back as multi-line HTML — we

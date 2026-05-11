@@ -24,6 +24,7 @@ import {
   DREAM_MAX_NEIGHBORS_PER_MEMORY,
 } from "../infra/config.ts";
 import { sha256Hex, sql } from "../infra/db.ts";
+import { EMBEDDER_DIM } from "../embedder/index.ts";
 
 // HNSW lookups against memories.embedding take ~50ms per probe in
 // practice (the index is global; per-repo filtering forces deep
@@ -273,11 +274,12 @@ export function validateClustersBody(input: unknown): ClustersValidation {
     }
     if (
       c.summary_embedding !== undefined &&
-      (!Array.isArray(c.summary_embedding) || c.summary_embedding.length !== 1024)
+      (!Array.isArray(c.summary_embedding) ||
+        c.summary_embedding.length !== EMBEDDER_DIM)
     ) {
       return {
         ok: false,
-        error: `clusters[${i}].summary_embedding must be a 1024-dim array if present`,
+        error: `clusters[${i}].summary_embedding must be a ${EMBEDDER_DIM}-dim array if present`,
       };
     }
   }

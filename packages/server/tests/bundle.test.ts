@@ -7,6 +7,7 @@
 // production logs.
 
 import { describe, expect, test } from "bun:test";
+import { EMBEDDER_DIM } from "../src/embedder/index.ts";
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 
@@ -60,8 +61,8 @@ describe.skipIf(!HAS_DB)("/api/bundle smoke (requires DATABASE_URL)", () => {
           content: "use advisory locks for dream coordination",
           content_hash: "c".repeat(64),
           chunk_id: "d".repeat(64),
-          embedding: Array(1024).fill(0.1),
-          embedding_model: "BAAI/bge-large-en-v1.5",
+          embedding: Array(EMBEDDER_DIM).fill(0.1),
+          embedding_model: "BAAI/bge-small-en-v1.5",
           kind: "decision",
           importance: 0.8,
           topics: [],
@@ -97,8 +98,8 @@ describe.skipIf(!HAS_DB)("/api/bundle smoke (requires DATABASE_URL)", () => {
           content: "smoke memory",
           content_hash: "ab".repeat(32),
           chunk_id: chunkId,
-          embedding: Array(1024).fill(0.05),
-          embedding_model: "BAAI/bge-large-en-v1.5",
+          embedding: Array(EMBEDDER_DIM).fill(0.05),
+          embedding_model: "BAAI/bge-small-en-v1.5",
           kind: "note",
           importance: 0.4,
           topics: [],

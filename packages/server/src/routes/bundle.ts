@@ -1,11 +1,11 @@
 // /api/bundle - the only ingest path under the daemon model.
 //
 // Receives a complete unit from the daemon: { capture, memories[] }
-// where every memory already carries its embedding (1024-dim float
-// array), content_hash, chunk_id, and provenance meta. Server inserts
-// in a single transaction. Idempotent on (content_sha256, machine_id)
-// for the capture and on chunk_id for memories, so retried pushes are
-// safe.
+// where every memory already carries its embedding (EMBEDDER_DIM-sized
+// float array, currently 384), content_hash, chunk_id, and provenance
+// meta. Server inserts in a single transaction. Idempotent on
+// (content_sha256, machine_id) for the capture and on chunk_id for
+// memories, so retried pushes are safe.
 //
 // machine_id is server-stamped from the bearer token; the body's
 // machine_id (if any) is ignored. Same defense-in-depth pattern as
@@ -18,6 +18,7 @@
 import { Hono } from "hono";
 import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql } from "../infra/db.ts";
+import { EMBEDDER_DIM } from "../embedder/index.ts";
 
 type CaptureBody = {
   content: string;
@@ -91,8 +92,11 @@ export function validateBundleBody(input: unknown): ValidationResult {
     if (typeof m.chunk_id !== "string" || m.chunk_id.length !== 64) {
       return { ok: false, error: `memories[${i}].chunk_id must be a 64-char sha256 hex` };
     }
-    if (!Array.isArray(m.embedding) || m.embedding.length !== 1024) {
-      return { ok: false, error: `memories[${i}].embedding must be 1024-dim` };
+    if (!Array.isArray(m.embedding) || m.embedding.length !== EMBEDDER_DIM) {
+      return {
+        ok: false,
+        error: `memories[${i}].embedding must be ${EMBEDDER_DIM}-dim`,
+      };
     }
     if (typeof m.kind !== "string") {
       return { ok: false, error: `memories[${i}].kind required` };
