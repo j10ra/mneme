@@ -36,6 +36,17 @@ import { join } from "node:path";
  *  its own fallback list and may resolve at runtime via `which` if
  *  the daemon's process happens to have a usable PATH.
  */
+function readOauthTokenFromCredentials(): string | null {
+  try {
+    const path = join(homedir(), ".claude", ".credentials.json");
+    if (!existsSync(path)) return null;
+    const raw = JSON.parse(require("node:fs").readFileSync(path, "utf8"));
+    return raw?.claudeAiOauth?.accessToken ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function findClaudeBinary(): string | null {
   // 1. Honor an explicitly set env var (operator override).
   if (process.env.CLAUDE_EXECUTABLE_PATH) {
@@ -548,7 +559,11 @@ export async function installDaemonService(cfg: DaemonInstallConfig): Promise<In
   const resolvedCfg: DaemonInstallConfig = {
     ...cfg,
     claudePath: cfg.claudePath ?? findClaudeBinary() ?? undefined,
-    claudeOauthToken: cfg.claudeOauthToken ?? process.env.CLAUDE_CODE_OAUTH_TOKEN ?? undefined,
+    claudeOauthToken:
+      cfg.claudeOauthToken ??
+      process.env.CLAUDE_CODE_OAUTH_TOKEN ??
+      readOauthTokenFromCredentials() ??
+      undefined,
   };
   const config = buildServiceConfig(platform, resolvedCfg);
 
