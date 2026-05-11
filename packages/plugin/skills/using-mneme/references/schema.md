@@ -88,6 +88,6 @@ Always schema-qualify (`_ops.machines`, never bare `machines`).
 
 ---
 
-## `ingest_jobs` — legacy worker queue
+## ~~`ingest_jobs`~~ — removed
 
-You usually don't query this. `phase ∈ extract, embed, dream`; `state ∈ queued, running, done, error, dead`. The table is drained as of #29 — daemon owns the new outbox-based pipeline.
+The legacy `ingest_jobs` queue was dropped in migration 0021. The per-machine daemon's file-based outbox (`~/.mneme/outbox/`) owns the pipeline now. Don't reference this table.

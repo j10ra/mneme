@@ -14,22 +14,11 @@ import {
 } from "../infra/config.ts";
 import { sql } from "../infra/db.ts";
 
-// Transient error patterns. These match upstream-flake messages worth retrying
-// after a grace window. Anything not matching is treated as content-related
-// and retired to state='dead'. Uses POSIX regex (~*), so [0-9] not \d.
-// Covers: 5xx server errors, 408 / 429 rate-limit, generic timeouts, the
-// Node socket errno strings that pop out of fetch() (ECONNRESET / REFUSED,
-// ENOTFOUND, EAI_AGAIN), and the common "socket hang up" string.
-const TRANSIENT_REGEX =
-  "HTTP (4(29|08)|5[0-9][0-9])|status (4(29|08)|5[0-9][0-9])|rate.?limit|timed out|timeout|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|tunnel|gateway|connection (refused|reset|closed|aborted)";
-
 export type NapResult = {
   decayed: number;
   shadowed: number;
   related: number;
   superseded: number;
-  resurrected: number;
-  killed: number;
 };
 
 /** Run one nap cycle, all in one transaction:
@@ -39,11 +28,13 @@ export type NapResult = {
  *    4. relate-pass: link semantic neighbours via meta.related_to
  *    5. supersede-rule pass: rule-based newer-replaces-older
  *    6. stamp meta.last_napped_at on every seed (round-robin gate)
- *    7. resurrect transient ingest failures
- *    8. retire non-transient errors to dead
  *  Steps 4 + 5 are bounded by the seed cap so the whole transaction
  *  stays under Railway's 2-min Postgres statement_timeout regardless
- *  of corpus size. */
+ *  of corpus size.
+ *
+ *  The legacy ingest_jobs resurrect/retire passes were retired with the
+ *  ingest_jobs table itself (migration 0021); the daemon's file-based
+ *  outbox owns retry semantics now. */
 export const runNapOnce = mnemeFn(
   "worker.nap.once",
   async (): Promise<NapResult> => {
@@ -229,38 +220,11 @@ export const runNapOnce = mnemeFn(
         `;
       }
 
-      // 7. Resurrect transient ingest failures (1h grace).
-      const resurrected = await tx`
-        UPDATE ingest_jobs
-        SET state = 'queued',
-            attempts = 0,
-            scheduled_at = now(),
-            error = NULL,
-            started_at = NULL,
-            finished_at = NULL
-        WHERE state = 'error'
-          AND attempts >= 5
-          AND finished_at < now() - interval '1 hour'
-          AND error ~* ${TRANSIENT_REGEX}
-      `;
-
-      // 8. Retire non-transient errors to dead (24h grace).
-      const killed = await tx`
-        UPDATE ingest_jobs
-        SET state = 'dead'
-        WHERE state = 'error'
-          AND attempts >= 5
-          AND finished_at < now() - interval '24 hours'
-          AND NOT (error ~* ${TRANSIENT_REGEX})
-      `;
-
       return {
         decayed: decayed.count,
         shadowed: shadowed.count,
         related: related.count,
         superseded: supersededRows.length,
-        resurrected: resurrected.count,
-        killed: killed.count,
       };
     });
     Logger.info("nap: done", result);

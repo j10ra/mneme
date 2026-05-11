@@ -148,7 +148,7 @@ The push worker runs **4-wide concurrent** `POST /api/bundle` calls against the 
 ## Bundle vs. legacy `/api/capture`
 
 - `POST /api/bundle` — the daemon's path. Bundle arrives with capture + memories already extracted and embedded; server writes both atomically.
-- `POST /api/capture` — retained for legacy clients and direct HTTP callers that have no daemon. The server scrubs and stores the capture, but extract/embed only happen on machines that run the daemon. `ingest_jobs` is drained.
+- `POST /api/capture` — retained for legacy clients and direct HTTP callers that have no daemon. The server scrubs and stores the capture row, but extract/embed only happen on machines that run the daemon.
 
 ---
 

@@ -26,8 +26,6 @@ The **maintenance pass**. No LLM, no embedder, no per-row HTTP calls — all SQL
 
    Set `older.meta.superseded_by = newer_id`. Per-cycle write cap (`SUPERSEDE_RULE_PER_CYCLE_CAP = 50`) keeps blast radius bounded. The obvious "we now use X" cases get caught for free; nuanced supersedes are dream's job.
 
-6. **Resurrect transient ingest failures and retire dead jobs** — legacy `ingest_jobs` cleanup. Cosmetic now that the queue is daemon-owned, but kept for the historical rows still in the table.
-
 ```mermaid
 flowchart LR
     A[server scheduler · 6h] --> B[Decay<br/>importance *= 0.9917<br/>pinned floors at 0.5]
@@ -63,16 +61,9 @@ The per-cycle SQL runs in **one transaction** — atomic, no LLM in the loop, no
 
 ---
 
-## Legacy ingest_jobs retry policy
+## Retry semantics
 
-Pre-#22, extract and embed ran as queue-driven server workers and pushed retry semantics into nap. The policy survives in nap as a maintenance pass over historical rows:
-
-| Kind | Pattern | What nap does |
-|---|---|---|
-| **Transient** | error contains `HTTP 5*`, `timed out`, `timeout`, `ECONNRESET`, `tunnel` | Reset to `queued`, attempts=0, after a 1-hour grace |
-| **Dead** | anything else (malformed JSON, schema violation, content too long, code bugs) | Move to `state='dead'` (terminal) |
-
-`ingest_jobs` is fully drained. The daemon's own retry semantics live at the **file level** in the outbox: a failed push leaves the file in `embedded/` for the next tick; a permanent failure moves the file to `failed/<reason>/`.
+Retries live in the **daemon's outbox**, not in nap. A failed push leaves the file in `embedded/` for the next tick; a permanent failure moves the file to `failed/<reason>/`. The legacy `ingest_jobs` queue (and the nap pass that retired its errors) was dropped in migration 0021 along with the table itself.
 
 ---
 

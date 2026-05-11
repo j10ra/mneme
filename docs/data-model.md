@@ -11,7 +11,6 @@ Three tables in plain Postgres. Add a fourth only when an actual reader needs it
 ```mermaid
 erDiagram
     captures ||--o{ memories : "chunked into"
-    captures ||--o{ ingest_jobs : "queued for (legacy)"
 
     captures {
         uuid id PK
@@ -53,17 +52,9 @@ erDiagram
         timestamptz archived_at
     }
 
-    ingest_jobs {
-        uuid id PK
-        uuid capture_id FK
-        text phase
-        text state
-        int attempts
-        text error
-    }
 ```
 
-`ingest_jobs` is **legacy** as of #29 — drained, no new work. The daemon's outbox (see [`capture-pipeline.md`](./capture-pipeline.md)) replaced it. Slated for removal in a Phase-2 cleanup once the validation gate closes.
+(A legacy `ingest_jobs` table existed pre-#22 as the server's extract/embed queue. The daemon's file-based outbox replaced it; the table was dropped in migration 0021.)
 
 ---
 

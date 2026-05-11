@@ -1,0 +1,22 @@
+-- Drop the legacy ingest_jobs table.
+--
+-- Background: pre-#22, the server ran extract+embed as queue-driven
+-- workers polling ingest_jobs. Phase 8 (#22 + #29) retired those
+-- workers — the per-machine daemon owns the pipeline now, using its
+-- own file-based outbox at ~/.mneme/outbox/. ingest_jobs has been
+-- drained for weeks; only historical 'done' / 'dead' rows remained.
+--
+-- This migration:
+--   1. Drops the table (and its indexes) outright.
+--
+-- Code references to ingest_jobs have already been removed in the
+-- same commit:
+--   - packages/server/src/worker/nap.ts: dropped the resurrect/retire
+--     UPDATE passes (steps 7+8 in the original nap cycle).
+--   - packages/server/src/routes/ingest.ts: dropped the INSERT INTO
+--     ingest_jobs calls in /api/capture and /api/memory. /api/capture
+--     remains for legacy non-daemon HTTP clients; /api/memory still
+--     writes memories but no longer enqueues an embed job (the
+--     server-side embed worker is gone too).
+
+DROP TABLE IF EXISTS ingest_jobs CASCADE;

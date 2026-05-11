@@ -140,13 +140,10 @@ export function mountIngestRoutes(app: Hono): void {
       if (inserted[0]) {
         id = inserted[0].id;
         deduped = false;
-        // Only enqueue extract here. The extract worker writes memory rows
-        // and enqueues embed jobs per memory (keyed to memory_id).
-        await sql`
-          INSERT INTO ingest_jobs (capture_id, phase, state)
-          VALUES (${id}, ${"extract"}, ${"queued"})
-        `;
-        Logger.info("captured", {
+        // Legacy path: kept for non-daemon HTTP clients. The capture row
+        // is persisted, but extract/embed never happen here — those are
+        // owned by the per-machine daemon and arrive via /api/bundle.
+        Logger.info("captured (legacy /api/capture)", {
           id,
           repo: cleanedRepo ?? "-",
           source: cleanedSource,
@@ -299,14 +296,12 @@ export function mountIngestRoutes(app: Hono): void {
         `;
         const memId = memRows[0]!.id;
         const created = memRows[0]!.created;
-
-        if (created) {
-          await tx`
-            INSERT INTO ingest_jobs (memory_id, phase, state)
-            VALUES (${memId}, 'embed', 'queued')
-          `;
-        }
-
+        // No embed enqueue: the legacy server-side embed worker was
+        // retired in #29. This row is written with embedding=NULL and
+        // can be re-extracted via /api/bundle from a daemon if a later
+        // capture matches the content. Today this row is reachable
+        // through keyword (tsv) and metadata queries even without an
+        // embedding.
         return { id: memId, created };
       });
 
