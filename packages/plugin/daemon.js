@@ -1399,7 +1399,7 @@ async function resumeDreamCycles(deps) {
 import { existsSync as existsSync2 } from "fs";
 import { dirname, join as join2 } from "path";
 import { fileURLToPath } from "url";
-var EMBEDDER_MODEL = "BAAI/bge-large-en-v1.5";
+var EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5";
 var PIPELINE_IDLE_MS = 60 * 1000;
 var DISPOSE_GRACE_MS = 2000;
 var child = null;

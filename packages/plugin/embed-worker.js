@@ -3,7 +3,7 @@ var __require = import.meta.require;
 
 // packages/daemon/src/embed-worker.ts
 console.log = console.error.bind(console);
-var MODEL_ID = "Xenova/bge-large-en-v1.5";
+var MODEL_ID = "Xenova/bge-small-en-v1.5";
 var extractorPromise = null;
 async function getExtractor() {
   if (extractorPromise)

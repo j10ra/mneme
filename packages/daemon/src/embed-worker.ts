@@ -19,7 +19,7 @@
 // it to stderr where the daemon picks it up as plain log text.
 console.log = console.error.bind(console);
 
-const MODEL_ID = "Xenova/bge-large-en-v1.5";
+const MODEL_ID = "Xenova/bge-small-en-v1.5";
 
 type FeatureExtractionPipeline = (
   texts: string | string[],

@@ -18,11 +18,11 @@ const RUN_LIVE = process.env.MNEME_RUN_LIVE === "1";
 
 describe("embed", () => {
   test("EMBEDDER_MODEL matches the schema's expected model name", () => {
-    expect(EMBEDDER_MODEL).toBe("BAAI/bge-large-en-v1.5");
+    expect(EMBEDDER_MODEL).toBe("BAAI/bge-small-en-v1.5");
   });
 
-  test("EMBEDDER_DIM is 1024 (matches pgvector column)", () => {
-    expect(EMBEDDER_DIM).toBe(1024);
+  test("EMBEDDER_DIM is 384 (matches pgvector column)", () => {
+    expect(EMBEDDER_DIM).toBe(384);
   });
 
   test("embedBatch returns an empty array for empty input", async () => {
@@ -33,7 +33,7 @@ describe("embed", () => {
   });
 
   test.skipIf(!RUN_LIVE)(
-    "embedBatch returns 1024-dim normalized vectors via subprocess",
+    "embedBatch returns 384-dim normalized vectors via subprocess",
     async () => {
       const result = await embedBatch(["hello world", "the quick brown fox"]);
       expect(result).toHaveLength(2);
