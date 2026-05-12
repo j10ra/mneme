@@ -338,14 +338,26 @@ function summariseSurfaceForUser(surface: string): string {
   return lines.join("\n");
 }
 
+/** Kind glyph legend embedded into the LLM reminder so the agent can
+ *  interpret row symbols on first read, without needing to load the
+ *  using-mneme skill's references. Must stay in sync with KIND_GLYPH
+ *  in packages/server/src/services/surface.ts. */
+const KIND_LEGEND =
+  "🔴 bugfix · 🟣 feature · ⚖️ decision · 🔵 discovery · 💬 preference · " +
+  "🚧 constraint · 🚨 security_alert · 📎 reference · 🎯 summary · " +
+  "🧩 cluster · 🧠 claude_memory · 📝 note";
+
 /** LLM-side reminder prepended to the full surface. Tells the agent
- *  what's actually in the corpus (vs the slice surfaced) and how to
- *  reach the rest. Skipped if parsing failed or no sections matched. */
+ *  what's in the corpus, how to reach the rest, and what every glyph
+ *  on the row means. Skipped if parsing failed or no sections matched. */
 function prefixSurfaceForLLM(surface: string, strippedSurface: string): string {
   const p = parseSurface(surface);
   if (!p || p.sections.length === 0) return strippedSurface;
   const totals = p.sections.map((s) => `${s.total} ${s.name}`).join(" · ");
-  const reminder = `Mneme corpus: ${totals}. The surface below is a relevance-ranked slice. Unfold any [id] or query mneme_sql to access the rest.\n\n`;
+  const reminder =
+    `Mneme corpus: ${totals}. The surface below is a relevance-ranked slice. ` +
+    `Unfold any [id] or query mneme_sql to access the rest.\n\n` +
+    `Glyph legend (the symbol after each [id]):\n${KIND_LEGEND}\n\n`;
   return reminder + strippedSurface;
 }
 
