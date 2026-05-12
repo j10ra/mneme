@@ -251,6 +251,17 @@ function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…[truncated ${s.length - max}b]` : s;
 }
 
+/** Plain-text the markdown surface for terminal rendering. Claude Code
+ *  prints SessionStart hook output verbatim in the transcript — `##`,
+ *  `**`, and `_..._` don't render, they show as literal characters.
+ *  Strip them so the surface reads cleanly in a monospace shell. */
+function formatSurfaceForTerminal(surface: string): string {
+  return surface
+    .replace(/^#{1,6}\s+/gm, "") // `# Title` / `## Section` → `Title` / `Section`
+    .replace(/^_(.+)_$/gm, "$1") // `_subtitle_` (whole-line italic) → `subtitle`
+    .replace(/\*\*([^*]+)\*\*/g, "$1"); // `**bold**` (inline) → `bold`
+}
+
 /** Compact "now" stamp injected on every UserPromptSubmit so the agent
  *  always has fresh wall-clock context (debugging, long sessions, any
  *  "yesterday"/"earlier today" reasoning). Format: `2026-05-12 (Tue) 10:25 AM PST`. */
@@ -403,22 +414,17 @@ async function main(): Promise<void> {
       const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
       const surface = await fetchSurface(cfg, payload, repos);
       if (surface) {
-        // SessionStart context routing. Claude Code 2.1+ swallowed plain
-        // stdout from this hook silently (regression: see anthropics/
-        // claude-code#24425, #9591), so we go via JSON envelope and use
-        // both channels at once:
-        //   additionalContext → LLM context (always works)
-        //   systemMessage     → user-visible rendering in the transcript
-        //                       (coverage varies by client; some surfaces
-        //                       still hide it — feature request #15344)
-        // Worst case: same as today (LLM-only). Best case: visible.
+        // additionalContext only — systemMessage caused the same surface
+        // to render twice in the transcript (additionalContext renders
+        // visibly in this Claude Code version, and systemMessage rendered
+        // an extra copy on top). One channel, one render, no duplicates.
+        // Strip markdown first so it doesn't read like raw source.
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "SessionStart",
-              additionalContext: surface,
+              additionalContext: formatSurfaceForTerminal(surface),
             },
-            systemMessage: surface,
           }),
         );
       }
