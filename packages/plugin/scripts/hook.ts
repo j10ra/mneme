@@ -414,22 +414,25 @@ async function main(): Promise<void> {
       const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
       const surface = await fetchSurface(cfg, payload, repos);
       if (surface) {
-        // Two channels with the markdown-stripped surface:
-        //   additionalContext → LLM context (always works, invisible to user)
-        //   systemMessage     → user-visible rendering in the transcript
-        // 1.1.11 dropped systemMessage on a wrong hypothesis (it was the
-        // *visibility* key, not the duplication cause). Strip the markdown
-        // so the rendered version doesn't look like raw source.
         const visible = formatSurfaceForTerminal(surface);
-        process.stdout.write(
-          JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "SessionStart",
-              additionalContext: visible,
-            },
-            systemMessage: visible,
-          }),
-        );
+        // SessionStart fires for matchers startup|resume|clear|compact.
+        // A single session-open can trigger startup AND resume back-to-
+        // back, which used to render the surface twice in the transcript.
+        // Gate the user-visible systemMessage to startup only (matches
+        // claude-mem behavior). additionalContext refreshes the LLM
+        // context on every fire — cheap, keeps "now" accurate after
+        // compact or clear without re-flooding the user's terminal.
+        const source = typeof payload.source === "string" ? payload.source : "startup";
+        const envelope: Record<string, unknown> = {
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: visible,
+          },
+        };
+        if (source === "startup") {
+          envelope.systemMessage = visible;
+        }
+        process.stdout.write(JSON.stringify(envelope));
       }
       return;
     }
