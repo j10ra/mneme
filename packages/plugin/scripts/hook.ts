@@ -270,6 +270,29 @@ function formatSurfaceForTerminal(surface: string): string {
   );
 }
 
+/** Shrink bullet bodies to a single-line preview for the user-visible
+ *  systemMessage channel. Keeps the `[id]`, glyph, and `· @machine`
+ *  envelope intact so the user can still pivot off any row (ask the
+ *  agent about an id, paste into mneme_sql, etc.). The LLM still gets
+ *  the full surface via additionalContext. */
+function trimSurfaceForUser(surface: string, maxBodyChars = 100): string {
+  return surface
+    .split("\n")
+    .map((line) => {
+      if (!line.startsWith("- [")) return line;
+      const headEnd = line.indexOf("] ");
+      if (headEnd === -1) return line;
+      const tailStart = line.lastIndexOf(" · @");
+      if (tailStart === -1 || tailStart <= headEnd) return line;
+      const head = line.slice(0, headEnd + 2); // "- [id] "
+      const body = line.slice(headEnd + 2, tailStart);
+      const tail = line.slice(tailStart); // " · @machine"
+      if (body.length <= maxBodyChars) return line;
+      return `${head}${body.slice(0, maxBodyChars).trimEnd()}…${tail}`;
+    })
+    .join("\n");
+}
+
 /** Compact "now" stamp injected on every UserPromptSubmit so the agent
  *  always has fresh wall-clock context (debugging, long sessions, any
  *  "yesterday"/"earlier today" reasoning). Format: `2026-05-12 (Tue) 10:25 AM PST`. */
@@ -422,23 +445,26 @@ async function main(): Promise<void> {
       const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
       const surface = await fetchSurface(cfg, payload, repos);
       if (surface) {
-        const visible = formatSurfaceForTerminal(surface);
-        // SessionStart fires for matchers startup|resume|clear|compact.
-        // A single session-open can trigger startup AND resume back-to-
-        // back, which used to render the surface twice in the transcript.
-        // Gate the user-visible systemMessage to startup only (matches
-        // claude-mem behavior). additionalContext refreshes the LLM
-        // context on every fire — cheap, keeps "now" accurate after
-        // compact or clear without re-flooding the user's terminal.
+        const fullVisible = formatSurfaceForTerminal(surface);
+        // Two channels, two depths:
+        //   additionalContext → LLM gets the full surface (every row,
+        //                       full body) so it can reason accurately
+        //                       without round-tripping to mneme_sql.
+        //   systemMessage     → user gets a scannable, single-line-per-
+        //                       row preview. IDs and machine tags stay,
+        //                       so any row can still be unfolded on demand.
+        // Gate systemMessage to source=startup only — resume/clear/compact
+        // would otherwise re-render visibly on every session open.
+        const userVisible = trimSurfaceForUser(fullVisible);
         const source = typeof payload.source === "string" ? payload.source : "startup";
         const envelope: Record<string, unknown> = {
           hookSpecificOutput: {
             hookEventName: "SessionStart",
-            additionalContext: visible,
+            additionalContext: fullVisible,
           },
         };
         if (source === "startup") {
-          envelope.systemMessage = visible;
+          envelope.systemMessage = userVisible;
         }
         process.stdout.write(JSON.stringify(envelope));
       }
