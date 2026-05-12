@@ -270,27 +270,47 @@ function formatSurfaceForTerminal(surface: string): string {
   );
 }
 
-/** Shrink bullet bodies to a single-line preview for the user-visible
- *  systemMessage channel. Keeps the `[id]`, glyph, and `· @machine`
- *  envelope intact so the user can still pivot off any row (ask the
- *  agent about an id, paste into mneme_sql, etc.). The LLM still gets
- *  the full surface via additionalContext. */
-function trimSurfaceForUser(surface: string, maxBodyChars = 100): string {
-  return surface
-    .split("\n")
-    .map((line) => {
-      if (!line.startsWith("- [")) return line;
-      const headEnd = line.indexOf("] ");
-      if (headEnd === -1) return line;
-      const tailStart = line.lastIndexOf(" · @");
-      if (tailStart === -1 || tailStart <= headEnd) return line;
-      const head = line.slice(0, headEnd + 2); // "- [id] "
-      const body = line.slice(headEnd + 2, tailStart);
-      const tail = line.slice(tailStart); // " · @machine"
-      if (body.length <= maxBodyChars) return line;
-      return `${head}${body.slice(0, maxBodyChars).trimEnd()}…${tail}`;
-    })
-    .join("\n");
+/** Parse the markdown surface into a small "what's loaded" summary for
+ *  the user-visible systemMessage channel. The LLM still sees the full
+ *  surface via additionalContext, so the user side can stay terse.
+ *  Falls back to a minimal status line if the surface format drifts. */
+function summariseSurfaceForUser(surface: string): string {
+  const header = surface.match(/^#\s+Mneme\s+·\s+(\S+)\s+·\s+across\s+(\d+)\s+machine/m);
+  if (!header) return "Mneme memory loaded.";
+  const [, repo, machineCount] = header;
+
+  const stats = surface.match(
+    /^_Since last session \(([^)]+)\s+ago\):\s+(\d+)\s+captures,\s+(\d+)\s+memories(?:\s+·\s+(\d+)\s+superseded[^_]*)?_/m,
+  );
+  const rules = surface.match(/^##\s+Rules\s+\((\d+)\s+of\s+(\d+)\)/m);
+  const themes = surface.match(/^##\s+Themes\s+\((\d+)\s+of\s+(\d+)\)/m);
+  const recent = surface.match(/^##\s+Recent\s+\(last[^)]+\)\s+\((\d+)\s+of\s+(\d+)\)/m);
+  const sessions = surface.match(/^##\s+Recent\s+sessions\s+\((\d+)\s+of\s+(\d+)\)/m);
+
+  const lines: string[] = [`Mneme · ${repo} · ${machineCount} machines`];
+  if (stats) {
+    const [, sinceAgo, captures, memories, superseded] = stats;
+    const supText = superseded ? ` · ${superseded} superseded all-time` : "";
+    lines.push(
+      `Since last session (${sinceAgo} ago): ${memories} memories, ${captures} captures${supText}`,
+    );
+  }
+
+  const fmt = (emoji: string, name: string, m: RegExpMatchArray | null) =>
+    m ? `  ${emoji} ${name.padEnd(8)}  ${m[1]} of ${m[2]}` : null;
+
+  const sectionLines = [
+    fmt("📌", "Rules", rules),
+    fmt("🧩", "Themes", themes),
+    fmt("📅", "Recent", recent),
+    fmt("💬", "Sessions", sessions),
+  ].filter((l): l is string => l !== null);
+
+  if (sectionLines.length > 0) {
+    lines.push("");
+    lines.push(...sectionLines);
+  }
+  return lines.join("\n");
 }
 
 /** Compact "now" stamp injected on every UserPromptSubmit so the agent
@@ -445,26 +465,25 @@ async function main(): Promise<void> {
       const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
       const surface = await fetchSurface(cfg, payload, repos);
       if (surface) {
-        const fullVisible = formatSurfaceForTerminal(surface);
-        // Two channels, two depths:
-        //   additionalContext → LLM gets the full surface (every row,
-        //                       full body) so it can reason accurately
-        //                       without round-tripping to mneme_sql.
-        //   systemMessage     → user gets a scannable, single-line-per-
-        //                       row preview. IDs and machine tags stay,
-        //                       so any row can still be unfolded on demand.
-        // Gate systemMessage to source=startup only — resume/clear/compact
-        // would otherwise re-render visibly on every session open.
-        const userVisible = trimSurfaceForUser(fullVisible);
+        // Two channels, two purposes — not duplicated content:
+        //   additionalContext → LLM sees the *complete* surface (full
+        //                       rows, every body) for accurate reasoning.
+        //   systemMessage     → user sees a parsed *summary* (counts,
+        //                       repo, machines, time since last session).
+        //                       No raw memory rows — that's what the
+        //                       dashboard / mneme_sql are for.
+        // Gate systemMessage to source=startup only.
+        const fullForLlm = formatSurfaceForTerminal(surface);
+        const summaryForUser = summariseSurfaceForUser(surface);
         const source = typeof payload.source === "string" ? payload.source : "startup";
         const envelope: Record<string, unknown> = {
           hookSpecificOutput: {
             hookEventName: "SessionStart",
-            additionalContext: fullVisible,
+            additionalContext: fullForLlm,
           },
         };
         if (source === "startup") {
-          envelope.systemMessage = userVisible;
+          envelope.systemMessage = summaryForUser;
         }
         process.stdout.write(JSON.stringify(envelope));
       }
