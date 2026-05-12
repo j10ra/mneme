@@ -63,6 +63,8 @@ This is also the **only path** through which a machine can recall its own privat
 
 ## What the rendered surface looks like
 
+_IDs below are shortened to 8 chars for readability. Live surface emits full UUIDs (e.g. `a3f29c7d-1234-5678-9012-abcdef123456`)._
+
 ```markdown
 # Mneme · workspace (4 repos) · across 2 machines
 _Since last session (2h ago): 24 captures, 11 memories · 3 superseded all-time_
@@ -87,7 +89,7 @@ _Since last session (2h ago): 24 captures, 11 memories · 3 superseded all-time_
 - [a1b2c3d4] 1h ago · 🎯 v1.0.83 dashboard skeleton + status panel + CI build pipeline working
 ```
 
-**8-char id prefix** on every row (first 8 hex of the memory's UUID — globally unique at personal scale). The agent can pivot to the full memory in one query: `WHERE id::text LIKE '<prefix>%'`. Costs ~3 tokens per row, removes a round trip when the agent wants to follow up.
+**Full UUID** on every surface row. The agent pivots to the full memory in one query: `WHERE id = '<uuid>'`. The cost (~10 tokens per row) is paid on the LLM channel only — the user-visible status banner summarises counts and never renders row ids.
 
 **Glyph map:** 🔴 bugfix · 🟣 feature · ⚖️ decision · 🔵 discovery · 💬 preference · 🚧 constraint · 🚨 security_alert · 📎 reference · 🎯 summary · 🧩 cluster · 🧠 claude_memory · 📝 note.
 

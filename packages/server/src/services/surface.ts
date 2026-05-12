@@ -300,10 +300,12 @@ const KIND_GLYPH: Record<string, string> = {
 };
 const glyph = (kind: string | null): string => (kind && KIND_GLYPH[kind]) || "•";
 
-// 8-char hex prefix is globally unique at personal scale (and well past it —
-// 2^32 birthday bound). The skill teaches `WHERE id::text LIKE '<prefix>%'`
-// so the agent can pivot from a surface row to the full row in one query.
-const idPrefix = (id: string): string => id.slice(0, 8);
+// Surface rows now carry full UUIDs. The agent reads them as-is and
+// queries `WHERE id = '<uuid>'` for exact match instead of the older
+// prefix-LIKE pattern. The skill (`using-mneme`) teaches this directly.
+// Surface ingestion is LLM-side only — the user-visible status banner
+// summarises counts and never renders row IDs, so token cost is paid
+// where it adds value.
 
 function relativeTime(d: Date): string {
   const ms = Date.now() - d.getTime();
@@ -382,7 +384,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
     lines.push(sectionHeader("Pinned", s.pinned));
     for (const i of s.pinned.items) {
       lines.push(
-        `- [${idPrefix(i.id)}] ${glyph(i.kind)} ${i.importance.toFixed(2)} ${collapse(i.content)}${tag(i)}`,
+        `- [${i.id}] ${glyph(i.kind)} ${i.importance.toFixed(2)} ${collapse(i.content)}${tag(i)}`,
       );
     }
   }
@@ -391,7 +393,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
     lines.push("");
     lines.push(sectionHeader("Rules", s.rules));
     for (const i of s.rules.items) {
-      lines.push(`- [${idPrefix(i.id)}] ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`);
+      lines.push(`- [${i.id}] ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`);
     }
   }
 
@@ -400,7 +402,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
     lines.push(sectionHeader("Themes", s.themes));
     for (const i of s.themes.items) {
       const title = i.cluster_title ? `**${collapse(i.cluster_title)}** — ` : "";
-      lines.push(`- [${idPrefix(i.id)}] ${glyph(i.kind)} ${title}${collapse(i.content)}${tag(i)}`);
+      lines.push(`- [${i.id}] ${glyph(i.kind)} ${title}${collapse(i.content)}${tag(i)}`);
     }
   }
 
@@ -409,7 +411,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
     lines.push(sectionHeader("Recent (last 14 days)", s.decisions));
     for (const i of s.decisions.items) {
       lines.push(
-        `- [${idPrefix(i.id)}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`,
+        `- [${i.id}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`,
       );
     }
   }
@@ -419,7 +421,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
     lines.push(sectionHeader("Recent sessions", s.sessions));
     for (const i of s.sessions.items) {
       lines.push(
-        `- [${idPrefix(i.id)}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`,
+        `- [${i.id}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`,
       );
     }
   }

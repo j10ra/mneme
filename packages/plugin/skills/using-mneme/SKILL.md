@@ -21,7 +21,7 @@ Don't use when:
 - The question is about live state (run `git log`, read the file, query the dashboard).
 - You want to *write* a memory (use `/mneme:memory` or `/mneme:pin` slashes — never write through `mneme_sql`).
 
-The SessionStart surface (the markdown that landed in your context at session start) already pre-loaded **pinned facts, rules, recent decisions, themes, and session summaries**. Every line carries an `[8-char id]` you can pivot from. Check the surface first. Only query Mneme when the surface didn't cover the question.
+The SessionStart surface (the markdown that landed in your context at session start) already pre-loaded **pinned facts, rules, recent decisions, themes, and session summaries**. Every line carries a full `[uuid]` you can pivot from with `WHERE id = '<uuid>'`. Check the surface first. Only query Mneme when the surface didn't cover the question.
 
 ---
 

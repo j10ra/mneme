@@ -106,18 +106,20 @@ A 5-sentence cluster summary often answers a "what's the state of X" question wi
 The SessionStart surface looks like:
 
 ```
-- [a3f29c7d] ⚖️ 0.90 Use the daemon's Claude SDK for extract
-- [c4f2a1b9] 5d ago · 🔴 Pin actuation needs UUID validation
+- [a3f29c7d-1234-5678-9012-abcdef123456] ⚖️ 0.90 Use the daemon's Claude SDK for extract
+- [c4f2a1b9-5678-9012-3456-abcdef987654] 5d ago · 🔴 Pin actuation needs UUID validation
 ```
 
-The 8-char prefix is unambiguous at personal scale. Match it directly:
+Surface rows carry full UUIDs. Match by exact id:
 
 ```sql
 SELECT id, content, kind, importance, repo, machine_id,
        meta->'related_to' AS related_to,
        meta->>'in_cluster' AS in_cluster
-FROM memories WHERE id::text LIKE 'a3f29c7d%' AND archived_at IS NULL LIMIT 1;
+FROM memories WHERE id = 'a3f29c7d-1234-5678-9012-abcdef123456' AND archived_at IS NULL LIMIT 1;
 ```
+
+(If you only have a partial id from older transcripts, `WHERE id::text LIKE 'a3f29c7d%'` still works.)
 
 **Glyph legend** (for reading the surface):
 🔴 bugfix · 🟣 feature · ⚖️ decision · 🔵 discovery · 💬 preference · 🚧 constraint · 🚨 security_alert · 📎 reference · 🎯 summary · 🧩 cluster · 🧠 claude_memory · 📝 note
