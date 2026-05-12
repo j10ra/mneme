@@ -403,12 +403,24 @@ async function main(): Promise<void> {
       const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
       const surface = await fetchSurface(cfg, payload, repos);
       if (surface) {
-        // Plain stdout serves double duty for SessionStart: Claude Code
-        // injects it into the LLM context AND renders it as a hook output
-        // block in the transcript, so the user can see what was surfaced
-        // (same pattern claude-mem uses). Wrapping in a JSON envelope
-        // routes only through additionalContext, which is invisible.
-        process.stdout.write(surface);
+        // SessionStart context routing. Claude Code 2.1+ swallowed plain
+        // stdout from this hook silently (regression: see anthropics/
+        // claude-code#24425, #9591), so we go via JSON envelope and use
+        // both channels at once:
+        //   additionalContext → LLM context (always works)
+        //   systemMessage     → user-visible rendering in the transcript
+        //                       (coverage varies by client; some surfaces
+        //                       still hide it — feature request #15344)
+        // Worst case: same as today (LLM-only). Best case: visible.
+        process.stdout.write(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "SessionStart",
+              additionalContext: surface,
+            },
+            systemMessage: surface,
+          }),
+        );
       }
       return;
     }
