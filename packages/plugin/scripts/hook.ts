@@ -256,10 +256,18 @@ function truncate(s: string, max: number): string {
  *  `**`, and `_..._` don't render, they show as literal characters.
  *  Strip them so the surface reads cleanly in a monospace shell. */
 function formatSurfaceForTerminal(surface: string): string {
-  return surface
-    .replace(/^#{1,6}\s+/gm, "") // `# Title` / `## Section` → `Title` / `Section`
-    .replace(/^_(.+)_$/gm, "$1") // `_subtitle_` (whole-line italic) → `subtitle`
-    .replace(/\*\*([^*]+)\*\*/g, "$1"); // `**bold**` (inline) → `bold`
+  return (
+    surface
+      .replace(/^#{1,6}\s+/gm, "") // `# Title` / `## Section` → `Title` / `Section`
+      .replace(/^_(.+)_$/gm, "$1") // `_subtitle_` (whole-line italic) → `subtitle`
+      .replace(/\*\*([^*]+)\*\*/g, "$1") // `**bold**` (inline) → `bold`
+      // Section emoji anchors. "Recent sessions" must run before "Recent"
+      // (date-range subsection) so the more specific match wins.
+      .replace(/^Rules \(/gm, "📌 Rules (")
+      .replace(/^Themes \(/gm, "🧩 Themes (")
+      .replace(/^Recent sessions \(/gm, "💬 Recent sessions (")
+      .replace(/^Recent \(last/gm, "⏱️  Recent (last")
+  );
 }
 
 /** Compact "now" stamp injected on every UserPromptSubmit so the agent
