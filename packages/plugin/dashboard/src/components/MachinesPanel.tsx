@@ -34,7 +34,7 @@ type FetchState =
   | { kind: "stale"; data: MachinesResponse; fetchedAt: number; error: string }
   | { kind: "error"; error: string };
 
-const POLL_MS = 30_000;
+const POLL_MS = 60_000;
 const LIVE_THRESHOLD_MS = 3 * 60_000;
 
 function fmtAge(ms: number | null): string {
@@ -64,6 +64,11 @@ export function MachinesPanel() {
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const tick = async () => {
+      // Skip the network round-trip when the tab is hidden. The
+      // visibilitychange listener below restarts the loop on resume.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
       try {
         const data = await apiGet<MachinesResponse>("/machines");
         if (cancelled) return;
@@ -82,14 +87,25 @@ export function MachinesPanel() {
             : { kind: "error", error: msg },
         );
       } finally {
-        if (!cancelled) timer = setTimeout(tick, POLL_MS);
+        if (!cancelled && document.visibilityState !== "hidden") {
+          timer = setTimeout(tick, POLL_MS);
+        }
       }
     };
+
+    const onVisibility = () => {
+      if (!cancelled && document.visibilityState === "visible") {
+        if (timer) clearTimeout(timer);
+        void tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
 
     void tick();
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 

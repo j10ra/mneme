@@ -9,9 +9,33 @@
 // `repo` (e.g. a git remote URL with `user:token@host`) flow through
 // unredacted.
 
-import { Hono } from "hono";
-import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
+import { Hono, type MiddlewareHandler } from "hono";
+import {
+  Logger,
+  currentAuth,
+  mnemeRoute,
+  newId,
+  requireAuth,
+  storage,
+  type TraceContext,
+} from "@mneme/core";
 import { scrub, scrubData } from "@mneme/shared";
+
+// Establishes a TraceContext for AsyncLocalStorage-dependent middleware
+// (requireAuth writes auth into the store) without emitting a root span.
+// Used by high-frequency self-observing endpoints where the bookkeeping
+// span outweighs the signal value (e.g. /api/ingest/spans, which would
+// otherwise record one span every time it receives a batch of spans).
+const silentTrace: MiddlewareHandler = async (c, next) => {
+  const ctx: TraceContext = {
+    traceId: newId(),
+    source: c.req.header("x-mneme-source") ?? "http",
+    spanStack: [],
+  };
+  await storage.run(ctx, async () => {
+    await next();
+  });
+};
 import { sql, sha256Hex } from "../infra/db.ts";
 import { EMBEDDER_MODEL } from "../embedder/index.ts";
 import { KINDS, type Kind } from "../llm/index.ts";
@@ -307,38 +331,34 @@ export function mountIngestRoutes(app: Hono): void {
   // skipped if any row would violate a FK; this is a best-effort firehose,
   // not a transactional contract.
   // ---------------------------------------------------------------------------
-  app.post(
-    "/api/ingest/spans",
-    mnemeRoute("api.ingest.spans"),
-    requireAuth("capture"),
-    async (c) => {
-      const auth = currentAuth();
-      if (!auth?.machineId) {
-        return c.json({ error: "ingest/spans requires per-machine token" }, 400);
-      }
-      const body = (await c.req.json().catch(() => null)) as IngestSpansBody | null;
-      if (!body) return c.json({ error: "invalid_json" }, 400);
+  app.post("/api/ingest/spans", silentTrace, requireAuth("capture"), async (c) => {
+    const auth = currentAuth();
+    if (!auth?.machineId) {
+      return c.json({ error: "ingest/spans requires per-machine token" }, 400);
+    }
+    const body = (await c.req.json().catch(() => null)) as IngestSpansBody | null;
+    if (!body) return c.json({ error: "invalid_json" }, 400);
 
-      const traces = Array.isArray(body.traces) ? body.traces : [];
-      const spans = Array.isArray(body.spans) ? body.spans : [];
-      const logs = Array.isArray(body.logs) ? body.logs : [];
+    const traces = Array.isArray(body.traces) ? body.traces : [];
+    const spans = Array.isArray(body.spans) ? body.spans : [];
+    const logs = Array.isArray(body.logs) ? body.logs : [];
 
-      if (
-        traces.length > MAX_BATCH_TRACES ||
-        spans.length > MAX_BATCH_SPANS ||
-        logs.length > MAX_BATCH_LOGS
-      ) {
-        return c.json({ error: "batch too large" }, 413);
-      }
+    if (
+      traces.length > MAX_BATCH_TRACES ||
+      spans.length > MAX_BATCH_SPANS ||
+      logs.length > MAX_BATCH_LOGS
+    ) {
+      return c.json({ error: "batch too large" }, 413);
+    }
 
-      if (traces.length === 0 && spans.length === 0 && logs.length === 0) {
-        return c.json({ ok: true, traces: 0, spans: 0, logs: 0 });
-      }
+    if (traces.length === 0 && spans.length === 0 && logs.length === 0) {
+      return c.json({ ok: true, traces: 0, spans: 0, logs: 0 });
+    }
 
-      try {
-        await sql.begin(async (tx) => {
-          if (traces.length > 0) {
-            await tx`
+    try {
+      await sql.begin(async (tx) => {
+        if (traces.length > 0) {
+          await tx`
               INSERT INTO _ops.traces ${tx(
                 traces.map((t) => ({
                   trace_id: t.traceId,
@@ -352,9 +372,9 @@ export function mountIngestRoutes(app: Hono): void {
               )}
               ON CONFLICT (trace_id) DO NOTHING
             `;
-          }
-          if (spans.length > 0) {
-            await tx`
+        }
+        if (spans.length > 0) {
+          await tx`
               INSERT INTO _ops.spans ${tx(
                 spans.map((s) => {
                   const inputCol =
@@ -382,9 +402,9 @@ export function mountIngestRoutes(app: Hono): void {
               )}
               ON CONFLICT (span_id) DO NOTHING
             `;
-          }
-          if (logs.length > 0) {
-            await tx`
+        }
+        if (logs.length > 0) {
+          await tx`
               INSERT INTO _ops.logs ${tx(
                 logs.map((l) => ({
                   trace_id: l.traceId ?? null,
@@ -395,19 +415,18 @@ export function mountIngestRoutes(app: Hono): void {
                 })),
               )}
             `;
-          }
-        });
-      } catch (err) {
-        Logger.warn(`ingest/spans failed: ${err instanceof Error ? err.message : String(err)}`);
-        return c.json({ error: "ingest_failed" }, 500);
-      }
-
-      return c.json({
-        ok: true,
-        traces: traces.length,
-        spans: spans.length,
-        logs: logs.length,
+        }
       });
-    },
-  );
+    } catch (err) {
+      Logger.warn(`ingest/spans failed: ${err instanceof Error ? err.message : String(err)}`);
+      return c.json({ error: "ingest_failed" }, 500);
+    }
+
+    return c.json({
+      ok: true,
+      traces: traces.length,
+      spans: spans.length,
+      logs: logs.length,
+    });
+  });
 }
