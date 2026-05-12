@@ -251,6 +251,25 @@ function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…[truncated ${s.length - max}b]` : s;
 }
 
+/** Compact "now" stamp injected on every UserPromptSubmit so the agent
+ *  always has fresh wall-clock context (debugging, long sessions, any
+ *  "yesterday"/"earlier today" reasoning). Format: `2026-05-12 (Tue) 10:25 AM PST`. */
+function formatCurrentTime(): string {
+  const d = new Date();
+  const isoDate = d.toISOString().slice(0, 10);
+  const dayTime = d.toLocaleString("en-US", {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+  });
+  // dayTime renders as "Tue, 10:25 AM PST" — promote the comma to parens
+  // around the weekday so the line reads cleaner alongside the ISO date.
+  const [weekday, ...rest] = dayTime.split(", ");
+  return `${isoDate} (${weekday}) ${rest.join(", ")}`;
+}
+
 /** Extract concatenated text blocks from a Claude Code transcript JSONL
  *  assistant entry. Returns null if the entry has no text content (e.g.,
  *  pure tool_use turn — already captured separately via PostToolUse). */
@@ -384,26 +403,36 @@ async function main(): Promise<void> {
       const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
       const surface = await fetchSurface(cfg, payload, repos);
       if (surface) {
-        // Claude Code injects SessionStart context only when the hook returns
-        // a JSON envelope with hookSpecificOutput.additionalContext. Raw
-        // markdown on stdout is silently dropped.
-        process.stdout.write(
-          JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "SessionStart",
-              additionalContext: surface,
-            },
-          }),
-        );
+        // Plain stdout serves double duty for SessionStart: Claude Code
+        // injects it into the LLM context AND renders it as a hook output
+        // block in the transcript, so the user can see what was surfaced
+        // (same pattern claude-mem uses). Wrapping in a JSON envelope
+        // routes only through additionalContext, which is invisible.
+        process.stdout.write(surface);
       }
       return;
     }
 
     case "UserPromptSubmit": {
       const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
-      if (!prompt.trim()) return;
-      const body = { ...baseScope, content: prompt };
-      const ok = await postCapture(cfg, body);
+
+      // Inject current wall-clock time on every prompt. Long sessions and
+      // resumed transcripts otherwise leave the agent reasoning against a
+      // stale session-start date; this is the only place "now" is reliably
+      // grounded turn-by-turn.
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "UserPromptSubmit",
+            additionalContext: `Current time: ${formatCurrentTime()}`,
+          },
+        }),
+      );
+
+      if (prompt.trim()) {
+        const body = { ...baseScope, content: prompt };
+        await postCapture(cfg, body);
+      }
       return;
     }
 
