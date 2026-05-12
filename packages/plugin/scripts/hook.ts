@@ -270,47 +270,83 @@ function formatSurfaceForTerminal(surface: string): string {
   );
 }
 
-/** Parse the markdown surface into a small "what's loaded" summary for
- *  the user-visible systemMessage channel. The LLM still sees the full
- *  surface via additionalContext, so the user side can stay terse.
- *  Falls back to a minimal status line if the surface format drifts. */
-function summariseSurfaceForUser(surface: string): string {
-  const header = surface.match(/^#\s+Mneme\s+·\s+(\S+)\s+·\s+across\s+(\d+)\s+machine/m);
-  if (!header) return "Mneme memory loaded.";
-  const [, repo, machineCount] = header;
+/** Parse the markdown surface header + per-section counts into a single
+ *  struct that both the user-visible summary and the LLM-side reminder
+ *  consume. Returns null if the surface format drifts. */
+type SurfaceParse = {
+  repo: string;
+  machineCount: string;
+  sinceAgo?: string;
+  captures?: string;
+  memories?: string;
+  superseded?: string;
+  sections: { name: string; total: string }[];
+};
 
+function parseSurface(surface: string): SurfaceParse | null {
+  const header = surface.match(/^#\s+Mneme\s+·\s+(\S+)\s+·\s+across\s+(\d+)\s+machine/m);
+  if (!header) return null;
   const stats = surface.match(
     /^_Since last session \(([^)]+)\s+ago\):\s+(\d+)\s+captures,\s+(\d+)\s+memories(?:\s+·\s+(\d+)\s+superseded[^_]*)?_/m,
   );
-  const rules = surface.match(/^##\s+Rules\s+\((\d+)\s+of\s+(\d+)\)/m);
-  const themes = surface.match(/^##\s+Themes\s+\((\d+)\s+of\s+(\d+)\)/m);
-  const recent = surface.match(/^##\s+Recent\s+\(last[^)]+\)\s+\((\d+)\s+of\s+(\d+)\)/m);
-  const sessions = surface.match(/^##\s+Recent\s+sessions\s+\((\d+)\s+of\s+(\d+)\)/m);
+  const sectionPatterns: Array<[string, RegExp]> = [
+    ["rules", /^##\s+Rules\s+\(\d+\s+of\s+(\d+)\)/m],
+    ["themes", /^##\s+Themes\s+\(\d+\s+of\s+(\d+)\)/m],
+    ["recent", /^##\s+Recent\s+\(last[^)]+\)\s+\(\d+\s+of\s+(\d+)\)/m],
+    ["sessions", /^##\s+Recent\s+sessions\s+\(\d+\s+of\s+(\d+)\)/m],
+  ];
+  const sections = sectionPatterns
+    .map(([name, pattern]) => {
+      const m = surface.match(pattern);
+      const total = m?.[1];
+      return total ? { name, total } : null;
+    })
+    .filter((s): s is { name: string; total: string } => s !== null);
 
-  const lines: string[] = [`Mneme · ${repo} · ${machineCount} machines`];
-  if (stats) {
-    const [, sinceAgo, captures, memories, superseded] = stats;
-    const supText = superseded ? ` · ${superseded} superseded all-time` : "";
+  const repo = header[1];
+  const machineCount = header[2];
+  if (!repo || !machineCount) return null;
+
+  return {
+    repo,
+    machineCount,
+    sinceAgo: stats?.[1],
+    captures: stats?.[2],
+    memories: stats?.[3],
+    superseded: stats?.[4],
+    sections,
+  };
+}
+
+/** User-visible status banner for the systemMessage channel. Header +
+ *  corpus totals + a single flavor line. No per-section partials — the
+ *  LLM gets those via the full surface. */
+function summariseSurfaceForUser(surface: string): string {
+  const p = parseSurface(surface);
+  if (!p) return "Mneme memory loaded.";
+  const lines: string[] = [`Mneme · ${p.repo} · ${p.machineCount} machines`];
+  if (p.sinceAgo && p.memories && p.captures) {
+    const supText = p.superseded ? ` · ${p.superseded} superseded` : "";
     lines.push(
-      `Since last session (${sinceAgo} ago): ${memories} memories, ${captures} captures${supText}`,
+      `Since last session (${p.sinceAgo} ago): ${p.memories} memories · ${p.captures} captures${supText}`,
     );
   }
-
-  const fmt = (emoji: string, name: string, m: RegExpMatchArray | null) =>
-    m ? `  ${emoji} ${name.padEnd(8)}  ${m[1]} of ${m[2]}` : null;
-
-  const sectionLines = [
-    fmt("📌", "Rules", rules),
-    fmt("🧩", "Themes", themes),
-    fmt("📅", "Recent", recent),
-    fmt("💬", "Sessions", sessions),
-  ].filter((l): l is string => l !== null);
-
-  if (sectionLines.length > 0) {
-    lines.push("");
-    lines.push(...sectionLines);
-  }
+  lines.push("");
+  lines.push(
+    "🧠 Memory loaded with decisions, bug fixes, discoveries, and prior sessions. Unfold any of it on demand.",
+  );
   return lines.join("\n");
+}
+
+/** LLM-side reminder prepended to the full surface. Tells the agent
+ *  what's actually in the corpus (vs the slice surfaced) and how to
+ *  reach the rest. Skipped if parsing failed or no sections matched. */
+function prefixSurfaceForLLM(surface: string, strippedSurface: string): string {
+  const p = parseSurface(surface);
+  if (!p || p.sections.length === 0) return strippedSurface;
+  const totals = p.sections.map((s) => `${s.total} ${s.name}`).join(" · ");
+  const reminder = `Mneme corpus: ${totals}. The surface below is a relevance-ranked slice. Unfold any [id] or query mneme_sql to access the rest.\n\n`;
+  return reminder + strippedSurface;
 }
 
 /** Compact "now" stamp injected on every UserPromptSubmit so the agent
@@ -466,14 +502,14 @@ async function main(): Promise<void> {
       const surface = await fetchSurface(cfg, payload, repos);
       if (surface) {
         // Two channels, two purposes — not duplicated content:
-        //   additionalContext → LLM sees the *complete* surface (full
-        //                       rows, every body) for accurate reasoning.
-        //   systemMessage     → user sees a parsed *summary* (counts,
-        //                       repo, machines, time since last session).
-        //                       No raw memory rows — that's what the
-        //                       dashboard / mneme_sql are for.
+        //   additionalContext → LLM gets the full surface plus a one-line
+        //                       reminder of total corpus size and how to
+        //                       unfold rows that aren't in this slice.
+        //   systemMessage     → user gets a compact status banner: repo,
+        //                       machines, since-last-session totals, plus
+        //                       a flavor line. No raw memory rows here.
         // Gate systemMessage to source=startup only.
-        const fullForLlm = formatSurfaceForTerminal(surface);
+        const fullForLlm = prefixSurfaceForLLM(surface, formatSurfaceForTerminal(surface));
         const summaryForUser = summariseSurfaceForUser(surface);
         const source = typeof payload.source === "string" ? payload.source : "startup";
         const envelope: Record<string, unknown> = {
