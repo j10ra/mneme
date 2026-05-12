@@ -414,17 +414,20 @@ async function main(): Promise<void> {
       const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
       const surface = await fetchSurface(cfg, payload, repos);
       if (surface) {
-        // additionalContext only — systemMessage caused the same surface
-        // to render twice in the transcript (additionalContext renders
-        // visibly in this Claude Code version, and systemMessage rendered
-        // an extra copy on top). One channel, one render, no duplicates.
-        // Strip markdown first so it doesn't read like raw source.
+        // Two channels with the markdown-stripped surface:
+        //   additionalContext → LLM context (always works, invisible to user)
+        //   systemMessage     → user-visible rendering in the transcript
+        // 1.1.11 dropped systemMessage on a wrong hypothesis (it was the
+        // *visibility* key, not the duplication cause). Strip the markdown
+        // so the rendered version doesn't look like raw source.
+        const visible = formatSurfaceForTerminal(surface);
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "SessionStart",
-              additionalContext: formatSurfaceForTerminal(surface),
+              additionalContext: visible,
             },
+            systemMessage: visible,
           }),
         );
       }
