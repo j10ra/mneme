@@ -163,6 +163,28 @@ async function unpin(input: string): Promise<void> {
   console.log(`✓ unpinned memory ${input} (request id ${r.id})`);
 }
 
+/** Archive: stamp archived_at on the target memory via the same
+ *  raw_meta actuation channel pin/unpin use. value=true archives;
+ *  value=false unarchives. Captures are immutable — only memories
+ *  get the flag flip. */
+async function archive(input: string, value = true): Promise<void> {
+  if (!input) throw new Error("archive requires a memory id");
+  if (!UUID_RE.test(input)) {
+    throw new Error(
+      `archive requires a memory uuid (got: "${input}"). Use mneme.sql to find the id first, then archive by uuid.`,
+    );
+  }
+  const cfg = loadConfig();
+  const verb = value ? "archive" : "unarchive";
+  const r = await postCapture(cfg, {
+    ...baseScope(cfg),
+    source: "manual",
+    content: `${verb} ${input}`,
+    raw_meta: { kind: "archive", target: input, value },
+  });
+  console.log(`✓ ${verb}d memory ${input} (request id ${r.id})`);
+}
+
 type RegisterResponse = {
   machine_id: string;
   machine_name: string;
@@ -726,6 +748,12 @@ async function main(): Promise<void> {
     case "unpin":
       await unpin(process.argv[3] ?? "");
       return;
+    case "archive":
+      await archive(process.argv[3] ?? "", true);
+      return;
+    case "unarchive":
+      await archive(process.argv[3] ?? "", false);
+      return;
     case "machines":
       await machines();
       return;
@@ -747,7 +775,7 @@ async function main(): Promise<void> {
     default:
       console.error(`unknown subcommand: ${cmd}`);
       console.error(
-        "usage: slash.ts <setup|memory|pin|unpin|machines|status|help|dashboard|revoke|rename> [args]",
+        "usage: slash.ts <setup|memory|pin|unpin|archive|unarchive|machines|status|help|dashboard|revoke|rename> [args]",
       );
       process.exit(1);
   }

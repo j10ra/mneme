@@ -165,6 +165,7 @@ export async function insertBundle(bundle: BundleBody, machineId: string): Promi
 
     // Pin actuation: same regex + safety-net pattern as /api/capture today.
     const meta = bundle.capture.raw_meta;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (
       meta &&
       typeof meta === "object" &&
@@ -172,7 +173,6 @@ export async function insertBundle(bundle: BundleBody, machineId: string): Promi
       typeof (meta as { target?: unknown }).target === "string"
     ) {
       const target = (meta as { target: string }).target;
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (isUuid.test(target)) {
         const value = (meta as { value?: unknown }).value !== false;
         try {
@@ -183,6 +183,38 @@ export async function insertBundle(bundle: BundleBody, machineId: string): Promi
           `;
         } catch (e) {
           Logger.error(`bundle pin actuation failed for ${target}`, e);
+        }
+      }
+    }
+
+    // Archive actuation: same channel as pin. value=true archives,
+    // value=false unarchives. Mirrors the /api/capture path so daemon-
+    // routed and slash-routed archive captures behave identically.
+    if (
+      meta &&
+      typeof meta === "object" &&
+      (meta as { kind?: unknown }).kind === "archive" &&
+      typeof (meta as { target?: unknown }).target === "string"
+    ) {
+      const target = (meta as { target: string }).target;
+      if (isUuid.test(target)) {
+        const archive = (meta as { value?: unknown }).value !== false;
+        try {
+          if (archive) {
+            await tx`
+              UPDATE memories
+              SET archived_at = NOW()
+              WHERE id = ${target} AND archived_at IS NULL
+            `;
+          } else {
+            await tx`
+              UPDATE memories
+              SET archived_at = NULL
+              WHERE id = ${target} AND archived_at IS NOT NULL
+            `;
+          }
+        } catch (e) {
+          Logger.error(`bundle archive actuation failed for ${target}`, e);
         }
       }
     }

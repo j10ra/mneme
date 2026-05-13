@@ -191,8 +191,8 @@ export function mountIngestRoutes(app: Hono): void {
     // Wrapped in try/catch so a malformed pin never breaks the capture
     // ingest path.
     const meta = body.raw_meta as Record<string, unknown> | undefined;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (meta && meta.kind === "pin" && typeof meta.target === "string") {
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (!isUuid.test(meta.target)) {
         Logger.warn(`pin requested with invalid uuid: ${meta.target}`);
       } else {
@@ -211,6 +211,41 @@ export function mountIngestRoutes(app: Hono): void {
           );
         } catch (e) {
           Logger.error(`pin actuation failed for ${meta.target}`, e);
+        }
+      }
+    }
+
+    // Side-effect for kind=archive captures: set/clear archived_at on
+    // the target memory. Same actuation channel as pin — no separate
+    // route. value=true (default) archives, value=false unarchives.
+    // Captures are never archived this way; only memories. Wrapped in
+    // try/catch for the same reason as pin.
+    if (meta && meta.kind === "archive" && typeof meta.target === "string") {
+      if (!isUuid.test(meta.target)) {
+        Logger.warn(`archive requested with invalid uuid: ${meta.target}`);
+      } else {
+        try {
+          const archive = meta.value !== false;
+          const updated = archive
+            ? await sql<{ id: string }[]>`
+                UPDATE memories
+                SET archived_at = NOW()
+                WHERE id = ${meta.target} AND archived_at IS NULL
+                RETURNING id
+              `
+            : await sql<{ id: string }[]>`
+                UPDATE memories
+                SET archived_at = NULL
+                WHERE id = ${meta.target} AND archived_at IS NOT NULL
+                RETURNING id
+              `;
+          Logger.info(
+            updated[0]
+              ? `archive actuated id=${meta.target} value=${archive}`
+              : `archive requested but target not found or already in state: ${meta.target}`,
+          );
+        } catch (e) {
+          Logger.error(`archive actuation failed for ${meta.target}`, e);
         }
       }
     }

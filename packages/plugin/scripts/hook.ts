@@ -333,11 +333,22 @@ function extractSectionForUser(surface: string, section: string, limit: number):
     .map((l) => l.replace(/^-\s+\[[0-9a-f-]+\]\s*/, "- "));
 }
 
+/** UTF-8 byte size, rendered as B / KB / MB. The LLM-injected surface
+ *  is a string, so byteLength of its UTF-8 encoding is the actual cost
+ *  going into context. Kept terse — this lands in the user banner. */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /** User-visible status banner for the systemMessage channel. Header +
  *  corpus totals + top pinned/rules rows (stripped of UUIDs) + a flavor
- *  line. The LLM gets the full surface separately via additionalContext;
- *  this banner is the user-facing peek at what was loaded. */
-function summariseSurfaceForUser(surface: string): string {
+ *  line that also reports how many bytes the surface is injecting into
+ *  the LLM context. The LLM gets the full surface separately via
+ *  additionalContext; this banner is the user-facing peek at what was
+ *  loaded. */
+function summariseSurfaceForUser(surface: string, injectedBytes: number): string {
   const p = parseSurface(surface);
   if (!p) return "Mneme memory loaded.";
   const lines: string[] = [`Mneme · ${p.repo} · ${p.machineCount} machines`];
@@ -364,7 +375,7 @@ function summariseSurfaceForUser(surface: string): string {
 
   lines.push("");
   lines.push(
-    "🧠 Memory loaded with decisions, bug fixes, discoveries, and prior sessions. Unfold any of it on demand.",
+    `🧠 Memory loaded with decisions, bug fixes, discoveries, and prior sessions. Unfold any of it on demand. (~${formatBytes(injectedBytes)} context)`,
   );
   return lines.join("\n");
 }
@@ -553,7 +564,8 @@ async function main(): Promise<void> {
         //                       a flavor line. No raw memory rows here.
         // Gate systemMessage to source=startup only.
         const fullForLlm = prefixSurfaceForLLM(surface, formatSurfaceForTerminal(surface));
-        const summaryForUser = summariseSurfaceForUser(surface);
+        const injectedBytes = Buffer.byteLength(fullForLlm, "utf8");
+        const summaryForUser = summariseSurfaceForUser(surface, injectedBytes);
         const source = typeof payload.source === "string" ? payload.source : "startup";
         const envelope: Record<string, unknown> = {
           hookSpecificOutput: {
