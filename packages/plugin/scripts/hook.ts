@@ -318,9 +318,25 @@ function parseSurface(surface: string): SurfaceParse | null {
   };
 }
 
+/** Pull the rendered rows of one section out of the full surface markdown
+ *  for the user-visible banner. Strips UUID brackets — those are for the
+ *  LLM to dereference via mneme_sql, the user just wants to see what's
+ *  loaded. Returns up to `limit` lines, each starting with "- ". */
+function extractSectionForUser(surface: string, section: string, limit: number): string[] {
+  const re = new RegExp(`^##\\s+${section}\\b[^\\n]*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, "m");
+  const match = surface.match(re);
+  if (!match?.[1]) return [];
+  return match[1]
+    .split("\n")
+    .filter((l) => l.startsWith("- ["))
+    .slice(0, limit)
+    .map((l) => l.replace(/^-\s+\[[0-9a-f-]+\]\s*/, "- "));
+}
+
 /** User-visible status banner for the systemMessage channel. Header +
- *  corpus totals + a single flavor line. No per-section partials — the
- *  LLM gets those via the full surface. */
+ *  corpus totals + top pinned/rules rows (stripped of UUIDs) + a flavor
+ *  line. The LLM gets the full surface separately via additionalContext;
+ *  this banner is the user-facing peek at what was loaded. */
 function summariseSurfaceForUser(surface: string): string {
   const p = parseSurface(surface);
   if (!p) return "Mneme memory loaded.";
@@ -331,6 +347,21 @@ function summariseSurfaceForUser(surface: string): string {
       `Since last session (${p.sinceAgo} ago): ${p.memories} memories · ${p.captures} captures${supText}`,
     );
   }
+
+  const rules = extractSectionForUser(surface, "Rules", 3);
+  if (rules.length > 0) {
+    lines.push("");
+    lines.push("📌 Rules");
+    lines.push(...rules);
+  }
+
+  const pinned = extractSectionForUser(surface, "Pinned", 5);
+  if (pinned.length > 0) {
+    lines.push("");
+    lines.push("📍 Pinned");
+    lines.push(...pinned);
+  }
+
   lines.push("");
   lines.push(
     "🧠 Memory loaded with decisions, bug fixes, discoveries, and prior sessions. Unfold any of it on demand.",
