@@ -4,8 +4,13 @@
 
 import { Logger, errorMessageOf, mnemeFn } from "@mneme/core";
 import { scrub } from "@mneme/shared";
-import { readerSql } from "../infra/db.ts";
+import { readerSql, sql } from "../infra/db.ts";
 import { embedBatch } from "../embedder/index.ts";
+import {
+  RECALL_LTP_FULL,
+  RECALL_LTP_PARTIAL,
+  RECALL_LTP_PARTIAL_ROW_CAP,
+} from "../infra/config.ts";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_NAME = "mneme";
@@ -110,6 +115,85 @@ function capResult(rows: unknown[]): {
   return { rows: rows.slice(0, keep), truncated: true, total: rows.length };
 }
 
+// ---------------------------------------------------------------------------
+// Recall LTP (#37) — use-driven reinforcement
+//
+// Every successful read becomes a reinforcement event for the memories it
+// actually returned, scaled by how clearly the caller intended that row.
+// Marker-bearing queries (the /recall slash command injects one) and
+// explicit-UUID queries both signal full intent; an anonymous query that
+// narrows to ≤ N rows signals partial intent; wider scans reinforce
+// nothing. Pure helpers below — exported for unit tests.
+// ---------------------------------------------------------------------------
+
+const UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const UUID_GLOBAL_RE = new RegExp(`\\b${UUID_PATTERN}\\b`, "gi");
+const UUID_TEST_RE = new RegExp(`^${UUID_PATTERN}$`, "i");
+const RECALL_MARKER_RE = /--\s*mneme:source=recall\b/i;
+
+export function hasRecallMarker(rawQuery: string): boolean {
+  return RECALL_MARKER_RE.test(rawQuery);
+}
+
+// Whole-query UUID scan. False positives only ever reinforce a row the
+// agent literally typed the UUID for, which is the intended behaviour
+// regardless of which SQL clause it lived in.
+export function extractUuidsFromSql(sql: string): string[] {
+  const out = new Set<string>();
+  for (const m of sql.matchAll(UUID_GLOBAL_RE)) out.add(m[0]!.toLowerCase());
+  return [...out];
+}
+
+export function extractRowIds(rows: unknown[]): string[] {
+  const out = new Set<string>();
+  for (const r of rows) {
+    if (r && typeof r === "object" && "id" in r) {
+      const id = (r as { id: unknown }).id;
+      if (typeof id === "string" && UUID_TEST_RE.test(id)) out.add(id.toLowerCase());
+    }
+  }
+  return [...out];
+}
+
+export type Reinforcement = { strength: number; ids: string[] };
+
+// `total` is the row count BEFORE result-byte truncation (capResult.total)
+// so a 30-row result that got sliced to 10 by the 1MB cap still counts
+// as a wide scan, not a narrowed query.
+export function chooseReinforcement(args: {
+  rawQuery: string;
+  rewrittenSql: string;
+  rows: unknown[];
+  total: number;
+}): Reinforcement | null {
+  // 1. /recall marker — user explicitly invoked, full strength on result ids.
+  if (hasRecallMarker(args.rawQuery)) {
+    const ids = extractRowIds(args.rows);
+    return ids.length > 0 ? { strength: RECALL_LTP_FULL, ids } : null;
+  }
+  // 2. Explicit UUIDs in the query — LLM had to know them. Full strength.
+  const explicit = extractUuidsFromSql(args.rewrittenSql);
+  if (explicit.length > 0) {
+    return { strength: RECALL_LTP_FULL, ids: explicit };
+  }
+  // 3. Anonymous but narrowed (total ≤ cap) — partial strength on result ids.
+  if (args.total > 0 && args.total <= RECALL_LTP_PARTIAL_ROW_CAP) {
+    const ids = extractRowIds(args.rows);
+    return ids.length > 0 ? { strength: RECALL_LTP_PARTIAL, ids } : null;
+  }
+  // 4. Wide scan / no rows / no ids in projection — no-op.
+  return null;
+}
+
+async function reinforce(r: Reinforcement): Promise<void> {
+  await sql`
+    UPDATE memories
+    SET recall_weight = recall_weight + ${r.strength}::real
+    WHERE id = ANY(${r.ids})
+      AND archived_at IS NULL
+  `;
+}
+
 const runSql = mnemeFn(
   "mneme.sql.run",
   async (
@@ -148,6 +232,22 @@ const runSql = mnemeFn(
     // machine-aware filter.
     const rows = await readerSql.unsafe(withLimit);
     const capped = capResult(rows as unknown[]);
+
+    // Fire-and-forget LTP write (#37). Writes are best-effort; never bubble
+    // failures back to the MCP response — same posture as the trace
+    // forwarder. The agent has already done its work; we just record use.
+    const reinforcement = chooseReinforcement({
+      rawQuery,
+      rewrittenSql: withLimit,
+      rows: capped.rows,
+      total: capped.total,
+    });
+    if (reinforcement) {
+      void reinforce(reinforcement).catch((e) => {
+        Logger.warn(`recall_weight reinforcement failed: ${errorMessageOf(e)}`);
+      });
+    }
+
     return { ...capped, rewritten_sql: withLimit };
   },
 );

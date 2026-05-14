@@ -19,7 +19,13 @@ mock.module("../src/embedder/index.ts", () => ({
   EMBEDDER_DIM: 4,
 }));
 
-const { substituteEmbeds } = await import("../src/services/mcp.ts");
+const {
+  substituteEmbeds,
+  hasRecallMarker,
+  extractUuidsFromSql,
+  extractRowIds,
+  chooseReinforcement,
+} = await import("../src/services/mcp.ts");
 
 describe("substituteEmbeds — secrets scrubbed before embedding", () => {
   test("redacts a JWT in embed()", async () => {
@@ -124,5 +130,178 @@ describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () =
     })) as { result: { content: { text: string }[]; isError: boolean } };
     expect(resp.result.isError).toBe(true);
     expect(resp.result.content[0]!.text).toMatch(/forbidden|only SELECT/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recall LTP helpers (#37). Pure functions — no DB or network. The
+// `runSql` write path uses these to decide which rows to reinforce and
+// at what strength after every successful read.
+// ---------------------------------------------------------------------------
+
+const UUID_A = "11111111-2222-3333-4444-555555555555";
+const UUID_B = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+const UUID_C = "12345678-90ab-cdef-1234-567890abcdef";
+
+describe("hasRecallMarker", () => {
+  test("detects the marker as a leading SQL comment", () => {
+    expect(hasRecallMarker("-- mneme:source=recall\nSELECT 1")).toBe(true);
+  });
+  test("detects the marker with extra whitespace", () => {
+    expect(hasRecallMarker("--   mneme:source=recall\nSELECT 1")).toBe(true);
+  });
+  test("is case-insensitive", () => {
+    expect(hasRecallMarker("-- MNEME:SOURCE=RECALL\nSELECT 1")).toBe(true);
+  });
+  test("returns false on plain SELECT", () => {
+    expect(hasRecallMarker("SELECT id FROM memories LIMIT 1")).toBe(false);
+  });
+  test("does not match a near-miss", () => {
+    expect(hasRecallMarker("-- mneme:source=foo")).toBe(false);
+  });
+});
+
+describe("extractUuidsFromSql", () => {
+  test("finds UUID after `id =`", () => {
+    expect(extractUuidsFromSql(`SELECT * FROM memories WHERE id = '${UUID_A}'`)).toEqual([UUID_A]);
+  });
+  test("finds UUIDs inside `id = ANY(ARRAY[...])`", () => {
+    const sql = `SELECT * FROM memories WHERE id = ANY(ARRAY['${UUID_A}', '${UUID_B}']::uuid[])`;
+    expect(extractUuidsFromSql(sql).sort()).toEqual([UUID_A, UUID_B].sort());
+  });
+  test("finds UUIDs inside `id IN (...)`", () => {
+    const sql = `SELECT * FROM memories WHERE id IN ('${UUID_A}', '${UUID_B}', '${UUID_C}')`;
+    expect(extractUuidsFromSql(sql).sort()).toEqual([UUID_A, UUID_B, UUID_C].sort());
+  });
+  test("is case-insensitive and lowercases output", () => {
+    const upper = UUID_A.toUpperCase();
+    expect(extractUuidsFromSql(`WHERE id = '${upper}'`)).toEqual([UUID_A]);
+  });
+  test("deduplicates repeated UUIDs", () => {
+    const sql = `WHERE id = '${UUID_A}' OR meta->>'related_to' LIKE '%${UUID_A}%'`;
+    expect(extractUuidsFromSql(sql)).toEqual([UUID_A]);
+  });
+  test("returns [] when no UUIDs are present", () => {
+    expect(extractUuidsFromSql("SELECT * FROM memories WHERE kind = 'decision'")).toEqual([]);
+  });
+});
+
+describe("extractRowIds", () => {
+  test("collects valid UUIDs from row.id", () => {
+    expect(extractRowIds([{ id: UUID_A }, { id: UUID_B }])).toEqual(
+      expect.arrayContaining([UUID_A, UUID_B]),
+    );
+  });
+  test("skips rows missing an id column", () => {
+    expect(extractRowIds([{ kind: "decision" }, { id: UUID_A }])).toEqual([UUID_A]);
+  });
+  test("skips rows whose id is not a UUID (e.g. count(*) returning integer)", () => {
+    expect(extractRowIds([{ id: 42 }, { id: "not-a-uuid" }])).toEqual([]);
+  });
+});
+
+describe("chooseReinforcement", () => {
+  const rows3 = [{ id: UUID_A }, { id: UUID_B }, { id: UUID_C }];
+
+  test("/recall marker reinforces result-set ids at full strength", () => {
+    const r = chooseReinforcement({
+      rawQuery: "-- mneme:source=recall\nSELECT id FROM memories LIMIT 3",
+      rewrittenSql: "SELECT id FROM memories LIMIT 3",
+      rows: rows3,
+      total: 3,
+    });
+    expect(r).not.toBeNull();
+    expect(r!.strength).toBe(1.0);
+    expect(r!.ids.sort()).toEqual([UUID_A, UUID_B, UUID_C].sort());
+  });
+
+  test("explicit UUID in WHERE reinforces that UUID at full strength", () => {
+    const r = chooseReinforcement({
+      rawQuery: `SELECT * FROM memories WHERE id = '${UUID_A}'`,
+      rewrittenSql: `SELECT * FROM memories WHERE id = '${UUID_A}'`,
+      rows: [{ id: UUID_A, content: "x" }],
+      total: 1,
+    });
+    expect(r).not.toBeNull();
+    expect(r!.strength).toBe(1.0);
+    expect(r!.ids).toEqual([UUID_A]);
+  });
+
+  test("anonymous narrow query (rows ≤ cap) reinforces partial strength", () => {
+    const r = chooseReinforcement({
+      rawQuery: "SELECT id FROM memories WHERE kind = 'decision' LIMIT 5",
+      rewrittenSql: "SELECT id FROM memories WHERE kind = 'decision' LIMIT 5",
+      rows: rows3,
+      total: 3,
+    });
+    expect(r).not.toBeNull();
+    expect(r!.strength).toBe(0.4);
+    expect(r!.ids.sort()).toEqual([UUID_A, UUID_B, UUID_C].sort());
+  });
+
+  test("anonymous wide query (rows > cap) reinforces nothing", () => {
+    const wideRows = Array.from({ length: 30 }, (_, i) => ({
+      id: `${i.toString(16).padStart(8, "0")}-0000-0000-0000-000000000000`,
+    }));
+    const r = chooseReinforcement({
+      rawQuery: "SELECT id FROM memories ORDER BY created_at DESC LIMIT 30",
+      rewrittenSql: "SELECT id FROM memories ORDER BY created_at DESC LIMIT 30",
+      rows: wideRows,
+      total: 30,
+    });
+    expect(r).toBeNull();
+  });
+
+  test("zero-row result reinforces nothing", () => {
+    const r = chooseReinforcement({
+      rawQuery: "SELECT id FROM memories WHERE kind = 'never'",
+      rewrittenSql: "SELECT id FROM memories WHERE kind = 'never'",
+      rows: [],
+      total: 0,
+    });
+    expect(r).toBeNull();
+  });
+
+  test("marker beats partial (full strength even on a 10-row query)", () => {
+    const r = chooseReinforcement({
+      rawQuery: "-- mneme:source=recall\nSELECT id FROM memories LIMIT 3",
+      rewrittenSql: "SELECT id FROM memories LIMIT 3",
+      rows: rows3,
+      total: 3,
+    });
+    expect(r!.strength).toBe(1.0);
+  });
+
+  test("explicit UUID beats partial when both could apply", () => {
+    const r = chooseReinforcement({
+      rawQuery: `SELECT * FROM memories WHERE id = '${UUID_A}'`,
+      rewrittenSql: `SELECT * FROM memories WHERE id = '${UUID_A}'`,
+      rows: [{ id: UUID_A }],
+      total: 1,
+    });
+    expect(r!.strength).toBe(1.0);
+    expect(r!.ids).toEqual([UUID_A]);
+  });
+
+  test("narrow query without an `id` column in projection reinforces nothing", () => {
+    const r = chooseReinforcement({
+      rawQuery: "SELECT count(*) FROM memories WHERE kind = 'decision'",
+      rewrittenSql: "SELECT count(*) FROM memories WHERE kind = 'decision'",
+      rows: [{ count: 7 }],
+      total: 1,
+    });
+    expect(r).toBeNull();
+  });
+
+  test("truncated wide query (total > cap, rows < total) reinforces nothing", () => {
+    // capResult truncated 30 rows down to 5 due to byte cap. total stays 30 →
+    // still a wide scan, no partial reinforcement.
+    const r = chooseReinforcement({
+      rawQuery: "SELECT id, content FROM memories LIMIT 200",
+      rewrittenSql: "SELECT id, content FROM memories LIMIT 200",
+      rows: rows3,
+      total: 30,
+    });
+    expect(r).toBeNull();
   });
 });

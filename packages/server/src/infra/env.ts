@@ -52,6 +52,17 @@ const Schema = z.object({
   // supersede pass run against the live corpus.
   MNEME_DIGEST_ENABLED: z.enum(["0", "1"]).default("0"),
 
+  // ── Recall LTP (use-driven reinforcement, #37) ────────────────────
+  // Tunable at runtime so coefficients can be adjusted from a few weeks
+  // of access data without a redeploy. Defaults match the ticket's
+  // brainstormed values; everything else (nap, dream, supersede)
+  // remains plain constants in config.ts because those rarely change.
+  RECALL_LTP_FULL: z.coerce.number().default(1.0),
+  RECALL_LTP_PARTIAL: z.coerce.number().default(0.4),
+  RECALL_LTP_PARTIAL_ROW_CAP: z.coerce.number().int().positive().default(10),
+  RECALL_LTD_DECAY: z.coerce.number().min(0).max(1).default(0.9),
+  RECALL_RANKING_COEF: z.coerce.number().default(0.1),
+
   // ── Embedder (server-side TEI fallback for non-daemon callers) ────
   // Canonical embedder runs in each per-machine daemon (bge-small via
   // packages/daemon/src/embed-worker.ts). The server-side TEI path

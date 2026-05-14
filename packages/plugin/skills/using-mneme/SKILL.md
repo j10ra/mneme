@@ -45,12 +45,15 @@ ORDER BY
   (
     0.6  * (1 - (embedding <=> embed('your query'))) +
     0.4  * ts_rank(tsv, websearch_to_tsquery('english', 'your query')) +
-    0.05 * importance
+    0.05 * importance +
+    0.10 * ln(1 + recall_weight)
   )
   * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
 DESC
 LIMIT 10;
 ```
+
+The `recall_weight` term is use-driven reinforcement (LTP): the server bumps it on every successful `mneme_sql` query that signals intent (explicit UUID, `/recall` marker, or ≤10 rows returned) and decays it each nap cycle. Frequently-used memories drift up; unused ones fade. `ln()` keeps the contribution bounded.
 
 Read the previews. Pick the IDs that matter. **Discard the rest.**
 

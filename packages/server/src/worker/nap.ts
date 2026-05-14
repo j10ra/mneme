@@ -7,6 +7,7 @@ import {
   NAP_RELATE_DISTANCE,
   NAP_RELATE_MAX_NEIGHBORS,
   NAP_SHADOW_DECAY,
+  RECALL_LTD_DECAY,
   SUPERSEDE_RULE_AGE_GAP,
   SUPERSEDE_RULE_COSINE_MAX,
   SUPERSEDE_RULE_KEYWORDS,
@@ -16,6 +17,7 @@ import { sql } from "../infra/db.ts";
 
 export type NapResult = {
   decayed: number;
+  ltp_decayed: number;
   shadowed: number;
   related: number;
   superseded: number;
@@ -23,6 +25,8 @@ export type NapResult = {
 
 /** Run one nap cycle, all in one transaction:
  *    1. decay importance with asymmetric pinned/unpinned floors
+ *    1b. decay recall_weight (#37 LTP counterpart — use-driven reinforcement
+ *        accumulates on mneme_sql access, fades on each nap cycle)
  *    2. mark exact-text shadows in (content_hash, repo, scope) groups
  *    3. pick the cycle's seed set (least-recently-napped, capped)
  *    4. relate-pass: link semantic neighbours via meta.related_to
@@ -50,6 +54,18 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
             WHEN COALESCE((meta->>'pinned')::boolean, false) THEN ${NAP_PIN_FLOOR}::real
             ELSE ${NAP_FLOOR}::real
           END
+      `;
+
+    // 1b. Decay recall_weight (LTP counterpart, #37). recall_weight
+    //     accumulates on every successful mneme_sql access that signals
+    //     intent; this pass fades it on each cycle so weight reflects
+    //     *recent* use, not lifetime use. Floor at 0.01 — below that the
+    //     ranking contribution is negligible and we stop paying writes.
+    const ltpDecayed = await tx`
+        UPDATE memories
+        SET recall_weight = recall_weight * ${RECALL_LTD_DECAY}::real
+        WHERE archived_at IS NULL
+          AND recall_weight >= 0.01
       `;
 
     // 2. Exact-text shadows: in each (content_hash, repo, scope) group,
@@ -218,6 +234,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
 
     return {
       decayed: decayed.count,
+      ltp_decayed: ltpDecayed.count,
       shadowed: shadowed.count,
       related: related.count,
       superseded: supersededRows.length,

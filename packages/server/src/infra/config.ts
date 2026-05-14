@@ -7,6 +7,12 @@
 // When a knob graduates to "operator wants to tune at runtime", it can
 // be backed by a row in `_ops.config` (see issue #1, Phase 4) with the
 // constant below remaining as the fallback default.
+//
+// Exception: recall LTP knobs (#37) read from env so the operator can
+// tune the LTP coefficients without a redeploy once the use-driven
+// reinforcement signal has a few weeks of access data to look at.
+
+import { env } from "./env.ts";
 
 // ── Telemetry retention ───────────────────────────────────────────────
 
@@ -127,6 +133,39 @@ export const SUPERSEDE_LLM_BATCH_MAX_MEMBERS = 30;
  *  than its successor to outrank it. Tunable here; recall query
  *  templates / using-mneme skill read this. */
 export const SUPERSEDE_RECALL_PENALTY = 0.3;
+
+// ── Recall LTP (use-driven reinforcement, #37) ────────────────────────
+// LTP = long-term potentiation. Every successful mneme_sql query becomes
+// a reinforcement event for the memories it actually returned, scaled by
+// how clearly the agent (or user, via /recall) intended that row. Decays
+// on every nap pass, surfaces via a bounded ln(1 + recall_weight) term
+// in surface + Layer-1 ranking. Values are env-overridable (env.ts).
+
+/** Strength applied when intent is unambiguous — query references an
+ *  explicit UUID (`id = '<u>'`, `id = ANY(...)`, `id IN (...)`), OR the
+ *  query carries the `-- mneme:source=recall` marker injected by the
+ *  /recall slash command. */
+export const RECALL_LTP_FULL = env.RECALL_LTP_FULL;
+
+/** Strength applied when the query is narrowed but the agent hasn't
+ *  named the row by UUID — heuristic: a SELECT that returns ≤ cap rows
+ *  is "the agent picked these". Wider scans get 0. */
+export const RECALL_LTP_PARTIAL = env.RECALL_LTP_PARTIAL;
+
+/** Row-count threshold below which an anonymous query counts as a
+ *  partial reinforcement signal. Above this it's a wide scan and
+ *  reinforces nothing. */
+export const RECALL_LTP_PARTIAL_ROW_CAP = env.RECALL_LTP_PARTIAL_ROW_CAP;
+
+/** Per-nap-cycle multiplier on recall_weight. 0.9 ≈ 7-nap half-life
+ *  from a single hit. Long enough to feel persistent, short enough to
+ *  fade if truly unused. */
+export const RECALL_LTD_DECAY = env.RECALL_LTD_DECAY;
+
+/** Coefficient on the `ln(1 + recall_weight)` term added to surface
+ *  and Layer-1 ranking. ln() bounds the tail: 100 hits ≈ 4.6× one hit,
+ *  not 100×. Conservative initial value; tune from data. */
+export const RECALL_RANKING_COEF = env.RECALL_RANKING_COEF;
 
 // ── Digest (cross-cluster consolidator, every 48h) ────────────────────
 // Issue #30. Third worker in the brain trio (nap → dream → digest).

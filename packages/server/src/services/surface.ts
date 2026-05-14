@@ -1,4 +1,5 @@
 import { mnemeFn } from "@mneme/core";
+import { RECALL_RANKING_COEF } from "../infra/config.ts";
 import { sql } from "../infra/db.ts";
 
 type SurfaceItem = {
@@ -68,6 +69,10 @@ export const buildSurface = mnemeFn(
   async (repos: string[], callerMachineId: string | null): Promise<Surface> => {
     if (repos.length === 0) return EMPTY_SURFACE;
 
+    // Ranking on all four "by importance" sections adds the LTP term
+    // (#37): `+ RECALL_RANKING_COEF * ln(1 + recall_weight)`. ln() bounds
+    // the tail so a hot memory drifts above its peers without dominating.
+    // sessions section stays chronological — recency is the intent.
     const pinnedQ = sql<Row[]>`
       SELECT id, kind, importance, content, repo, machine_id, created_at,
              COUNT(*) OVER () AS total_count
@@ -77,7 +82,8 @@ export const buildSurface = mnemeFn(
         AND (meta->>'superseded_by') IS NULL
         AND (repo = ANY(${repos}) OR repo IS NULL)
         AND (private = false OR machine_id = ${callerMachineId})
-      ORDER BY importance DESC, created_at DESC
+      ORDER BY (importance + ${RECALL_RANKING_COEF}::real * ln(1 + recall_weight)) DESC,
+               created_at DESC
       LIMIT 5
     `;
 
@@ -91,7 +97,8 @@ export const buildSurface = mnemeFn(
         AND (meta->>'superseded_by') IS NULL
         AND (repo = ANY(${repos}) OR repo IS NULL)
         AND (private = false OR machine_id = ${callerMachineId})
-      ORDER BY importance DESC, created_at DESC
+      ORDER BY (importance + ${RECALL_RANKING_COEF}::real * ln(1 + recall_weight)) DESC,
+               created_at DESC
       LIMIT 3
     `;
 
@@ -108,7 +115,8 @@ export const buildSurface = mnemeFn(
         AND repo = ANY(${repos})
         AND (meta->>'superseded_by') IS NULL
         AND (private = false OR machine_id = ${callerMachineId})
-      ORDER BY importance DESC, created_at DESC
+      ORDER BY (importance + ${RECALL_RANKING_COEF}::real * ln(1 + recall_weight)) DESC,
+               created_at DESC
       LIMIT 3
     `;
 
@@ -125,7 +133,8 @@ export const buildSurface = mnemeFn(
         AND created_at > now() - interval '14 days'
         AND (meta->>'superseded_by') IS NULL
         AND (private = false OR machine_id = ${callerMachineId})
-      ORDER BY importance DESC, created_at DESC
+      ORDER BY (importance + ${RECALL_RANKING_COEF}::real * ln(1 + recall_weight)) DESC,
+               created_at DESC
       LIMIT 6
     `;
 
