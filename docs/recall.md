@@ -23,7 +23,7 @@ sequenceDiagram
     MCP->>E: embed("payment integration")
     E-->>MCP: vector
     MCP->>MCP: substitute embed(...) → '[0.12, ...]'::vector
-    MCP->>DB: rewritten SELECT (auto-LIMIT 200 if absent)
+    MCP->>DB: rewritten SELECT (auto-LIMIT 50 if absent)
     DB-->>MCP: rows
     MCP-->>Agent: result set
 ```
@@ -33,7 +33,7 @@ sequenceDiagram
 2. Single-statement check.
 3. SELECT/WITH-only regex (rejects 17+ DML/DDL keywords).
 4. `embed('text')` macro substitution (batched if multiple appear).
-5. Auto-`LIMIT 200` if absent.
+5. Auto-`LIMIT 50` if absent.
 6. 5s `statement_timeout`.
 7. 1MB result cap.
 

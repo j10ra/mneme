@@ -15,7 +15,7 @@ import {
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_NAME = "mneme";
 const SERVER_VERSION = "0.1.0";
-const DEFAULT_LIMIT = 200;
+const DEFAULT_LIMIT = 50;
 const RESULT_BYTE_CAP = 1024 * 1024;
 
 // ---------------------------------------------------------------------------
@@ -56,7 +56,9 @@ const TOOL_DEF = {
     "Execute a read-only SELECT against Mneme's Postgres. " +
     "Use embed('text') macro for semantic search (substituted with a 384-dim vector before execution). " +
     "Combine with `<=>` for cosine distance and `ts_rank(tsv, websearch_to_tsquery(...))` for keyword. " +
-    "Auto-LIMIT 200 if absent. 5s timeout, 1MB result cap. " +
+    "Auto-LIMIT 50 if absent. 5s timeout, 1MB result cap. " +
+    "Response carries `rows`, `total`, and the effective `limit` — " +
+    "`total === limit` means more rows may exist. " +
     "See the using-mneme skill for the schema and query templates.",
   inputSchema: {
     type: "object",
@@ -71,7 +73,7 @@ const FORBIDDEN_RE =
   /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|VACUUM|REINDEX|REFRESH|COPY|CALL|DO|EXECUTE|LOCK|MERGE)\b/i;
 
 const EMBED_RE = /\bembed\(\s*'((?:[^'\\]|\\.)*)'\s*\)/gi;
-const LIMIT_RE = /\bLIMIT\b\s+\d+/i;
+const LIMIT_RE = /\bLIMIT\b\s+(\d+)/i;
 
 function stripComments(sql: string): string {
   return sql.replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -80,6 +82,14 @@ function stripComments(sql: string): string {
 function injectLimit(sql: string): string {
   if (LIMIT_RE.test(sql)) return sql;
   return `${sql.trimEnd().replace(/;\s*$/, "")} LIMIT ${DEFAULT_LIMIT}`;
+}
+
+// Effective row cap for a query: the agent's own LIMIT if it wrote one,
+// else the auto-injected default. Returned to the agent so it can tell a
+// capped result (`total === limit`) from a complete one.
+function effectiveLimit(sql: string): number {
+  const m = LIMIT_RE.exec(sql);
+  return m ? Number(m[1]) : DEFAULT_LIMIT;
 }
 
 // Exported for tests. Scrubs each embed argument before handing it to
@@ -198,7 +208,7 @@ const runSql = mnemeFn(
   "mneme.sql.run",
   async (
     rawQuery: string,
-  ): Promise<{ rows: unknown[]; truncated: boolean; total: number; rewritten_sql: string }> => {
+  ): Promise<{ rows: unknown[]; truncated: boolean; total: number; limit: number }> => {
     const stripped = stripComments(rawQuery).trim();
     if (!stripped) throw new Error("empty query");
 
@@ -223,6 +233,7 @@ const runSql = mnemeFn(
 
     const withEmbeds = await substituteEmbeds(single);
     const withLimit = injectLimit(withEmbeds);
+    const limit = effectiveLimit(single);
 
     // Privacy enforcement is at the role level: mneme_reader has an RLS
     // policy on memories + captures of `USING (private = false)`. No GUC
@@ -248,7 +259,7 @@ const runSql = mnemeFn(
       });
     }
 
-    return { ...capped, rewritten_sql: withLimit };
+    return { ...capped, limit };
   },
 );
 

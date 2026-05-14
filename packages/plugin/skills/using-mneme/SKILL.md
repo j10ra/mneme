@@ -5,7 +5,7 @@ description: Recall what was decided, done, or said across this repo's history �
 
 # Mneme: cross-machine memory via SQL
 
-Mneme is a persistent memory layer that captures everything you and the user have worked on, across machines. The agent talks to it through one tool: `mneme_sql(query)` — read-only, SELECT only, auto-`LIMIT 200`, 5s timeout, 1MB result cap.
+Mneme is a persistent memory layer that captures everything you and the user have worked on, across machines. The agent talks to it through one tool: `mneme_sql(query)` — read-only, SELECT only, auto-`LIMIT 50`, 5s timeout, 1MB result cap.
 
 ## When to use
 

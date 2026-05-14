@@ -91,8 +91,10 @@ describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () =
     expect(resp.result.isError).toBe(false);
     const payload = JSON.parse(resp.result.content[0]!.text) as {
       rows: { one: number }[];
+      limit: number;
     };
     expect(payload.rows).toEqual([{ one: 1 }]);
+    expect(payload.limit).toBe(50);
   });
 
   test("memories schema check: counts rows without column errors", async () => {
