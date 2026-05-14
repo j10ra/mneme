@@ -63,7 +63,8 @@ WHERE id = ANY (
                      )::uuid)
       )
   AND archived_at IS NULL
-ORDER BY importance DESC LIMIT 5;
+ORDER BY (importance + 0.1 * ln(1 + recall_weight)) DESC
+LIMIT 5;
 ```
 
 When you summarise for the user, group neighbours under the parent ("X — also see related: A, B, C") rather than as separate top results.

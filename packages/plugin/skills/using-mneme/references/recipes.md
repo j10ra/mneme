@@ -19,7 +19,9 @@ FROM memories
 WHERE archived_at IS NULL
   AND kind = 'decision'
   AND (meta->>'shadow_of') IS NULL
-ORDER BY (1 - (embedding <=> embed('X'))) * 0.7 + 0.3 * importance DESC
+ORDER BY (1 - (embedding <=> embed('X'))) * 0.7
+       + 0.3 * importance
+       + 0.1 * ln(1 + recall_weight) DESC
 LIMIT 5;
 ```
 
@@ -94,7 +96,9 @@ SELECT id, importance, created_at,
        substring(content, 1, 300) AS summary
 FROM memories
 WHERE archived_at IS NULL AND kind = 'cluster'
-ORDER BY (1 - (embedding <=> embed('X'))) DESC LIMIT 5;
+ORDER BY (1 - (embedding <=> embed('X')))
+       + 0.1 * ln(1 + recall_weight) DESC
+LIMIT 5;
 ```
 
 A 5-sentence cluster summary often answers a "what's the state of X" question without needing to unfold a single member.
@@ -170,7 +174,9 @@ FROM memories
 WHERE archived_at IS NULL
   AND created_at > now() - interval '7 days'
   AND (meta->>'shadow_of') IS NULL
-ORDER BY importance DESC, created_at DESC LIMIT 20;
+ORDER BY (importance + 0.1 * ln(1 + recall_weight)) DESC,
+         created_at DESC
+LIMIT 20;
 ```
 
 ## Backlinks (memories that reference this one)
