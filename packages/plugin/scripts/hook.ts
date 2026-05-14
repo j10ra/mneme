@@ -343,11 +343,11 @@ function formatBytes(bytes: number): string {
 }
 
 /** User-visible status banner for the systemMessage channel. Header +
- *  corpus totals + top pinned/rules rows (stripped of UUIDs) + a flavor
+ *  corpus totals + top pinned rows (stripped of UUIDs) + a flavor
  *  line that also reports how many bytes the surface is injecting into
  *  the LLM context. The LLM gets the full surface separately via
- *  additionalContext; this banner is the user-facing peek at what was
- *  loaded. */
+ *  additionalContext — including the auto-derived Rules section, which
+ *  stays LLM-only; the banner shows only deliberately pinned rows. */
 function summariseSurfaceForUser(surface: string, injectedBytes: number): string {
   const p = parseSurface(surface);
   if (!p) return "Mneme memory loaded.";
@@ -357,13 +357,6 @@ function summariseSurfaceForUser(surface: string, injectedBytes: number): string
     lines.push(
       `Since last session (${p.sinceAgo} ago): ${p.memories} memories · ${p.captures} captures${supText}`,
     );
-  }
-
-  const rules = extractSectionForUser(surface, "Rules", 3);
-  if (rules.length > 0) {
-    lines.push("");
-    lines.push("📌 Rules");
-    lines.push(...rules);
   }
 
   const pinned = extractSectionForUser(surface, "Pinned", 5);
