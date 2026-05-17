@@ -149,3 +149,75 @@ describe("scrubData - nested values", () => {
     expect(r.a[1]).toBe("ok");
   });
 });
+
+describe("scrubData - binary content blocks", () => {
+  test("redacts base64 image source data while preserving shape", () => {
+    const big = "A".repeat(60_000);
+    const block = {
+      type: "image",
+      source: { type: "base64", media_type: "image/jpeg", data: big },
+    };
+    const r = scrubData(block) as {
+      type: string;
+      source: { type: string; media_type: string; data: string };
+    };
+    expect(r.type).toBe("image");
+    expect(r.source.type).toBe("base64");
+    expect(r.source.media_type).toBe("image/jpeg");
+    expect(r.source.data).toBe("[redacted: 60000 base64 chars]");
+  });
+
+  test("redacts document content blocks the same way", () => {
+    const block = {
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: "application/pdf",
+        data: "JVBE...".repeat(2000),
+      },
+    };
+    const r = scrubData(block) as { source: { data: string } };
+    expect(r.source.data.startsWith("[redacted:")).toBe(true);
+  });
+
+  test("idempotent — does not re-redact an already-redacted block", () => {
+    const once = scrubData({
+      type: "image",
+      source: { type: "base64", data: "BASE64BLOB" },
+    }) as { source: { data: string } };
+    const twice = scrubData(once) as { source: { data: string } };
+    expect(twice.source.data).toBe(once.source.data);
+  });
+
+  test("leaves non-binary image-typed shapes alone", () => {
+    // `type: "image"` without a base64 source (e.g., a URL-source content
+    // block or unrelated key-value pair) should pass through.
+    const r = scrubData({
+      type: "image",
+      source: { type: "url", url: "https://example.com/x.jpg" },
+    }) as { source: Record<string, string> };
+    expect(r.source.url).toBe("https://example.com/x.jpg");
+  });
+
+  test("redacts deeply nested image blocks inside a tool_result payload", () => {
+    const payload = {
+      tool: "mcp__preview_screenshot",
+      result: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/jpeg",
+            data: "X".repeat(50_000),
+          },
+        },
+      ],
+    };
+    const r = scrubData(payload) as {
+      result: { source: { data: string } }[];
+    };
+    const first = r.result[0];
+    expect(first).toBeDefined();
+    expect(first?.source.data).toBe("[redacted: 50000 base64 chars]");
+  });
+});

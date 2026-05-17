@@ -735,10 +735,20 @@ async function main(): Promise<void> {
       const fileRepo = filePath ? repoForFile(filePath) : null;
       const scope = fileRepo ? { ...baseScope, repo: fileRepo } : baseScope;
 
+      // Scrub tool data BEFORE serializing so the 64KB size cap below
+      // reflects real text content, not bloated binary. Without this, a
+      // single ~50KB inline base64 screenshot sails just under the cap,
+      // lands in the queue, then chokes Claude's batch extract API with
+      // `invalid_request` once the daemon ships a batch of 20 captures.
+      // scrubData detects Anthropic image/document content blocks and
+      // replaces the base64 `data` field with a `[redacted: N base64 chars]`
+      // stub while preserving the surrounding shape.
+      const cleanedInput = scrubData(toolInput);
+      const cleanedResp = scrubData(toolResp);
       const observation = JSON.stringify({
         tool: toolName,
-        input: toolInput,
-        result: toolResp,
+        input: cleanedInput,
+        result: cleanedResp,
       });
       if (observation.length > 64 * 1024) return;
       const body = {
