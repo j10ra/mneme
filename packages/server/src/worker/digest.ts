@@ -64,6 +64,7 @@ import {
   SUPERSEDE_LLM_BATCH_MAX_MEMBERS,
 } from "../infra/config.ts";
 import { sql } from "../infra/db.ts";
+import { validateSupersedePairs } from "../lib/supersede.ts";
 import { pickDream } from "../llm/pick.ts";
 import type { Kind, SupersedeCandidate, SupersedePair } from "../llm/types.ts";
 
@@ -72,6 +73,7 @@ export type DigestResult = {
   merges_applied: number;
   supersede_batches: number;
   supersedes_applied: number;
+  supersedes_rejected: number;
 };
 
 type MergePairRow = { a_id: string; b_id: string };
@@ -216,6 +218,7 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
       merges_applied: 0,
       supersede_batches: 0,
       supersedes_applied: 0,
+      supersedes_rejected: 0,
     };
   }
   const judgeClusterMerge = dr.judgeClusterMerge;
@@ -281,6 +284,7 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
   // ─── Operation 2: cross-cluster supersede ──────────────────────
   const candidates = await findCrossClusterSupersedeCandidates();
   let supersedesApplied = 0;
+  let supersedesRejected = 0;
   let batchCount = 0;
   for (const batch of chunk(candidates, SUPERSEDE_LLM_BATCH_MAX_MEMBERS)) {
     batchCount++;
@@ -290,8 +294,6 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
       content: row.content,
       created_at: row.created_at.toISOString(),
     }));
-    const idSet = new Set(supersedeBatch.map((c) => c.id));
-
     let pairs: SupersedePair[];
     try {
       pairs = await findSupersedes(supersedeBatch);
@@ -302,23 +304,19 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
       continue;
     }
 
-    for (const pair of pairs) {
-      // Validate: both ids in the batch we sent (no hallucinated ids).
-      if (!idSet.has(pair.old_id) || !idSet.has(pair.new_id)) {
-        Logger.warn("digest: supersede pair invalid (id not in batch)", {
-          pair,
-        });
-        continue;
-      }
-      // Validate: chronology. Same check the daemon dream worker does.
-      const oldRow = supersedeBatch.find((c) => c.id === pair.old_id)!;
-      const newRow = supersedeBatch.find((c) => c.id === pair.new_id)!;
-      if (new Date(oldRow.created_at).getTime() >= new Date(newRow.created_at).getTime()) {
-        Logger.warn("digest: supersede pair invalid (chronology)", {
-          pair,
-        });
-        continue;
-      }
+    // Structural validation via the shared validator (same contract the
+    // server applies to dream's pairs in writeClusters). The candidate set
+    // is the batch we sent the LLM; created_at on each is the DB value.
+    const { valid, rejected } = validateSupersedePairs(pairs, supersedeBatch);
+    for (const r of rejected) {
+      Logger.warn("digest: supersede pair rejected", undefined, {
+        reason: r.reason,
+        old_id: r.pair.old_id,
+        new_id: r.pair.new_id,
+      });
+      supersedesRejected++;
+    }
+    for (const pair of valid) {
       const written = await applySupersede(pair.old_id, pair.new_id);
       if (written) {
         supersedesApplied++;
@@ -336,6 +334,7 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
     merges_applied: mergesApplied,
     supersede_batches: batchCount,
     supersedes_applied: supersedesApplied,
+    supersedes_rejected: supersedesRejected,
   };
   Logger.info("digest: done", result);
   return result;
