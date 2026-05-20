@@ -1,22 +1,27 @@
 import { describe, expect, mock, test } from "bun:test";
+import { EMBEDDER_DIM } from "../src/embedder/local.ts";
 
 // Mock the embedder before importing the SUT. substituteEmbeds calls
 // embedBatch synchronously inside the module — capture every call so we
 // can assert what reached the embedder.
 //
 // IMPORTANT: bun's mock.module persists across test files in the same
-// process. The mock MUST re-export every name the real module exports,
-// otherwise other test files (workers.test.ts, etc.) that import from
-// embedder via extract.ts crash with "Export named X not found".
+// process. The mock MUST re-export every name the real module exports
+// (or files importing via extract.ts crash with "Export named X not
+// found"), AND with faithful values. bundle.test.ts imports EMBEDDER_DIM
+// from this module and sizes real vector(384) DB inserts by it, so a
+// fabricated dimension leaks process-wide and breaks those inserts.
+// EMBEDDER_DIM is taken from the un-mocked local.ts so it tracks the
+// real schema; the mock vectors are sized to match.
 const calls: string[][] = [];
 mock.module("../src/embedder/index.ts", () => ({
   embedBatch: async (texts: string[]) => {
     calls.push(texts);
-    return texts.map(() => Array.from({ length: 4 }, () => 0));
+    return texts.map(() => Array.from({ length: EMBEDDER_DIM }, () => 0));
   },
-  embedText: async (_t: string) => Array.from({ length: 4 }, () => 0),
+  embedText: async (_t: string) => Array.from({ length: EMBEDDER_DIM }, () => 0),
   EMBEDDER_MODEL: "mock-embedder",
-  EMBEDDER_DIM: 4,
+  EMBEDDER_DIM,
 }));
 
 const {
