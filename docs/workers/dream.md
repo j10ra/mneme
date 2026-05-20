@@ -87,9 +87,9 @@ Each member memory gets `meta.in_cluster = <cluster_id>` so the next dream pass 
 
 ## LLM supersede (post-distill)
 
-After distillation, a second LLM call against `findSupersedes` asks "among these memories, which (if any) are superseded by which?". The candidate set is the cluster's members **plus** their cosine-near neighbours (`SUPERSEDE_LLM_ADJACENT_COSINE_MAX = 0.15`, `SUPERSEDE_LLM_ADJACENT_AGE_WINDOW = 60 days`, not pinned, not already superseded) — adjacent inclusion catches cases where wording shifted enough that old + new don't co-cluster.
+After distillation, a second LLM call against `findSupersedes` asks "among these memories, which (if any) are superseded by which?". The candidate set is exactly the cluster's members (the same memories that were just distilled); `findSupersedes` is fed `memberIds` only. Cross-cluster supersede, which pulls cosine-near neighbours from other clusters (`SUPERSEDE_LLM_ADJACENT_COSINE_MAX`, `SUPERSEDE_LLM_ADJACENT_AGE_WINDOW`), is digest's job (see [`digest.md`](./digest.md)).
 
-Returns pairs `[{ old_id, new_id, reason }]` which the daemon validates (both ids must be in the candidate set; the older must actually be older) before posting to `/api/dream/clusters` with the supersede pairs included. The server writes `meta.superseded_by` inside the same transaction as the cluster insert.
+Returns pairs `[{ old_id, new_id, reason }]`. The daemon posts them unmodified in the `/api/dream/clusters` submission; the **server** validates each pair at the write boundary (`validateSupersedePairs` — both ids must be in the cluster's `member_ids`, and `old.created_at` must be strictly older than `new.created_at`, checked against authoritative DB timestamps). Surviving pairs are written to `meta.superseded_by` inside the same transaction as the cluster insert; rejected pairs are logged and counted (`supersedes_rejected`).
 
 **Cluster-level supersede (one cluster summary subsuming another) is intentionally not implemented in v1.** The rank-down penalty on individual members handles most of what cluster-level would address; the rest is digest's job.
 

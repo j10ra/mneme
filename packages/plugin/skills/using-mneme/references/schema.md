@@ -33,14 +33,13 @@ Column types, jsonb shapes, and the source taxonomy. Load when you need to const
 |---|---|---|---|
 | `pinned` | bool | `/mneme:pin` slash | surfaces in every session, exempt from clustering and supersede |
 | `shadow_of` | uuid string | nap | exact-text duplicate; the referenced id is kept |
-| `superseded_by` | uuid string | nap (rule-based) + dream (LLM) | newer memory that replaced this one. Recall rank-down × 0.3 |
+| `superseded_by` | uuid string | nap (rule) + dream/digest (LLM) | the newer memory (or, on a losing cluster row, the winning cluster) that replaced this row. Recall rank-down × 0.3 |
 | `related_to` | uuid array | nap | bidirectional semantic neighbours (cosine < 0.15) |
 | `in_cluster` | uuid string | dream | the `kind='cluster'` row this memory is a member of |
 | `member_ids` | uuid array | dream | only on `kind='cluster'` rows — the constituents |
 | `cluster_title` | string | dream | only on `kind='cluster'` rows — short label |
 | `extractor_provider`, `extractor_model` | string | daemon extract | provenance |
 | `distiller_provider`, `distiller_model` | string | daemon dream | provenance for cluster summaries |
-| `merged_into` | uuid string | digest worker | only on losing clusters in a merge |
 | `original_type` | string | hook | for `claude_memory` source captures, the frontmatter `type:` |
 | `last_napped_at` | timestamptz | nap | drives nap's round-robin pagination — don't filter on it manually |
 

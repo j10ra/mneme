@@ -10,9 +10,10 @@
 //   6. POST /api/dream/clusters     server validates and writes
 //
 // The server holds the lock + the DB; the daemon holds the LLM cost.
-// Phase 1 supersede pass is omitted (the Claude provider's distill()
-// returns just {title, summary}); a follow-up can wire supersede_pairs
-// once the basic distill cycle is healthy.
+// The supersede pass IS wired: after each distill, findSupersedes runs
+// over the cluster's members and the resulting supersede_pairs ride along
+// in the /api/dream/clusters submission. The server validates direction +
+// membership before writing meta.superseded_by.
 
 import { Logger } from "@mneme/core";
 import type { DreamOutput, Memory, SupersedeCandidate, SupersedePair } from "./agents/types.ts";
