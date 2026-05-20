@@ -36,25 +36,6 @@ import { join } from "node:path";
  *  its own fallback list and may resolve at runtime via `which` if
  *  the daemon's process happens to have a usable PATH.
  */
-function readOauthTokenFromCredentials(): string | null {
-  // 1. ~/.bashrc export — explicit user override, takes priority (common WSL pattern)
-  try {
-    const bashrc = require("node:fs").readFileSync(join(homedir(), ".bashrc"), "utf8");
-    const m = bashrc.match(/export\s+CLAUDE_CODE_OAUTH_TOKEN=["']?([^"'\s]+)["']?/);
-    if (m?.[1]) return m[1];
-  } catch {}
-  // 2. ~/.claude/.credentials.json (CC own credential store)
-  try {
-    const credPath = join(homedir(), ".claude", ".credentials.json");
-    if (existsSync(credPath)) {
-      const raw = JSON.parse(require("node:fs").readFileSync(credPath, "utf8"));
-      const token = raw?.claudeAiOauth?.accessToken;
-      if (token) return token;
-    }
-  } catch {}
-  return null;
-}
-
 export function findClaudeBinary(): string | null {
   // 1. Honor an explicitly set env var (operator override).
   if (process.env.CLAUDE_EXECUTABLE_PATH) {
@@ -126,14 +107,6 @@ export type DaemonInstallConfig = {
    *  When omitted, generators omit the env var and the daemon falls
    *  back to its runtime resolver. */
   claudePath?: string;
-  /** Claude Code OAuth token to bake into the service env as
-   *  CLAUDE_CODE_OAUTH_TOKEN. Service managers (launchd, systemd) don't
-   *  source ~/.bashrc, so a token exported there is invisible to the
-   *  daemon. Injecting it at install time ensures the daemon always has
-   *  direct API access regardless of the service manager's PATH/env.
-   *  When omitted, the daemon falls back to subprocess mode (inherits
-   *  the claude CLI's own OAuth session). */
-  claudeOauthToken?: string;
 };
 
 const DEFAULT_LABEL = "dev.mneme.daemon";
@@ -144,9 +117,6 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   const logsDir = join(homedir(), ".mneme", "logs");
   const claudeEnv = cfg.claudePath
     ? `\n    <key>CLAUDE_EXECUTABLE_PATH</key>\n    <string>${cfg.claudePath}</string>`
-    : "";
-  const oauthEnv = cfg.claudeOauthToken
-    ? `\n    <key>CLAUDE_CODE_OAUTH_TOKEN</key>\n    <string>${cfg.claudeOauthToken}</string>`
     : "";
   // MNEME_PLUGIN_ROOT lets the dashboard route resolve <plugin-root>/
   // dashboard/dist/ deterministically, regardless of how Bun bundles
@@ -175,7 +145,7 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>${homedir()}</string>${pluginRootEnv}${claudeEnv}${oauthEnv}
+    <string>${homedir()}</string>${pluginRootEnv}${claudeEnv}
   </dict>
 </dict>
 </plist>
@@ -190,9 +160,6 @@ export function buildSystemdUnit(cfg: DaemonInstallConfig): string {
   // claude often lives — so without this env, findClaudeExecutable in
   // the daemon throws on every extract attempt.
   const claudeLine = cfg.claudePath ? `\nEnvironment=CLAUDE_EXECUTABLE_PATH=${cfg.claudePath}` : "";
-  const oauthLine = cfg.claudeOauthToken
-    ? `\nEnvironment=CLAUDE_CODE_OAUTH_TOKEN=${cfg.claudeOauthToken}`
-    : "";
   // MNEME_PLUGIN_ROOT lets the dashboard route resolve dist/ paths
   // deterministically across Bun bundle / dev source layouts.
   const pluginRootLine = `\nEnvironment=MNEME_PLUGIN_ROOT=${cfg.pluginRoot}`;
@@ -208,7 +175,7 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=append:${homedir()}/.mneme/logs/daemon.log
 StandardError=append:${homedir()}/.mneme/logs/daemon.log
-Environment=HOME=${homedir()}${pluginRootLine}${claudeLine}${oauthLine}
+Environment=HOME=${homedir()}${pluginRootLine}${claudeLine}
 
 [Install]
 WantedBy=default.target
@@ -567,11 +534,6 @@ export async function installDaemonService(cfg: DaemonInstallConfig): Promise<In
   const resolvedCfg: DaemonInstallConfig = {
     ...cfg,
     claudePath: cfg.claudePath ?? findClaudeBinary() ?? undefined,
-    claudeOauthToken:
-      cfg.claudeOauthToken ??
-      process.env.CLAUDE_CODE_OAUTH_TOKEN ??
-      readOauthTokenFromCredentials() ??
-      undefined,
   };
   const config = buildServiceConfig(platform, resolvedCfg);
 

@@ -16,7 +16,11 @@ import {
 import { claudeProvider } from "../src/agents/claude.ts";
 import type { Capture, SupersedeCandidate } from "../src/agents/types.ts";
 
-const ENV_KEYS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
+const ENV_KEYS = [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "MNEME_CREDENTIALS_PATH",
+] as const;
 const RUN_LIVE = process.env.MNEME_RUN_LIVE === "1";
 
 let originalEnv: Record<string, string | undefined>;
@@ -27,6 +31,10 @@ beforeEach(() => {
     originalEnv[k] = process.env[k];
     delete process.env[k];
   }
+  // Point auth.ts at a non-existent credentials file so detectAuthMode
+  // tests aren't perturbed by a real ~/.claude/.credentials.json on the
+  // dev box. Individual tests can override to assert the credentials path.
+  process.env.MNEME_CREDENTIALS_PATH = "/tmp/mneme-test-nonexistent-credentials.json";
 });
 
 afterEach(() => {
@@ -50,7 +58,7 @@ const sampleCapture: Capture = {
 };
 
 describe("detectAuthMode", () => {
-  test("returns 'oauth-token' when CLAUDE_CODE_OAUTH_TOKEN is set", () => {
+  test("returns 'oauth-token' when CLAUDE_CODE_OAUTH_TOKEN is set (no credentials.json)", () => {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-fake";
     expect(detectAuthMode()).toBe("oauth-token");
   });
@@ -68,6 +76,55 @@ describe("detectAuthMode", () => {
 
   test("falls back to 'subprocess' when no env credentials are present", () => {
     expect(detectAuthMode()).toBe("subprocess");
+  });
+
+  test("returns 'credentials' when a valid ~/.claude/.credentials.json exists, even if env var is set", () => {
+    const { mkdtempSync, writeFileSync, rmSync } = require("node:fs");
+    const { join: joinPath } = require("node:path");
+    const { tmpdir } = require("node:os");
+    const dir = mkdtempSync(joinPath(tmpdir(), "mneme-creds-"));
+    const path = joinPath(dir, "credentials.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "sk-ant-fresh-from-credentials",
+          // 1h in the future — comfortably past the validity margin
+          expiresAt: Date.now() + 60 * 60_000,
+        },
+      }),
+    );
+    process.env.MNEME_CREDENTIALS_PATH = path;
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-stale-from-env";
+    try {
+      expect(detectAuthMode()).toBe("credentials");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores an expired credentials.json and falls back to env var", () => {
+    const { mkdtempSync, writeFileSync, rmSync } = require("node:fs");
+    const { join: joinPath } = require("node:path");
+    const { tmpdir } = require("node:os");
+    const dir = mkdtempSync(joinPath(tmpdir(), "mneme-creds-"));
+    const path = joinPath(dir, "credentials.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "sk-ant-expired",
+          expiresAt: Date.now() - 60_000,
+        },
+      }),
+    );
+    process.env.MNEME_CREDENTIALS_PATH = path;
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-fake";
+    try {
+      expect(detectAuthMode()).toBe("oauth-token");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -8,11 +8,14 @@
 //   - Structured assistant-message streaming (no stdout regex)
 //   - Tool restrictions (extractor can't accidentally run Bash/Edit/etc.)
 //
-// detectAuthMode() still reports oauth-token / api-key / subprocess for
-// `mneme agent list` visibility, but the call always routes through the
-// SDK regardless. The mode just shifts which credential the SDK picks
-// up - subprocess mode pulls Claude Code's own login under the hood.
+// detectAuthMode() reports credentials / oauth-token / api-key /
+// subprocess for `mneme agent list` visibility; the call always routes
+// through the SDK regardless. credentials mode is the primary path —
+// ~/.claude/.credentials.json is read at runtime and the SDK subprocess
+// inherits a token that the `claude` CLI itself auto-rotates. The other
+// modes are fallbacks for environments without a credentials file.
 
+import { hasValidCredentialsToken } from "./auth.ts";
 import { streamingCallClaude } from "./claude-streaming.ts";
 import { CLUSTER_PROMPT, SUPERSEDE_PROMPT, SYSTEM_PROMPT } from "./prompts.ts";
 import type {
@@ -39,9 +42,10 @@ const VALID_KINDS = new Set([
   "note",
 ]);
 
-export type AuthMode = "oauth-token" | "api-key" | "subprocess";
+export type AuthMode = "credentials" | "oauth-token" | "api-key" | "subprocess";
 
 export function detectAuthMode(): AuthMode {
+  if (hasValidCredentialsToken()) return "credentials";
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return "oauth-token";
   if (process.env.ANTHROPIC_API_KEY) return "api-key";
   return "subprocess";
@@ -237,6 +241,8 @@ function callClaude(prompt: string, model: string, systemPrompt: string): Promis
 
 function authDetail(mode: AuthMode): string {
   switch (mode) {
+    case "credentials":
+      return "SDK + ~/.claude/.credentials.json (auto-rotated by `claude` CLI)";
     case "oauth-token":
       return "SDK + CLAUDE_CODE_OAUTH_TOKEN (Max subscription)";
     case "api-key":
