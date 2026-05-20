@@ -20,6 +20,7 @@
 import { Hono } from "hono";
 import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { DREAM_CLUSTER_DISTANCE, DREAM_MAX_NEIGHBORS_PER_MEMORY } from "../infra/config.ts";
+import { validateSupersedePairs } from "../lib/supersede.ts";
 import { sha256Hex, sql } from "../infra/db.ts";
 import { EMBEDDER_DIM } from "../embedder/index.ts";
 
@@ -281,9 +282,10 @@ export function validateClustersBody(input: unknown): ClustersValidation {
 export async function writeClusters(
   body: ClustersBody,
   machineId: string,
-): Promise<{ written: number; supersedes: number }> {
+): Promise<{ written: number; supersedes: number; supersedes_rejected: number }> {
   let written = 0;
   let supersedes = 0;
+  let supersedesRejected = 0;
 
   await sql.begin(async (tx) => {
     for (const cluster of body.clusters) {
@@ -370,12 +372,28 @@ export async function writeClusters(
           AND (meta->>'in_cluster') IS NULL
       `;
 
-      for (const pair of cluster.supersede_pairs ?? []) {
-        if (
-          typeof pair.old_id === "string" &&
-          typeof pair.new_id === "string" &&
-          pair.old_id !== pair.new_id
-        ) {
+      // Validate supersede pairs against authoritative DB timestamps before
+      // applying. Candidate set = the cluster's own member_ids (findSupersedes
+      // is fed members only). Fetch by id with no archived_at filter: an
+      // archived member is still a valid supersede participant; a missing id
+      // means a non-existent (hallucinated) id, which is a correct rejection.
+      const pairs = cluster.supersede_pairs ?? [];
+      if (pairs.length > 0) {
+        const memberRows = await tx<{ id: string; created_at: Date }[]>`
+          SELECT id::text AS id, created_at
+          FROM memories
+          WHERE id = ANY(${cluster.member_ids})
+        `;
+        const { valid, rejected } = validateSupersedePairs(pairs, memberRows);
+        for (const r of rejected) {
+          Logger.warn("dream: supersede pair rejected", undefined, {
+            reason: r.reason,
+            old_id: r.pair.old_id,
+            new_id: r.pair.new_id,
+          });
+          supersedesRejected++;
+        }
+        for (const pair of valid) {
           await tx`
             UPDATE memories
             SET meta = meta || jsonb_build_object('superseded_by', ${pair.new_id}::text)
@@ -388,7 +406,7 @@ export async function writeClusters(
   });
 
   await releaseDreamLock(body.window_key, machineId, written);
-  return { written, supersedes };
+  return { written, supersedes, supersedes_rejected: supersedesRejected };
 }
 
 export async function clearStaleDreamLocks(

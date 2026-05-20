@@ -96,4 +96,75 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
       }).ok,
     ).toBe(false); // empty member_ids
   });
+
+  test("writeClusters applies valid supersede pairs, rejects backwards + hallucinated", async () => {
+    const { writeClusters } = await import("../src/routes/dream.ts");
+    const { sql } = await import("../src/infra/db.ts");
+
+    const machineId = "00000000-0000-0000-0000-00000000c001";
+    const captureId = "00000000-0000-0000-0000-00000000c0ca";
+    const idA = "00000000-0000-0000-0000-00000000c0a1"; // oldest
+    const idB = "00000000-0000-0000-0000-00000000c0b2"; // middle
+    const idC = "00000000-0000-0000-0000-00000000c0c3"; // newest
+    const ghost = "00000000-0000-0000-0000-00000000c905"; // valid uuid, no row
+    const windowKey = -999_999_010;
+
+    try {
+      await sql`
+        INSERT INTO captures (id, content, content_sha256, source, machine_id, hostname, harness)
+        VALUES (${captureId}, 'seed capture', ${`sha-${captureId}`}, 'test',
+                ${machineId}, 'testhost', 'test')
+      `;
+      const seedMemory = async (id: string, createdAt: string) => {
+        await sql`
+          INSERT INTO memories (
+            id, capture_id, chunk_id, content, content_hash,
+            embedding_model, kind, machine_id, harness, created_at
+          ) VALUES (
+            ${id}, ${captureId}, ${`chunk-${id}`}, ${`content ${id}`}, ${`hash-${id}`},
+            'test', 'note', ${machineId}, 'test', ${createdAt}
+          )
+        `;
+      };
+      await seedMemory(idA, "2026-01-01T00:00:00Z");
+      await seedMemory(idB, "2026-02-01T00:00:00Z");
+      await seedMemory(idC, "2026-03-01T00:00:00Z");
+
+      const result = await writeClusters(
+        {
+          window_key: windowKey,
+          clusters: [
+            {
+              member_ids: [idA, idB, idC],
+              title: "test cluster",
+              summary: `test summary ${windowKey}`,
+              supersede_pairs: [
+                { old_id: idA, new_id: idC, reason: "good — A older than C" },
+                { old_id: idC, new_id: idB, reason: "backwards — C newer than B" },
+                { old_id: idA, new_id: ghost, reason: "hallucinated id" },
+              ],
+            },
+          ],
+        },
+        machineId,
+      );
+
+      expect(result.supersedes).toBe(1);
+      expect(result.supersedes_rejected).toBe(2);
+
+      const rows = await sql<{ id: string; superseded_by: string | null }[]>`
+        SELECT id::text AS id, meta->>'superseded_by' AS superseded_by
+        FROM memories WHERE id = ANY(${[idA, idB, idC]})
+      `;
+      const byId = new Map(rows.map((r) => [r.id, r.superseded_by]));
+      expect(byId.get(idA)).toBe(idC); // valid pair applied
+      expect(byId.get(idB)).toBeNull(); // backwards pair rejected
+      expect(byId.get(idC)).toBeNull(); // hallucinated pair rejected
+    } finally {
+      const { sql } = await import("../src/infra/db.ts");
+      await sql`DELETE FROM memories WHERE capture_id = ${captureId}`;
+      await sql`DELETE FROM captures WHERE id = ${captureId}`;
+      await sql`DELETE FROM _ops.dream_runs WHERE window_key = ${windowKey}`;
+    }
+  });
 });
