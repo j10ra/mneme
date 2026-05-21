@@ -37,7 +37,7 @@ Resolve $ARGUMENTS to a specific memory UUID before invoking the slash. Archivin
 
 6. **Empty $ARGUMENTS** → ask the user what to archive; don't guess.
 
-**Confirmation is required** before invoking the slash. Archiving is high-commitment (kills the memory's visibility everywhere) so silent guessing is bad.
+**Confirmation is required** before invoking the slash. Archiving is high-commitment (kills the memory's visibility everywhere) so silent guessing is bad. (One exception: the self-correcting-recall flow in the `using-mneme` skill archives without a prompt, because an explicit user contradiction already is the confirmation. That exception applies only there.)
 
 **Invoke the slash** with the resolved UUID:
 

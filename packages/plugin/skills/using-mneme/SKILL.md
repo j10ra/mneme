@@ -119,6 +119,21 @@ If you can't verify a claim from this session, **say so explicitly** — "this f
 
 ---
 
+## Self-correcting recall
+
+When something the user states **this session** plainly contradicts a memory that was surfaced at SessionStart or recalled via `mneme_sql`, treat the user's statement as an authoritative correction, not a question.
+
+1. Archive the contradicted memory immediately:
+   `bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" archive "<uuid>"` (or the `/mneme:archive` command). **Do not ask for confirmation.** The user already stated the correcting fact; the confirmation step in `commands/archive.md` exists to stop *you* from guessing, and an explicit user contradiction is not a guess, so it does not apply here.
+2. Report it in one line: `archived <uuid> (contradicted by "<what the user said>")`.
+3. The corrected fact enters the corpus through normal capture; no manual step is needed.
+
+Fall back to asking first **only** when which memory the contradiction targets is genuinely ambiguous. A misfire is reversible with the `unarchive` subcommand.
+
+Do **not** proactively scan for, or archive, memories that merely look old or stale. The trigger is a direct contradiction by the user in this session, nothing else. A memory you cannot verify is handled by the section above (quote live state, flag it); only an explicit user correction triggers an archive.
+
+---
+
 ## Synthesising the answer
 
 After you've gathered the rows, **answer the user's question, don't dump the database.**
