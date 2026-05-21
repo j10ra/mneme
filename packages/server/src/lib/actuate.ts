@@ -77,4 +77,65 @@ export async function actuateRawMeta(
     }
     return;
   }
+
+  if (kind === "supersede") {
+    if (!UUID_RE.test(target)) {
+      Logger.warn(`supersede requested with invalid target uuid: ${target}`);
+      return;
+    }
+    try {
+      const clear = rawMeta.value === false;
+      if (clear) {
+        const updated = await exec<{ id: string }[]>`
+          UPDATE memories SET meta = meta - 'superseded_by'
+          WHERE id = ${target} AND archived_at IS NULL
+          RETURNING id
+        `;
+        Logger.info(
+          updated[0]
+            ? `supersede cleared id=${target}`
+            : `unsupersede requested but target not found: ${target}`,
+        );
+        return;
+      }
+      const newId = rawMeta.new_id;
+      if (typeof newId !== "string" || !UUID_RE.test(newId)) {
+        Logger.warn(`supersede requested with invalid new_id: ${String(newId)}`);
+        return;
+      }
+      if (newId === target) {
+        Logger.warn(`supersede requested with target === new_id: ${target}`);
+        return;
+      }
+      // Both memories must exist and be live. No chronology check — a manual
+      // supersede is user-asserted (see the spec); validateSupersedePairs is
+      // the LLM path's rail, not this one.
+      const present = await exec<{ id: string }[]>`
+        SELECT id FROM memories
+        WHERE id = ANY(${[target, newId]}) AND archived_at IS NULL
+      `;
+      if (present.length < 2) {
+        Logger.warn(
+          `supersede skipped: target or new_id missing/archived (target=${target} new_id=${newId})`,
+        );
+        return;
+      }
+      // Overwrite any existing superseded_by — a manual supersede is an
+      // explicit re-point.
+      const updated = await exec<{ id: string }[]>`
+        UPDATE memories
+        SET meta = meta || jsonb_build_object('superseded_by', ${newId}::text)
+        WHERE id = ${target} AND archived_at IS NULL
+        RETURNING id
+      `;
+      Logger.info(
+        updated[0]
+          ? `supersede actuated id=${target} superseded_by=${newId}`
+          : `supersede requested but target not found: ${target}`,
+      );
+    } catch (e) {
+      Logger.error(`supersede actuation failed for ${target}`, e);
+    }
+    return;
+  }
 }
