@@ -185,6 +185,36 @@ async function archive(input: string, value = true): Promise<void> {
   console.log(`✓ ${verb}d memory ${input} (request id ${r.id})`);
 }
 
+/** Supersede: mark `oldId` as superseded by `newId` via the raw_meta
+ *  actuation channel. value=false (via unsupersede) clears the flag. */
+async function supersede(oldId: string, newId: string, value = true): Promise<void> {
+  if (!oldId) throw new Error("supersede requires the superseded memory id");
+  if (!UUID_RE.test(oldId)) {
+    throw new Error(
+      `supersede requires a memory uuid for the old id (got: "${oldId}"). Resolve it with mneme.sql first.`,
+    );
+  }
+  if (value) {
+    if (!newId) throw new Error("supersede requires the replacement memory id");
+    if (!UUID_RE.test(newId)) {
+      throw new Error(
+        `supersede requires a memory uuid for the new id (got: "${newId}"). Resolve it with mneme.sql first.`,
+      );
+    }
+  }
+  const cfg = loadConfig();
+  const raw_meta = value
+    ? { kind: "supersede", target: oldId, new_id: newId, value: true }
+    : { kind: "supersede", target: oldId, value: false };
+  const content = value ? `supersede ${oldId} by ${newId}` : `unsupersede ${oldId}`;
+  const r = await postCapture(cfg, { ...baseScope(cfg), source: "manual", content, raw_meta });
+  console.log(
+    value
+      ? `✓ superseded ${oldId} by ${newId} (request id ${r.id})`
+      : `✓ unsuperseded ${oldId} (request id ${r.id})`,
+  );
+}
+
 type RegisterResponse = {
   machine_id: string;
   machine_name: string;
@@ -754,6 +784,12 @@ async function main(): Promise<void> {
     case "unarchive":
       await archive(process.argv[3] ?? "", false);
       return;
+    case "supersede":
+      await supersede(process.argv[3] ?? "", process.argv[4] ?? "", true);
+      return;
+    case "unsupersede":
+      await supersede(process.argv[3] ?? "", "", false);
+      return;
     case "machines":
       await machines();
       return;
@@ -775,7 +811,7 @@ async function main(): Promise<void> {
     default:
       console.error(`unknown subcommand: ${cmd}`);
       console.error(
-        "usage: slash.ts <setup|memory|pin|unpin|archive|unarchive|machines|status|help|dashboard|revoke|rename> [args]",
+        "usage: slash.ts <setup|memory|pin|unpin|archive|unarchive|supersede|unsupersede|machines|status|help|dashboard|revoke|rename> [args]",
       );
       process.exit(1);
   }
