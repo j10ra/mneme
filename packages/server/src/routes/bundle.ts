@@ -18,6 +18,7 @@
 import { Hono } from "hono";
 import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql } from "../infra/db.ts";
+import { actuateRawMeta } from "../lib/actuate.ts";
 import { EMBEDDER_DIM } from "../embedder/index.ts";
 
 type CaptureBody = {
@@ -163,61 +164,9 @@ export async function insertBundle(bundle: BundleBody, machineId: string): Promi
       deduped.push(!memRows[0]!.created);
     }
 
-    // Pin actuation: same regex + safety-net pattern as /api/capture today.
-    const meta = bundle.capture.raw_meta;
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (
-      meta &&
-      typeof meta === "object" &&
-      (meta as { kind?: unknown }).kind === "pin" &&
-      typeof (meta as { target?: unknown }).target === "string"
-    ) {
-      const target = (meta as { target: string }).target;
-      if (isUuid.test(target)) {
-        const value = (meta as { value?: unknown }).value !== false;
-        try {
-          await tx`
-            UPDATE memories
-            SET meta = jsonb_set(meta, '{pinned}', to_jsonb(${value}::boolean), true)
-            WHERE id = ${target} AND archived_at IS NULL
-          `;
-        } catch (e) {
-          Logger.error(`bundle pin actuation failed for ${target}`, e);
-        }
-      }
-    }
-
-    // Archive actuation: same channel as pin. value=true archives,
-    // value=false unarchives. Mirrors the /api/capture path so daemon-
-    // routed and slash-routed archive captures behave identically.
-    if (
-      meta &&
-      typeof meta === "object" &&
-      (meta as { kind?: unknown }).kind === "archive" &&
-      typeof (meta as { target?: unknown }).target === "string"
-    ) {
-      const target = (meta as { target: string }).target;
-      if (isUuid.test(target)) {
-        const archive = (meta as { value?: unknown }).value !== false;
-        try {
-          if (archive) {
-            await tx`
-              UPDATE memories
-              SET archived_at = NOW()
-              WHERE id = ${target} AND archived_at IS NULL
-            `;
-          } else {
-            await tx`
-              UPDATE memories
-              SET archived_at = NULL
-              WHERE id = ${target} AND archived_at IS NOT NULL
-            `;
-          }
-        } catch (e) {
-          Logger.error(`bundle archive actuation failed for ${target}`, e);
-        }
-      }
-    }
+    // Side-effecting captures (pin / archive / supersede) actuate here,
+    // inside the bundle transaction.
+    await actuateRawMeta(tx, bundle.capture.raw_meta as Record<string, unknown> | undefined);
 
     return { capture_id: captureId, memory_ids: memoryIds, deduped };
   });
