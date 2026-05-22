@@ -41,10 +41,10 @@ export type ForceRunResult =
   | { ok: false; status: 400 | 404; error: string };
 
 /** Nudge a server-scheduled worker to run on the next scheduler tick.
- *  Sets next_run_at = now() and clears last_status / last_error so the
- *  scheduler's partial index re-claims a previously-failed job. The
- *  scheduler's FOR UPDATE SKIP LOCKED claim guarantees the forced run
- *  never overlaps a concurrent scheduled cycle. */
+ *  Sets next_run_at = now() and clears last_status / last_error so a
+ *  prior failure is not left showing until the forced run completes.
+ *  The scheduler's FOR UPDATE SKIP LOCKED claim guarantees the forced
+ *  run never overlaps a concurrent scheduled cycle. */
 export async function forceWorkerRun(name: string): Promise<ForceRunResult> {
   if (!isForceableWorker(name)) {
     return { ok: false, status: 400, error: "unknown worker" };
