@@ -53,65 +53,57 @@ export type NapResult = {
 
 const NAP_DECAY_BATCH = 5000;
 
+/** fetchBatch for the decay passes: the next `limit` memory ids after
+ *  `cursor`, ascending. `archived_at IS NULL` is gated here so each
+ *  batch UPDATE can be a plain `id = ANY(...)`. */
+async function fetchMemoryIdBatch(cursor: string, limit: number): Promise<string[]> {
+  const rows = await sql<{ id: string }[]>`
+    SELECT id::text AS id FROM memories
+    WHERE archived_at IS NULL AND id > ${cursor}::uuid
+    ORDER BY id LIMIT ${limit}
+  `;
+  return rows.map((r) => r.id);
+}
+
 /** Phase 1: importance decay, batched. Pinned rows floor at
  *  NAP_PIN_FLOOR, unpinned at NAP_FLOOR. Each batch UPDATE is its own
  *  statement, so no single statement scales with corpus size. */
 async function napDecayImportance(): Promise<number> {
-  return forEachIdBatch(
-    NAP_DECAY_BATCH,
-    async (cursor, limit) => {
-      const rows = await sql<{ id: string }[]>`
-        SELECT id::text AS id FROM memories
-        WHERE archived_at IS NULL AND id > ${cursor}::uuid
-        ORDER BY id LIMIT ${limit}
-      `;
-      return rows.map((r) => r.id);
-    },
-    async (ids) => {
-      const r = await sql`
-        UPDATE memories
-        SET importance = GREATEST(
-          CASE WHEN COALESCE((meta->>'pinned')::boolean, false)
-               THEN ${NAP_PIN_FLOOR}::real ELSE ${NAP_FLOOR}::real END,
-          importance * ${NAP_DECAY_PER_CYCLE}::real
-        )
-        WHERE id = ANY(${ids})
-          AND importance > CASE
-            WHEN COALESCE((meta->>'pinned')::boolean, false) THEN ${NAP_PIN_FLOOR}::real
-            ELSE ${NAP_FLOOR}::real END
-      `;
-      return r.count;
-    },
-  );
+  return forEachIdBatch(NAP_DECAY_BATCH, fetchMemoryIdBatch, async (ids) => {
+    const r = await sql`
+      UPDATE memories
+      SET importance = GREATEST(
+        CASE WHEN COALESCE((meta->>'pinned')::boolean, false)
+             THEN ${NAP_PIN_FLOOR}::real ELSE ${NAP_FLOOR}::real END,
+        importance * ${NAP_DECAY_PER_CYCLE}::real
+      )
+      WHERE id = ANY(${ids})
+        AND importance > CASE
+          WHEN COALESCE((meta->>'pinned')::boolean, false) THEN ${NAP_PIN_FLOOR}::real
+          ELSE ${NAP_FLOOR}::real END
+    `;
+    return r.count;
+  });
 }
 
 /** Phase 1b: recall_weight (LTP) decay, batched. Fades use-driven
  *  reinforcement so weight reflects recent use; floors at 0.01. */
 async function napDecayRecallWeight(): Promise<number> {
-  return forEachIdBatch(
-    NAP_DECAY_BATCH,
-    async (cursor, limit) => {
-      const rows = await sql<{ id: string }[]>`
-        SELECT id::text AS id FROM memories
-        WHERE archived_at IS NULL AND id > ${cursor}::uuid
-        ORDER BY id LIMIT ${limit}
-      `;
-      return rows.map((r) => r.id);
-    },
-    async (ids) => {
-      const r = await sql`
-        UPDATE memories
-        SET recall_weight = recall_weight * ${RECALL_LTD_DECAY}::real
-        WHERE id = ANY(${ids}) AND recall_weight >= 0.01
-      `;
-      return r.count;
-    },
-  );
+  return forEachIdBatch(NAP_DECAY_BATCH, fetchMemoryIdBatch, async (ids) => {
+    const r = await sql`
+      UPDATE memories
+      SET recall_weight = recall_weight * ${RECALL_LTD_DECAY}::real
+      WHERE id = ANY(${ids}) AND recall_weight >= 0.01
+    `;
+    return r.count;
+  });
 }
 
 /** Phase 2: exact-text shadow-marking. Single statement in its own
  *  transaction. The UPDATE only touches rows in duplicate groups; the
- *  cost is the GROUP BY scan, which is fast. */
+ *  statement is bounded by the GROUP BY scan over the live corpus.
+ *  Runs after the decay phases on purpose: keeper selection orders by
+ *  importance, so it must see this cycle's decayed values. */
 async function napShadowDuplicates(): Promise<number> {
   const shadowed = await sql`
     WITH groups AS (
@@ -153,7 +145,12 @@ async function napSeedPhase(): Promise<{ related: number; superseded: number }> 
     `;
     const seedIds = seedRows.map((r) => r.id);
 
-    const related =
+    // Relate pass. The inner LATERAL scans the full memories table for
+    // HNSW lookups, so a seed finds its real nearest neighbours
+    // regardless of which seeds this cycle paginated; the mutual UNION
+    // means an off-page neighbour still gets the seed appended to its
+    // own related_to. Pagination delays re-checks, never drops edges.
+    const relateResult =
       seedIds.length === 0
         ? { count: 0 }
         : await tx`
@@ -234,6 +231,10 @@ async function napSeedPhase(): Promise<{ related: number; superseded: number }> 
             RETURNING p.older_id::text, p.newer_id::text
           `;
 
+    // Stamp last_napped_at on every seed, whether or not relate or
+    // supersede found anything for it. This is the round-robin gate:
+    // a seed that found nothing is not re-picked ahead of memories
+    // that have never been napped.
     if (seedIds.length > 0) {
       await tx`
         UPDATE memories
@@ -243,7 +244,7 @@ async function napSeedPhase(): Promise<{ related: number; superseded: number }> 
       `;
     }
 
-    return { related: related.count, superseded: supersededRows.length };
+    return { related: relateResult.count, superseded: supersededRows.length };
   });
 }
 
