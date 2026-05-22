@@ -194,6 +194,8 @@ type CrossClusterCandidateRow = {
   kind: Kind;
   content: string;
   created_at: Date;
+  // Unread by callers; present only because SELECT DISTINCT requires
+  // every ORDER BY expression to appear in the select list.
   last_digested_at: string | null;
 };
 
