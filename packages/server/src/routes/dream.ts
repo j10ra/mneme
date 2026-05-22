@@ -27,11 +27,12 @@ import { EMBEDDER_DIM } from "../embedder/index.ts";
 // HNSW lookups against memories.embedding take ~50ms per probe in
 // practice (the index is global; per-repo filtering forces deep
 // traversal). Without a cap, a fresh fleet with thousands of
-// never-clustered memories blows past Railway's gateway timeout. The
-// architecture's intent is "recent (last 7d) OR never-processed", so
-// we order by created_at DESC and cap. Multiple dream cycles drain
-// the inaugural backlog; steady state (~50 new memories/day) is
-// always far below this limit.
+// never-clustered memories blows past Railway's gateway timeout.
+// fetchDreamCandidates orders seeds by the meta.last_dreamed_at
+// watermark (NULLS FIRST), so each cycle takes the least-recently-
+// dreamed slice and stamps it; successive cycles round-robin the whole
+// corpus rather than re-scanning the newest rows. This cap bounds one
+// slice; a full sweep spans ceil(corpus / cap) cycles.
 const DREAM_MAX_CANDIDATES_PER_CYCLE = 500;
 
 export type DreamLockResult =
