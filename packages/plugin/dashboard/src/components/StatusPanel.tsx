@@ -259,7 +259,7 @@ function StatusContent({
               {data.dream.stuck} stuck &gt; 30m
             </Badge>
           )}
-          <ForceButton worker="dream" />
+          <ForceButton worker="dream" lastRunAt={data.dream.last_window_at} />
         </div>
       </div>
 
@@ -305,39 +305,39 @@ function WorkerRowItem({ w }: { w: WorkerRow }) {
         <span className="whitespace-nowrap">
           next in {fmtAge(Math.max(0, new Date(w.next_run_at).getTime() - Date.now()))}
         </span>
-        {forceable && <ForceButton worker={w.name} />}
+        {forceable && <ForceButton worker={w.name} lastRunAt={w.last_run_at} />}
       </div>
     </div>
   );
 }
 
-// Force-run button. Posts to /dashboard/api/worker/<worker>/run and
-// shows the outcome; the panel's 30s poll reflects the actual run.
-function ForceButton({ worker }: { worker: string }) {
-  const [phase, setPhase] = useState<"idle" | "busy" | "done" | "error">("idle");
+// Force-run button. Posts to /dashboard/api/worker/<worker>/run, then
+// stays disabled until the panel's 30s poll reports a `lastRunAt`
+// strictly newer than the click time. That blocks re-fires while a
+// cycle is in flight (forced dream cycles can run for minutes) and
+// auto-reverts to "run now" on the next poll without a manual refresh.
+function ForceButton({ worker, lastRunAt }: { worker: string; lastRunAt: string | null }) {
+  const [clickedAt, setClickedAt] = useState<number | null>(null);
+  const [errored, setErrored] = useState(false);
+  const lastRunMs = lastRunAt ? new Date(lastRunAt).getTime() : 0;
+  const pending = clickedAt !== null && lastRunMs < clickedAt;
   const onClick = async () => {
-    setPhase("busy");
+    setErrored(false);
+    setClickedAt(Date.now());
     try {
       await apiPost(`/worker/${worker}/run`);
-      setPhase("done");
     } catch (err) {
       console.error(`[ForceButton] ${worker} run failed`, err);
-      setPhase("error");
+      setErrored(true);
+      setClickedAt(null);
     }
   };
-  const label =
-    phase === "busy"
-      ? "running"
-      : phase === "done"
-        ? "queued"
-        : phase === "error"
-          ? "failed"
-          : "run now";
+  const label = errored ? "failed" : pending ? "running" : "run now";
   return (
     <Button
       size="xs"
-      variant={phase === "error" ? "secondary" : "ghost"}
-      disabled={phase === "busy"}
+      variant={errored ? "secondary" : "ghost"}
+      disabled={pending}
       onClick={onClick}
     >
       {label}
