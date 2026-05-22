@@ -194,6 +194,7 @@ type CrossClusterCandidateRow = {
   kind: Kind;
   content: string;
   created_at: Date;
+  last_digested_at: string | null;
 };
 
 export async function findCrossClusterSupersedeCandidates(): Promise<CrossClusterCandidateRow[]> {
@@ -207,7 +208,8 @@ export async function findCrossClusterSupersedeCandidates(): Promise<CrossCluste
       a.id::text AS id,
       a.kind::text AS kind,
       a.content,
-      a.created_at
+      a.created_at,
+      a.meta->>'last_digested_at' AS last_digested_at
     FROM memories a
     JOIN memories b
       ON b.archived_at IS NULL
@@ -225,6 +227,7 @@ export async function findCrossClusterSupersedeCandidates(): Promise<CrossCluste
       AND (a.meta->>'in_cluster') IS NOT NULL
       AND (a.meta->>'superseded_by') IS NULL
       AND NOT COALESCE((a.meta->>'pinned')::boolean, false)
+    ORDER BY a.meta->>'last_digested_at' NULLS FIRST, a.created_at ASC
     LIMIT ${DIGEST_MAX_SUPERSEDE_CANDIDATES}
   `) as CrossClusterCandidateRow[];
 }
@@ -384,6 +387,10 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
       }
     }
   }
+
+  // Stamp every candidate considered this cycle so the next cycle's
+  // watermark-ordered scan advances to the next-stalest member rows.
+  await stampDigested(candidates.map((c) => c.id));
 
   const result: DigestResult = {
     merge_pairs_evaluated: mergePairs.length,
