@@ -184,25 +184,17 @@ export function assembleRepos(
 export async function fetchDreamCandidates(
   windowKey: number,
   machineId: string,
-): Promise<DreamCandidates> {
-  // Same WHERE clause applied twice (outer scan + inner LATERAL). We
-  // intentionally do NOT use a CTE here: a materialized CTE would
-  // hide the embedding column from pgvector's HNSW planner, forcing
-  // a full O(N^2) cosine scan that times out at Railway's gateway
-  // for any meaningful candidate set. Inlined predicates let the
-  // LATERAL's `ORDER BY embedding <=> ...` use the HNSW index on
-  // memories.embedding, which is what makes this query tractable
-  // even with thousands of candidates.
+): Promise<{ candidates: DreamCandidates; seedIds: string[] }> {
+  // Inlined predicates (no CTE materialization) keep pgvector's HNSW
+  // index usable on the LATERAL's cosine ORDER BY -- see git history
+  // for why a materialized CTE times out at Railway's gateway.
   //
-  // Privacy filter: caller sees public rows + their own private rows.
-  // Other machines' privates stay invisible.
-  const rows = await sql<EdgeRow[]>`
+  // Seed selection is now a round-robin: least-recently-dreamed rows
+  // first (NULLS FIRST drains never-dreamed rows), so every memory is
+  // eventually a seed regardless of age. Backed by
+  // memories_last_dreamed_at_idx (migration 0027).
+  const edgeRows = await sql<EdgeRow[]>`
     WITH seeds AS (
-      -- Outer scan picks at most DREAM_MAX_CANDIDATES_PER_CYCLE rows,
-      -- newest first. Every dream cycle works through this many
-      -- previously-unclustered memories; subsequent cycles process
-      -- the next 500 + the day's new arrivals. The inaugural backlog
-      -- drains over ~10 cycles for a fresh deployment.
       SELECT id, repo, embedding, content, kind, created_at
       FROM memories
       WHERE archived_at IS NULL
@@ -213,7 +205,7 @@ export async function fetchDreamCandidates(
         AND (meta->>'shadow_of') IS NULL
         AND (meta->>'superseded_by') IS NULL
         AND (meta->>'in_cluster') IS NULL
-      ORDER BY created_at DESC
+      ORDER BY meta->>'last_dreamed_at' NULLS FIRST, created_at ASC
       LIMIT ${DREAM_MAX_CANDIDATES_PER_CYCLE}
     )
     SELECT
@@ -221,9 +213,6 @@ export async function fetchDreamCandidates(
       n.neighbor_id
     FROM seeds s
     LEFT JOIN LATERAL (
-      -- Inner LATERAL still hits memories directly so HNSW is usable
-      -- on the cosine ORDER BY. The repo predicate is a hard filter
-      -- so HNSW oversamples and we drop non-matching neighbors.
       SELECT m.id AS neighbor_id
       FROM memories m
       WHERE m.archived_at IS NULL
@@ -242,28 +231,31 @@ export async function fetchDreamCandidates(
     ) n ON true
   `;
 
-  const repos: DreamCandidates["repos"] = {};
-  const seenSeed = new Set<string>();
+  const seedIds = [...new Set(edgeRows.map((r) => r.id))];
+  const seedIdSet = new Set(seedIds);
+  const neighborIds = [
+    ...new Set(
+      edgeRows
+        .map((r) => r.neighbor_id)
+        .filter((nid): nid is string => nid !== null && !seedIdSet.has(nid)),
+    ),
+  ];
 
-  for (const row of rows) {
-    const repoKey = row.repo ?? "__none__";
-    repos[repoKey] ??= { seeds: [], edges: [] };
-    if (!seenSeed.has(row.id)) {
-      repos[repoKey]!.seeds.push({
-        id: row.id,
-        content: row.content,
-        kind: row.kind,
-        created_at:
-          row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
-      });
-      seenSeed.add(row.id);
-    }
-    if (row.neighbor_id) {
-      repos[repoKey]!.edges.push([row.id, row.neighbor_id]);
-    }
-  }
+  // Neighbors that are not themselves seeds still need full content so
+  // the daemon can distill a cluster that includes them. One extra
+  // fetch by id -- the LATERAL already applied every eligibility filter.
+  const neighborRows = neighborIds.length
+    ? await sql<NeighborRow[]>`
+        SELECT id, repo, content, kind, created_at
+        FROM memories
+        WHERE id = ANY(${neighborIds})
+      `
+    : [];
 
-  return { window_key: windowKey, repos };
+  return {
+    candidates: { window_key: windowKey, repos: assembleRepos(edgeRows, neighborRows) },
+    seedIds,
+  };
 }
 
 /** Stamp meta.last_dreamed_at = now() on the given seed ids. Called by
@@ -551,7 +543,8 @@ export function mountDreamRoutes(app: Hono): void {
       ) {
         return c.json({ error: "lock not held by caller" }, 403);
       }
-      const candidates = await fetchDreamCandidates(windowKey, auth.machineId);
+      const { candidates, seedIds } = await fetchDreamCandidates(windowKey, auth.machineId);
+      await stampDreamedSeeds(seedIds);
       return c.json(candidates);
     },
   );
