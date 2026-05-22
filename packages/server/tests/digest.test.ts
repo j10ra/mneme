@@ -40,6 +40,40 @@ describe.skipIf(!HAS_DB)("digest (requires DATABASE_URL)", () => {
     }
   });
 
+  test("loadCluster returns null for a cluster already superseded", async () => {
+    const { loadCluster } = await import("../src/worker/digest.ts");
+    const { sql } = await import("../src/infra/db.ts");
+
+    const captureId = "00000000-0000-0000-0000-0000000e2dca";
+    const live = "00000000-0000-0000-0000-0000000e2d01";
+    const dead = "00000000-0000-0000-0000-0000000e2d02"; // superseded by `live`
+
+    try {
+      await sql`
+        INSERT INTO captures (id, content, content_sha256, source, machine_id, hostname, harness)
+        VALUES (${captureId}, 'seed', ${`sha-${captureId}`}, 'test',
+                '00000000-0000-0000-0000-0000000e2d99', 'testhost', 'test')
+      `;
+      const insertCluster = async (id: string, meta: Record<string, unknown>) => {
+        await sql`
+          INSERT INTO memories (id, capture_id, chunk_id, content, content_hash,
+            embedding_model, kind, importance, machine_id, harness, meta)
+          VALUES (${id}, ${captureId}, ${`chunk-${id}`}, 'summary', ${`hash-${id}`},
+            'test', 'cluster', 0.8, '00000000-0000-0000-0000-0000000e2d99', 'test',
+            ${sql.json(meta as never)})
+        `;
+      };
+      await insertCluster(live, { member_ids: [] });
+      await insertCluster(dead, { member_ids: [], superseded_by: live });
+
+      expect(await loadCluster(dead)).toBeNull();
+      expect(await loadCluster(live)).not.toBeNull();
+    } finally {
+      await sql`DELETE FROM memories WHERE capture_id = ${captureId}`;
+      await sql`DELETE FROM captures WHERE id = ${captureId}`;
+    }
+  });
+
   test("stampDigested writes meta.last_digested_at on the given ids", async () => {
     const { stampDigested } = await import("../src/worker/digest.ts");
     const { sql } = await import("../src/infra/db.ts");

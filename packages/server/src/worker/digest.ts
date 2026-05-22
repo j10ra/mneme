@@ -147,6 +147,15 @@ export async function findMergePairs(windowIds: string[]): Promise<MergePairRow[
   return dedupePairs(rows);
 }
 
+/** Load a cluster row by id. Returns null if the cluster does not exist,
+ *  is archived, or has already been superseded.
+ *
+ *  The superseded guard is critical for merge-loop correctness: within one
+ *  digest cycle, a cluster can be marked superseded by an earlier merge.
+ *  Without this filter, that dead cluster could still be loaded and chosen
+ *  as a merge winner, stranding the loser's members on a dead cluster.
+ *  The merge loop's existing `if (!a || !b) continue` then skips the pair
+ *  cleanly, and the still-valid merge is re-evaluated in the next cycle. */
 export async function loadCluster(id: string): Promise<ClusterRow | null> {
   const rows = (await sql<ClusterRow[]>`
     SELECT
@@ -160,6 +169,7 @@ export async function loadCluster(id: string): Promise<ClusterRow | null> {
       ) AS member_ids
     FROM memories
     WHERE id = ${id} AND kind = 'cluster' AND archived_at IS NULL
+      AND (meta->>'superseded_by') IS NULL
     LIMIT 1
   `) as ClusterRow[];
   return rows[0] ?? null;
