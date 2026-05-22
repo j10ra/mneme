@@ -23,6 +23,9 @@ const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
  *  number of rows it affected. Iterating in id order with a monotonic
  *  cursor guarantees termination and bounds every statement, so a
  *  full-table pass never scales toward the 120s statement_timeout.
+ *  Callers own the monotonicity invariant: a `fetchBatch` that does not
+ *  return ids strictly greater than the cursor loops until Postgres
+ *  statement_timeout fires.
  *  Pure control flow -- both callbacks are injected for testability. */
 export async function forEachIdBatch(
   batchSize: number,
