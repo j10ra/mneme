@@ -60,6 +60,7 @@ import {
   DIGEST_MAX_MERGE_PAIRS,
   DIGEST_MAX_SUPERSEDE_CANDIDATES,
   DIGEST_MERGE_DISTANCE,
+  DIGEST_MERGE_WINDOW,
   SUPERSEDE_LLM_ADJACENT_COSINE_MAX,
   SUPERSEDE_LLM_BATCH_MAX_MEMBERS,
 } from "../infra/config.ts";
@@ -85,6 +86,23 @@ type ClusterRow = {
   importance: number;
   member_ids: string[];
 };
+
+/** The merge round-robin window: the DIGEST_MERGE_WINDOW
+ *  least-recently-digested non-superseded clusters. No embedding filter
+ *  -- a null-embedding cluster simply yields no merge pairs and is still
+ *  stamped, which is correct. */
+export async function selectDigestClusterWindow(limit: number): Promise<string[]> {
+  const rows = await sql<{ id: string }[]>`
+    SELECT id::text AS id
+    FROM memories
+    WHERE kind = 'cluster'
+      AND archived_at IS NULL
+      AND (meta->>'superseded_by') IS NULL
+    ORDER BY meta->>'last_digested_at' NULLS FIRST, created_at ASC
+    LIMIT ${limit}
+  `;
+  return rows.map((r) => r.id);
+}
 
 export async function findMergePairs(): Promise<MergePairRow[]> {
   // (a.id < b.id) bound dedups (A,B) vs (B,A). repo IS NOT DISTINCT
