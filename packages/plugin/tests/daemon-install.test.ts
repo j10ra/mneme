@@ -4,7 +4,7 @@
 // install on each machine.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,9 +13,10 @@ import {
   buildSystemdUnit,
   buildWindowsTaskXml,
   depsSignature,
-  findReusableNodeModules,
   isDaemonConfigStale,
+  isPopulatedNodeModules,
   pickFreePortDeterministic,
+  pluginDepsStoreDir,
   serviceConfigPath,
   startCommandsFor,
 } from "../scripts/daemon-install.ts";
@@ -257,87 +258,80 @@ describe("depsSignature", () => {
   });
 });
 
-describe("findReusableNodeModules", () => {
-  let cacheRoot: string;
+describe("pluginDepsStoreDir", () => {
+  test("is stable across version-only package.json changes", () => {
+    // Every plugin patch bumps `version` but keeps `dependencies`
+    // identical — both must resolve to the same store dir.
+    const a = pluginDepsStoreDir('{"version":"1.0.64","dependencies":{"hono":"4.12.18"}}');
+    const b = pluginDepsStoreDir('{"version":"1.0.65","dependencies":{"hono":"4.12.18"}}');
+    expect(a).toBe(b);
+  });
+
+  test("differs when dependencies differ", () => {
+    const a = pluginDepsStoreDir('{"dependencies":{"hono":"4.12"}}');
+    const b = pluginDepsStoreDir('{"dependencies":{"hono":"5.0"}}');
+    expect(a).not.toBe(b);
+  });
+
+  test("resolves under ~/.mneme/deps", () => {
+    const dir = pluginDepsStoreDir('{"dependencies":{"hono":"4"}}');
+    expect(dir).toContain(join(".mneme", "deps"));
+  });
+});
+
+describe("isPopulatedNodeModules", () => {
+  let root: string;
+  const pkg = '{"dependencies":{"hono":"4","postgres":"3"}}';
 
   beforeEach(() => {
-    // Simulate Claude Code's plugin cache layout:
-    //   <cacheRoot>/<version>/{package.json, node_modules?}
-    cacheRoot = mkdtempSync(join(tmpdir(), "mneme-cache-"));
+    root = mkdtempSync(join(tmpdir(), "mneme-nm-"));
   });
 
   afterEach(() => {
-    rmSync(cacheRoot, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   });
 
-  function makeVersionDir(version: string, pkg: string, withNodeModules: boolean): string {
-    const dir = join(cacheRoot, version);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "package.json"), pkg);
-    if (withNodeModules) {
-      mkdirSync(join(dir, "node_modules"));
-      writeFileSync(join(dir, "node_modules", ".keep"), "");
-    }
-    return dir;
-  }
-
-  test("returns null when no sibling versions exist", async () => {
-    const me = makeVersionDir("1.0.65", '{"name":"mneme"}', false);
-    expect(await findReusableNodeModules(me)).toBe(null);
+  test("false when the path does not exist", () => {
+    expect(isPopulatedNodeModules(join(root, "node_modules"), pkg)).toBe(false);
   });
 
-  test("returns null when sibling deps signature differs", async () => {
-    makeVersionDir("1.0.64", '{"name":"mneme","dependencies":{"hono":"4.12.18"}}', true);
-    const me = makeVersionDir("1.0.65", '{"name":"mneme","dependencies":{"hono":"5.0.0"}}', false);
-    expect(await findReusableNodeModules(me)).toBe(null);
+  test("false for a dangling symlink", () => {
+    const nm = join(root, "node_modules");
+    symlinkSync(join(root, "does-not-exist"), nm);
+    expect(isPopulatedNodeModules(nm, pkg)).toBe(false);
   });
 
-  test("matches when only the version field differs (deps unchanged)", async () => {
-    // Real-world case: every plugin patch bumps `version` but keeps
-    // `dependencies` identical. The reuse path should still kick in.
-    const sib = makeVersionDir(
-      "1.0.64",
-      '{"name":"mneme","version":"1.0.64","dependencies":{"hono":"4.12.18"}}',
-      true,
-    );
-    const me = makeVersionDir(
-      "1.0.65",
-      '{"name":"mneme","version":"1.0.65","dependencies":{"hono":"4.12.18"}}',
-      false,
-    );
-    expect(await findReusableNodeModules(me)).toBe(join(sib, "node_modules"));
+  test("false when a declared dependency is missing", () => {
+    const nm = join(root, "node_modules");
+    mkdirSync(join(nm, "hono"), { recursive: true });
+    // 'postgres' is absent — a half-finished install.
+    expect(isPopulatedNodeModules(nm, pkg)).toBe(false);
   });
 
-  test("returns null when sibling has matching pkg but no node_modules", async () => {
-    const pkg = '{"name":"mneme","deps":"same"}';
-    makeVersionDir("1.0.64", pkg, false);
-    const me = makeVersionDir("1.0.65", pkg, false);
-    expect(await findReusableNodeModules(me)).toBe(null);
+  test("true when every declared dependency is present", () => {
+    const nm = join(root, "node_modules");
+    mkdirSync(join(nm, "hono"), { recursive: true });
+    mkdirSync(join(nm, "postgres"), { recursive: true });
+    expect(isPopulatedNodeModules(nm, pkg)).toBe(true);
   });
 
-  test("returns the sibling node_modules path when pkg matches and nm exists", async () => {
-    const pkg = '{"name":"mneme","deps":"same"}';
-    const sib = makeVersionDir("1.0.64", pkg, true);
-    const me = makeVersionDir("1.0.65", pkg, false);
-    expect(await findReusableNodeModules(me)).toBe(join(sib, "node_modules"));
+  test("resolves through a symlink to a populated directory", () => {
+    const realNm = join(root, "store", "node_modules");
+    mkdirSync(join(realNm, "hono"), { recursive: true });
+    mkdirSync(join(realNm, "postgres"), { recursive: true });
+    const link = join(root, "node_modules");
+    symlinkSync(realNm, link);
+    expect(isPopulatedNodeModules(link, pkg)).toBe(true);
   });
 
-  test("ignores own version dir (would be a self-reference)", async () => {
-    const pkg = '{"name":"mneme"}';
-    const me = makeVersionDir("1.0.65", pkg, true);
-    // Only sibling is ourselves — should still return null
-    expect(await findReusableNodeModules(me)).toBe(null);
-  });
+  test("falls back to a non-empty check for unparseable package.json", () => {
+    const nm = join(root, "node_modules");
+    mkdirSync(join(nm, "anything"), { recursive: true });
+    expect(isPopulatedNodeModules(nm, "{not json")).toBe(true);
 
-  test("picks the first matching sibling (any version is fine)", async () => {
-    const pkg = '{"name":"mneme","deps":"locked"}';
-    makeVersionDir("1.0.62", pkg, true);
-    makeVersionDir("1.0.64", pkg, true);
-    const me = makeVersionDir("1.0.65", pkg, false);
-    const picked = await findReusableNodeModules(me);
-    expect(picked).toMatch(/node_modules$/);
-    // Either 1.0.62 or 1.0.64 — readdir order isn't guaranteed across platforms
-    expect(picked).toMatch(/1\.0\.6(2|4)/);
+    const empty = join(root, "empty");
+    mkdirSync(empty);
+    expect(isPopulatedNodeModules(empty, "{not json")).toBe(false);
   });
 });
 
