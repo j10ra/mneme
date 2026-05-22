@@ -19,6 +19,9 @@ import {
 } from "./components/ui/resizable.tsx";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "./components/ui/tabs.tsx";
 
+// Inlined by the bundler from packages/plugin/package.json. See build.ts.
+declare const __APP_VERSION__: string;
+
 type Tab = "activity" | "memories" | "graph";
 type Theme = "dark" | "light";
 
@@ -103,6 +106,7 @@ export function App() {
                 </span>
               </div>
               <div className="flex items-center gap-2">
+                <VersionPill version={__APP_VERSION__} />
                 <LoopbackPill host={window.location.host} />
                 <ThemeToggle
                   theme={theme}
@@ -148,6 +152,17 @@ export function App() {
         </Tabs>
       </div>
     </div>
+  );
+}
+
+function VersionPill({ version }: { version: string }) {
+  return (
+    <span
+      className="inline-flex h-7 items-center rounded-full border border-border/60 bg-card px-2.5 text-[11px] font-mono text-muted-foreground"
+      title="Plugin version (daemon + dashboard ship together)"
+    >
+      v{version}
+    </span>
   );
 }
 

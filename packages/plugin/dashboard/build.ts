@@ -44,9 +44,14 @@ const jsResult = await Bun.build({
     asset: "[name]-[hash][ext]",
   },
   splitting: true,
-  // Strip React's dev-mode branches via constant folding.
+  // Strip React's dev-mode branches via constant folding, and inline
+  // the plugin version so the SPA can render it in the header without
+  // a runtime fetch.
   define: {
     "process.env.NODE_ENV": '"production"',
+    __APP_VERSION__: JSON.stringify(
+      ((await Bun.file(join(HERE, "..", "package.json")).json()) as { version: string }).version,
+    ),
   },
 });
 if (!jsResult.success) {
