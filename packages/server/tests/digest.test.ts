@@ -12,6 +12,7 @@ describe.skipIf(!HAS_DB)("digest (requires DATABASE_URL)", () => {
 
     const captureId = "00000000-0000-0000-0000-0000000e0dca";
     const idA = "00000000-0000-0000-0000-0000000e0da1";
+    const idB = "00000000-0000-0000-0000-0000000e0da2";
 
     try {
       await sql`
@@ -19,21 +20,23 @@ describe.skipIf(!HAS_DB)("digest (requires DATABASE_URL)", () => {
         VALUES (${captureId}, 'seed', ${`sha-${captureId}`}, 'test',
                 '00000000-0000-0000-0000-0000000e0d01', 'testhost', 'test')
       `;
-      await sql`
-        INSERT INTO memories (id, capture_id, chunk_id, content, content_hash,
-          embedding_model, kind, machine_id, harness)
-        VALUES (${idA}, ${captureId}, ${`chunk-${idA}`}, 'c', ${`hash-${idA}`},
-          'test', 'note', '00000000-0000-0000-0000-0000000e0d01', 'test')
-      `;
+      for (const id of [idA, idB]) {
+        await sql`
+          INSERT INTO memories (id, capture_id, chunk_id, content, content_hash,
+            embedding_model, kind, machine_id, harness)
+          VALUES (${id}, ${captureId}, ${`chunk-${id}`}, 'c', ${`hash-${id}`},
+            'test', 'note', '00000000-0000-0000-0000-0000000e0d01', 'test')
+        `;
+      }
 
-      await stampDigested([idA]);
+      await stampDigested([idA, idB]);
 
-      const [row] = await sql<{ stamped: string | null }[]>`
-        SELECT meta->>'last_digested_at' AS stamped FROM memories WHERE id = ${idA}
+      const rows = await sql<{ stamped: string | null }[]>`
+        SELECT meta->>'last_digested_at' AS stamped FROM memories WHERE id = ANY(${[idA, idB]})
       `;
-      expect(row?.stamped).not.toBeNull();
+      expect(rows).toHaveLength(2);
+      for (const r of rows) expect(r.stamped).not.toBeNull();
     } finally {
-      const { sql } = await import("../src/infra/db.ts");
       await sql`DELETE FROM memories WHERE capture_id = ${captureId}`;
       await sql`DELETE FROM captures WHERE id = ${captureId}`;
     }
