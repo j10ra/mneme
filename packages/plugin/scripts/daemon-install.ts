@@ -386,111 +386,142 @@ export function depsSignature(pkgJson: string): string {
   }
 }
 
-/** Locate a sibling plugin-cache version dir whose package.json deps
- *  match ours and whose node_modules is fully populated. Two adjacent
- *  plugin versions usually have identical deps (only the daemon.js
- *  bundle and version field change between patch releases), so we can
- *  reuse the older version's node_modules instead of re-downloading
- *  ~2GB of native deps on every plugin update — which on a throttled
- *  corp network hangs forever.
+/** Absolute path to the shared, deps-signature-keyed dependency store
+ *  for a plugin package.json. The store lives under ~/.mneme, OUTSIDE
+ *  Claude Code's plugin cache, so CC pruning old plugin versions can
+ *  never strip the daemon's node_modules out from under a running
+ *  install (the historical wedge: `<pluginRoot>/node_modules` was a
+ *  symlink into a sibling version that CC later garbage-collected).
  *
- *  Comparison uses depsSignature() so a `"version"` bump alone doesn't
- *  break reuse. A real dep change (added or upgraded package, changed
- *  range) is correctly detected and falls through to a fresh install.
- *
- *  Returns the absolute node_modules path of a matching sibling, or
- *  null when no reuse opportunity exists. */
-export async function findReusableNodeModules(pluginRoot: string): Promise<string | null> {
-  const { existsSync, readFileSync, readdirSync, statSync } = await import("node:fs");
-  const { dirname: dn, join: jp, basename: bn } = await import("node:path");
-
-  const myPkgPath = jp(pluginRoot, "package.json");
-  if (!existsSync(myPkgPath)) return null;
-  let myPkg: string;
-  try {
-    myPkg = readFileSync(myPkgPath, "utf8");
-  } catch {
-    return null;
-  }
-  const mySig = depsSignature(myPkg);
-
-  const versionsDir = dn(pluginRoot);
-  const myVersion = bn(pluginRoot);
-  let entries: string[];
-  try {
-    entries = readdirSync(versionsDir);
-  } catch {
-    return null;
-  }
-  for (const name of entries) {
-    if (name === myVersion) continue;
-    const sibPath = jp(versionsDir, name);
-    try {
-      if (!statSync(sibPath).isDirectory()) continue;
-    } catch {
-      continue;
-    }
-    const sibPkg = jp(sibPath, "package.json");
-    const sibNm = jp(sibPath, "node_modules");
-    if (!existsSync(sibPkg) || !existsSync(sibNm)) continue;
-    let theirPkg: string;
-    try {
-      theirPkg = readFileSync(sibPkg, "utf8");
-    } catch {
-      continue;
-    }
-    if (depsSignature(theirPkg) !== mySig) continue;
-    return sibNm;
-  }
-  return null;
+ *  Keying on depsSignature() means every plugin version whose deps
+ *  resolve identically — the common case, since a patch bump touches
+ *  only `version` — shares one install. A real dependency change
+ *  yields a different signature, a different store dir, and a fresh
+ *  install. */
+export function pluginDepsStoreDir(pkgJson: string): string {
+  const { createHash } = require("node:crypto");
+  const hash = createHash("sha256").update(depsSignature(pkgJson)).digest("hex").slice(0, 16);
+  return join(homedir(), ".mneme", "deps", hash);
 }
 
-// Run `bun install --production` inside pluginRoot to populate
-// node_modules adjacent to daemon.js. Bun resolves the bundle's
-// externals from there at runtime. Skips if node_modules already
-// exists (idempotent re-setup) unless force=true.
+/** True when `nmPath` resolves to a real directory holding every
+ *  package named in `pkgJson`'s `dependencies`. Rejects a dangling
+ *  symlink (realpathSync throws) and a half-finished `bun install`
+ *  (a declared dep missing), so callers never trust a broken or
+ *  partial node_modules. */
+export function isPopulatedNodeModules(nmPath: string, pkgJson: string): boolean {
+  const { existsSync, readdirSync, realpathSync, statSync } = require("node:fs");
+  let real: string;
+  try {
+    real = realpathSync(nmPath);
+    if (!statSync(real).isDirectory()) return false;
+  } catch {
+    return false; // missing path or dangling symlink
+  }
+  let deps: Record<string, unknown>;
+  try {
+    deps = (JSON.parse(pkgJson).dependencies ?? {}) as Record<string, unknown>;
+  } catch {
+    // Unparseable package.json: fall back to a bare non-empty check.
+    return readdirSync(real).length > 0;
+  }
+  return Object.keys(deps).every((name) => existsSync(join(real, name)));
+}
+
+// Populate the plugin's dependency store and point
+// `<pluginRoot>/node_modules` at it.
 //
-// Before falling through to `bun install`, we look for a sibling
-// plugin-cache version with identical package.json + populated
-// node_modules. If found, junction/symlink that node_modules into
-// our own pluginRoot — sub-second vs. minutes (or hours, on the
-// corp networks where bun install gets throttled to a crawl).
+// The install itself lives in a shared, deps-signature-keyed store
+// under ~/.mneme/deps/ (see pluginDepsStoreDir), NOT inside Claude
+// Code's plugin cache. `<pluginRoot>/node_modules` is a symlink into
+// that store; the daemon bundle resolves its native externals through
+// it at runtime. Keeping the store outside CC's cache means CC pruning
+// old plugin versions can never break a running daemon, and every
+// version with the same deps reuses one install (sub-second relink vs.
+// re-downloading ~2GB of native deps per patch bump).
+//
+// Idempotent: a populated store plus a correct symlink is a no-op.
+// `force` re-runs the install even when the store looks populated.
 async function ensurePluginDeps(
   pluginRoot: string,
   bunPath: string,
   force = false,
 ): Promise<{ ok: boolean; error?: string }> {
-  const { existsSync, symlinkSync } = await import("node:fs");
-  const { join } = await import("node:path");
-  const { spawn } = await import("node:child_process");
-  const nm = join(pluginRoot, "node_modules");
-  if (!force && existsSync(nm)) {
-    return { ok: true };
+  const { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } =
+    await import("node:fs");
+  const pkgPath = join(pluginRoot, "package.json");
+  if (!existsSync(pkgPath)) {
+    return { ok: false, error: `plugin package.json not found at ${pkgPath}` };
   }
-  // Try the cheap path first.
-  const reusable = await findReusableNodeModules(pluginRoot);
-  if (reusable) {
+  let pkgJson: string;
+  try {
+    pkgJson = readFileSync(pkgPath, "utf8");
+  } catch (err) {
+    return { ok: false, error: `cannot read ${pkgPath}: ${asMessage(err)}` };
+  }
+
+  const storeDir = pluginDepsStoreDir(pkgJson);
+  const storeNm = join(storeDir, "node_modules");
+  const nm = join(pluginRoot, "node_modules");
+
+  // 1. Ensure the shared store is populated.
+  if (force || !isPopulatedNodeModules(storeNm, pkgJson)) {
+    try {
+      mkdirSync(storeDir, { recursive: true });
+      // `bun install` reads package.json from its cwd — give the store
+      // its own copy so the install resolves the intended dep set.
+      copyFileSync(pkgPath, join(storeDir, "package.json"));
+    } catch (err) {
+      return { ok: false, error: `cannot prepare deps store ${storeDir}: ${asMessage(err)}` };
+    }
+    const install = await runBunInstall(bunPath, storeDir);
+    if (!install.ok) return install;
+  }
+
+  // 2. Point <pluginRoot>/node_modules at the store. A leftover entry
+  //    here — a real dir from a pre-store install, or a dangling
+  //    symlink from the old sibling-reuse scheme — must be cleared
+  //    first: both `bun` and symlinkSync choke on a dangling link.
+  let linkOk = false;
+  try {
+    linkOk = realpathSync(nm) === realpathSync(storeNm);
+  } catch {
+    // nm missing or dangling — leave linkOk false
+  }
+  if (!linkOk) {
+    rmSync(nm, { recursive: true, force: true });
     try {
       // 'junction' is the cross-platform-safe choice: on win32 it's
-      // a directory junction (no admin needed); on darwin/linux node
-      // ignores the type and creates a symlink.
-      symlinkSync(reusable, nm, "junction");
-      return { ok: true };
-    } catch {
-      // Fall through to bun install if the link couldn't be created
-      // (filesystem doesn't support symlinks, permission denied, etc).
+      // a directory junction (no admin needed); on posix node ignores
+      // the type hint and creates a symlink.
+      symlinkSync(storeNm, nm, "junction");
+    } catch (err) {
+      return { ok: false, error: `cannot link ${nm} -> ${storeNm}: ${asMessage(err)}` };
     }
   }
-  // Hard timeout on the install. Without this, a corporate proxy that
-  // mishandles TLS to the npm registry / Bun CDN (Zscaler is the
-  // observed offender) can hang the spawn indefinitely, which in turn
-  // traps the refresh-daemon's pidfile lock until the 30-min stale
-  // timeout. Five minutes is generous for a real install on a healthy
-  // network and short enough that a wedge surfaces early.
+
+  return { ok: true };
+}
+
+function asMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// Run `bun install --production` in `cwd`. Hard timeout: a corporate
+// proxy that mishandles TLS to the npm registry / Bun CDN (Zscaler is
+// the observed offender) can hang the spawn indefinitely, which in
+// turn traps the refresh-daemon's pidfile lock until the 30-min stale
+// timeout. Five minutes is generous for a real install on a healthy
+// network and short enough that a wedge surfaces early.
+async function runBunInstall(
+  bunPath: string,
+  cwd: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const { spawn } = await import("node:child_process");
   const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
   const result = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
     const proc = spawn(bunPath, ["install", "--production"], {
-      cwd: pluginRoot,
+      cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stderr = "";
