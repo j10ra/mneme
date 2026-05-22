@@ -218,6 +218,21 @@ export async function fetchDreamCandidates(
   return { window_key: windowKey, repos };
 }
 
+/** Stamp meta.last_dreamed_at = now() on the given seed ids. Called by
+ *  the candidates route once per dream cycle so the next cycle's
+ *  watermark-ordered seed selection advances past these rows. Stamping
+ *  at fetch time (not cluster-write time) is crash-safe: a daemon that
+ *  dies mid-cycle does not lose the stamp. */
+export async function stampDreamedSeeds(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql`
+    UPDATE memories
+    SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb),
+                         '{last_dreamed_at}', to_jsonb(now()::text))
+    WHERE id = ANY(${ids})
+  `;
+}
+
 type ClusterSubmission = {
   member_ids: string[];
   title: string;

@@ -97,6 +97,43 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
     ).toBe(false); // empty member_ids
   });
 
+  test("stampDreamedSeeds writes meta.last_dreamed_at on the given ids", async () => {
+    const { stampDreamedSeeds } = await import("../src/routes/dream.ts");
+    const { sql } = await import("../src/infra/db.ts");
+
+    const captureId = "00000000-0000-0000-0000-00000000d0ca";
+    const idA = "00000000-0000-0000-0000-00000000d0a1";
+    const idB = "00000000-0000-0000-0000-00000000d0b2";
+
+    try {
+      await sql`
+        INSERT INTO captures (id, content, content_sha256, source, machine_id, hostname, harness)
+        VALUES (${captureId}, 'seed', ${`sha-${captureId}`}, 'test',
+                '00000000-0000-0000-0000-00000000d001', 'testhost', 'test')
+      `;
+      for (const id of [idA, idB]) {
+        await sql`
+          INSERT INTO memories (id, capture_id, chunk_id, content, content_hash,
+            embedding_model, kind, machine_id, harness)
+          VALUES (${id}, ${captureId}, ${`chunk-${id}`}, ${`c ${id}`}, ${`hash-${id}`},
+            'test', 'note', '00000000-0000-0000-0000-00000000d001', 'test')
+        `;
+      }
+
+      await stampDreamedSeeds([idA, idB]);
+
+      const rows = await sql<{ id: string; stamped: string | null }[]>`
+        SELECT id::text AS id, meta->>'last_dreamed_at' AS stamped
+        FROM memories WHERE id = ANY(${[idA, idB]})
+      `;
+      for (const r of rows) expect(r.stamped).not.toBeNull();
+    } finally {
+      const { sql } = await import("../src/infra/db.ts");
+      await sql`DELETE FROM memories WHERE capture_id = ${captureId}`;
+      await sql`DELETE FROM captures WHERE id = ${captureId}`;
+    }
+  });
+
   test("writeClusters applies valid supersede pairs, rejects backwards + hallucinated", async () => {
     const { writeClusters } = await import("../src/routes/dream.ts");
     const { sql } = await import("../src/infra/db.ts");
