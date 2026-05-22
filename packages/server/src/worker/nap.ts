@@ -51,121 +51,120 @@ export type NapResult = {
   superseded: number;
 };
 
-/** Run one nap cycle, all in one transaction:
- *    1. decay importance with asymmetric pinned/unpinned floors
- *    1b. decay recall_weight (#37 LTP counterpart — use-driven reinforcement
- *        accumulates on mneme_sql access, fades on each nap cycle)
- *    2. mark exact-text shadows in (content_hash, repo, scope) groups
- *    3. pick the cycle's seed set (least-recently-napped, capped)
- *    4. relate-pass: link semantic neighbours via meta.related_to
- *    5. supersede-rule pass: rule-based newer-replaces-older
- *    6. stamp meta.last_napped_at on every seed (round-robin gate)
- *  Steps 4 + 5 are bounded by the seed cap so the whole transaction
- *  stays under Railway's 2-min Postgres statement_timeout regardless
- *  of corpus size. */
-export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult> => {
-  const result = await sql.begin(async (tx) => {
-    // 1. Decay all non-archived memories. Pinned rows stop at PIN_FLOOR;
-    //    unpinned stop at FLOOR. Skip rows already at their respective
-    //    floor so we don't waste writes on no-op updates.
-    const decayed = await tx`
+const NAP_DECAY_BATCH = 5000;
+
+/** Phase 1: importance decay, batched. Pinned rows floor at
+ *  NAP_PIN_FLOOR, unpinned at NAP_FLOOR. Each batch UPDATE is its own
+ *  statement, so no single statement scales with corpus size. */
+async function napDecayImportance(): Promise<number> {
+  return forEachIdBatch(
+    NAP_DECAY_BATCH,
+    async (cursor, limit) => {
+      const rows = await sql<{ id: string }[]>`
+        SELECT id::text AS id FROM memories
+        WHERE archived_at IS NULL AND id > ${cursor}::uuid
+        ORDER BY id LIMIT ${limit}
+      `;
+      return rows.map((r) => r.id);
+    },
+    async (ids) => {
+      const r = await sql`
         UPDATE memories
         SET importance = GREATEST(
           CASE WHEN COALESCE((meta->>'pinned')::boolean, false)
-               THEN ${NAP_PIN_FLOOR}::real
-               ELSE ${NAP_FLOOR}::real
-          END,
+               THEN ${NAP_PIN_FLOOR}::real ELSE ${NAP_FLOOR}::real END,
           importance * ${NAP_DECAY_PER_CYCLE}::real
         )
-        WHERE archived_at IS NULL
+        WHERE id = ANY(${ids})
           AND importance > CASE
             WHEN COALESCE((meta->>'pinned')::boolean, false) THEN ${NAP_PIN_FLOOR}::real
-            ELSE ${NAP_FLOOR}::real
-          END
+            ELSE ${NAP_FLOOR}::real END
       `;
+      return r.count;
+    },
+  );
+}
 
-    // 1b. Decay recall_weight (LTP counterpart, #37). recall_weight
-    //     accumulates on every successful mneme_sql access that signals
-    //     intent; this pass fades it on each cycle so weight reflects
-    //     *recent* use, not lifetime use. Floor at 0.01 — below that the
-    //     ranking contribution is negligible and we stop paying writes.
-    const ltpDecayed = await tx`
+/** Phase 1b: recall_weight (LTP) decay, batched. Fades use-driven
+ *  reinforcement so weight reflects recent use; floors at 0.01. */
+async function napDecayRecallWeight(): Promise<number> {
+  return forEachIdBatch(
+    NAP_DECAY_BATCH,
+    async (cursor, limit) => {
+      const rows = await sql<{ id: string }[]>`
+        SELECT id::text AS id FROM memories
+        WHERE archived_at IS NULL AND id > ${cursor}::uuid
+        ORDER BY id LIMIT ${limit}
+      `;
+      return rows.map((r) => r.id);
+    },
+    async (ids) => {
+      const r = await sql`
         UPDATE memories
         SET recall_weight = recall_weight * ${RECALL_LTD_DECAY}::real
-        WHERE archived_at IS NULL
-          AND recall_weight >= 0.01
+        WHERE id = ANY(${ids}) AND recall_weight >= 0.01
       `;
+      return r.count;
+    },
+  );
+}
 
-    // 2. Exact-text shadows: in each (content_hash, repo, scope) group,
-    //    keep the highest-importance row; mark the rest as
-    //    meta.shadow_of=<keeper>, importance×0.1. Scope is `public` for
-    //    private=false rows (so identical public content from machines A
-    //    and B in the same repo coalesces) and the machine_id for private
-    //    rows (so private content from machine A never shadows machine B's
-    //    private copy of the same string). Repo is part of the key so the
-    //    same observation made in two unrelated repos isn't collapsed.
-    const shadowed = await tx`
-        WITH groups AS (
-          SELECT content_hash,
-                 COALESCE(repo, '__null__') AS repo_key,
-                 CASE WHEN private THEN machine_id ELSE 'public' END AS scope_key,
-                 (array_agg(id ORDER BY importance DESC, created_at DESC))[1] AS keeper_id
-          FROM memories
-          WHERE archived_at IS NULL
-            AND (meta->>'shadow_of') IS NULL
-          GROUP BY content_hash, COALESCE(repo, '__null__'),
-                   CASE WHEN private THEN machine_id ELSE 'public' END
-          HAVING count(*) > 1
-        )
-        UPDATE memories m
-        SET importance = m.importance * ${NAP_SHADOW_DECAY}::real,
-            meta = m.meta || jsonb_build_object('shadow_of', g.keeper_id::text)
-        FROM groups g
-        WHERE m.content_hash = g.content_hash
-          AND COALESCE(m.repo, '__null__') = g.repo_key
-          AND CASE WHEN m.private THEN m.machine_id ELSE 'public' END = g.scope_key
-          AND m.id <> g.keeper_id
-          AND (m.meta->>'shadow_of') IS NULL
-      `;
+/** Phase 2: exact-text shadow-marking. Single statement in its own
+ *  transaction. The UPDATE only touches rows in duplicate groups; the
+ *  cost is the GROUP BY scan, which is fast. */
+async function napShadowDuplicates(): Promise<number> {
+  const shadowed = await sql`
+    WITH groups AS (
+      SELECT content_hash,
+             COALESCE(repo, '__null__') AS repo_key,
+             CASE WHEN private THEN machine_id ELSE 'public' END AS scope_key,
+             (array_agg(id ORDER BY importance DESC, created_at DESC))[1] AS keeper_id
+      FROM memories
+      WHERE archived_at IS NULL
+        AND (meta->>'shadow_of') IS NULL
+      GROUP BY content_hash, COALESCE(repo, '__null__'),
+               CASE WHEN private THEN machine_id ELSE 'public' END
+      HAVING count(*) > 1
+    )
+    UPDATE memories m
+    SET importance = m.importance * ${NAP_SHADOW_DECAY}::real,
+        meta = m.meta || jsonb_build_object('shadow_of', g.keeper_id::text)
+    FROM groups g
+    WHERE m.content_hash = g.content_hash
+      AND COALESCE(m.repo, '__null__') = g.repo_key
+      AND CASE WHEN m.private THEN m.machine_id ELSE 'public' END = g.scope_key
+      AND m.id <> g.keeper_id
+      AND (m.meta->>'shadow_of') IS NULL
+  `;
+  return shadowed.count;
+}
 
-    // 3. Pick the cycle's seed set: NAP_PER_CYCLE_CAP least-recently-napped
-    //    memories. NULLS FIRST means rows that have never been napped go
-    //    first, so a new corpus drains its backlog before round-robining.
-    //    Bounding here is what keeps the relate + supersede passes under
-    //    Railway's 2-min Postgres statement_timeout — without it, both
-    //    queries fan out into ~7k LATERAL HNSW lookups and time out.
-    //    A partial functional index (migration 0019) makes this O(log n).
+/** Phase 3: seed-bounded relate + rule-supersede + stamp. One
+ *  transaction -- the three steps share the seed set and must see a
+ *  consistent view. Already bounded by NAP_PER_CYCLE_CAP. */
+async function napSeedPhase(): Promise<{ related: number; superseded: number }> {
+  return sql.begin(async (tx) => {
     const seedRows = await tx<{ id: string }[]>`
-        SELECT id FROM memories
-        WHERE archived_at IS NULL AND embedding IS NOT NULL
-        ORDER BY meta->>'last_napped_at' NULLS FIRST,
-                 created_at ASC
-        LIMIT ${NAP_PER_CYCLE_CAP}
-      `;
+      SELECT id FROM memories
+      WHERE archived_at IS NULL AND embedding IS NOT NULL
+      ORDER BY meta->>'last_napped_at' NULLS FIRST,
+               created_at ASC
+      LIMIT ${NAP_PER_CYCLE_CAP}
+    `;
     const seedIds = seedRows.map((r) => r.id);
 
-    // 4. Semantic relations on the seed set. Inner LATERAL still scans
-    //    the full memories table for HNSW lookups, so each seed gets
-    //    its real nearest neighbours regardless of which seeds were
-    //    picked this cycle. Mutual UNION means an off-page memory N
-    //    that's near a seed S still gets `S` appended to its own
-    //    related_to — pagination doesn't drop edges, only delays
-    //    re-checks of already-paginated rows.
     const related =
       seedIds.length === 0
         ? { count: 0 }
         : await tx`
             WITH seeds AS (
-              SELECT id, embedding, repo
-              FROM memories
-              WHERE id = ANY(${seedIds})
+              SELECT id, embedding, repo FROM memories WHERE id = ANY(${seedIds})
             ),
             neighbors AS (
               SELECT s.id AS a_id, n.id AS b_id
               FROM seeds s,
               LATERAL (
-                SELECT m.id
-                FROM memories m
+                SELECT m.id FROM memories m
                 WHERE m.archived_at IS NULL
                   AND m.embedding IS NOT NULL
                   AND m.repo IS NOT DISTINCT FROM s.repo
@@ -182,13 +181,11 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
             ),
             grouped AS (
               SELECT a_id, array_agg(DISTINCT b_id::text) AS new_related
-              FROM mutual
-              GROUP BY a_id
+              FROM mutual GROUP BY a_id
             )
             UPDATE memories m
             SET meta = jsonb_set(
-              m.meta,
-              '{related_to}',
+              m.meta, '{related_to}',
               (
                 SELECT to_jsonb(array_agg(DISTINCT v))
                 FROM (
@@ -199,14 +196,9 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
               )
             )
             FROM grouped g
-            WHERE m.id = g.a_id
-              AND m.archived_at IS NULL
+            WHERE m.id = g.a_id AND m.archived_at IS NULL
           `;
 
-    // 5. Rule-based supersede pass on the seed set as the OLDER position.
-    //    Inner LATERAL again has full visibility, so a seed can be
-    //    superseded by a non-seed newer memory. Outer is bounded to the
-    //    seed page; SUPERSEDE_RULE_PER_CYCLE_CAP stays as the OUTPUT cap.
     const supersededRows =
       seedIds.length === 0
         ? []
@@ -215,8 +207,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
               SELECT o.id AS older_id, n.newer_id
               FROM memories o
               CROSS JOIN LATERAL (
-                SELECT m.id AS newer_id
-                FROM memories m
+                SELECT m.id AS newer_id FROM memories m
                 WHERE m.archived_at IS NULL
                   AND m.embedding IS NOT NULL
                   AND m.repo IS NOT DISTINCT FROM o.repo
@@ -243,31 +234,35 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
             RETURNING p.older_id::text, p.newer_id::text
           `;
 
-    // 6. Stamp last_napped_at on every seed, regardless of whether
-    //    relate or supersede found anything for that row. This is what
-    //    drives the round-robin: seeds that find nothing this cycle
-    //    don't get re-picked next cycle ahead of memories that have
-    //    never been napped at all.
     if (seedIds.length > 0) {
       await tx`
-          UPDATE memories
-          SET meta = jsonb_set(
-            COALESCE(meta, '{}'::jsonb),
-            '{last_napped_at}',
-            to_jsonb(now()::text)
-          )
-          WHERE id = ANY(${seedIds})
-        `;
+        UPDATE memories
+        SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb),
+                             '{last_napped_at}', to_jsonb(now()::text))
+        WHERE id = ANY(${seedIds})
+      `;
     }
 
-    return {
-      decayed: decayed.count,
-      ltp_decayed: ltpDecayed.count,
-      shadowed: shadowed.count,
-      related: related.count,
-      superseded: supersededRows.length,
-    };
+    return { related: related.count, superseded: supersededRows.length };
   });
+}
+
+/** Run one nap cycle as four independent phases. No phase holds locks
+ *  for the whole cycle, and a slow phase fails in isolation instead of
+ *  rolling back the rest. */
+export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult> => {
+  const decayed = await napDecayImportance();
+  const ltpDecayed = await napDecayRecallWeight();
+  const shadowed = await napShadowDuplicates();
+  const seed = await napSeedPhase();
+
+  const result: NapResult = {
+    decayed,
+    ltp_decayed: ltpDecayed,
+    shadowed,
+    related: seed.related,
+    superseded: seed.superseded,
+  };
   Logger.info("nap: done", result);
   return result;
 });
