@@ -126,9 +126,12 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
         SELECT id::text AS id, meta->>'last_dreamed_at' AS stamped
         FROM memories WHERE id = ANY(${[idA, idB]})
       `;
-      for (const r of rows) expect(r.stamped).not.toBeNull();
+      expect(rows).toHaveLength(2);
+      for (const r of rows) {
+        expect(r.stamped).not.toBeNull();
+        expect(Number.isNaN(new Date(r.stamped!).getTime())).toBe(false);
+      }
     } finally {
-      const { sql } = await import("../src/infra/db.ts");
       await sql`DELETE FROM memories WHERE capture_id = ${captureId}`;
       await sql`DELETE FROM captures WHERE id = ${captureId}`;
     }
