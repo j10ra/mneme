@@ -31,6 +31,25 @@ export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
   return (await resp.json()) as T;
 }
 
+/** POST to a /dashboard/api/* endpoint. Sends `body` as JSON when
+ *  provided. Throws ApiError on a non-2xx response, same as apiGet. */
+export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
+  const url = path.startsWith("/") ? `${API_BASE}${path}` : `${API_BASE}/${path}`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new ApiError(`${path} failed: ${resp.status} ${text.slice(0, 200)}`, resp.status);
+  }
+  return (await resp.json()) as T;
+}
+
 /** Open an SSE stream to the daemon. Caller listens with addEventListener
  *  and disposes via the returned close fn. Reconnect logic is browser
  *  native (EventSource handles dropped connections). */
