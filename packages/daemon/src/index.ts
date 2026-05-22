@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { Logger, configureLogger, configureTraceStore, getTraceStore, mnemeFn } from "@mneme/core";
 import { Hono } from "hono";
 import { pickAgent } from "./agents/index.ts";
-import { resumeDreamCycles, runDreamCycle } from "./dream.ts";
+import { type DreamDeps, resumeDreamCycles, runDreamCycle } from "./dream.ts";
 import { createDreamOutbox } from "./dream-outbox.ts";
 import { disposeIfIdle, embedBatch } from "./embed.ts";
 import { createOutbox } from "./outbox.ts";
@@ -177,24 +177,29 @@ export async function startDaemon(): Promise<void> {
   // Single closure that the dream route + scheduler both call so the
   // manual /dream/run and the scheduled "dream" job share exactly the
   // same code path.
-  const runDream = () =>
-    runDreamCycle({
-      serverUrl: config.server_url,
-      token: config.token,
-      machineId: config.machine_id,
-      fetch: (u, init) => fetch(u, init),
-      distill: (memories) => {
-        if (!agent.distill) {
-          throw new Error(`agent ${agent.name} does not support dream (no distill())`);
-        }
-        return agent.distill(memories);
-      },
-      embed: embedBatch,
-      findSupersedes: agent.findSupersedes
-        ? (candidates) => agent.findSupersedes!(candidates)
-        : undefined,
-      outbox: dreamOutbox,
-    });
+  const dreamDeps: DreamDeps = {
+    serverUrl: config.server_url,
+    token: config.token,
+    machineId: config.machine_id,
+    fetch: (u, init) => fetch(u, init),
+    distill: (memories) => {
+      if (!agent.distill) {
+        throw new Error(`agent ${agent.name} does not support dream (no distill())`);
+      }
+      return agent.distill(memories);
+    },
+    embed: embedBatch,
+    findSupersedes: agent.findSupersedes
+      ? (candidates) => agent.findSupersedes!(candidates)
+      : undefined,
+    outbox: dreamOutbox,
+  };
+  const runDream = () => runDreamCycle(dreamDeps);
+  // Forced cycle: a unique negative window_key (epoch millis, negated)
+  // can never collide with a real 8h window (a small positive integer),
+  // so acquireDreamLock always succeeds and the cycle always runs.
+  // window_key is BIGINT, so the large negative value is in range.
+  const forceDream = () => runDreamCycle({ ...dreamDeps, windowKey: -Date.now() });
 
   // Resume any unfinished dream cycles persisted on disk before doing
   // anything else. A daemon crash mid-cycle leaves Sonnet output in
@@ -221,7 +226,7 @@ export async function startDaemon(): Promise<void> {
   mountCaptureRoute(app, runtime);
   mountEmbedRoute(app);
   mountDreamRoute(app, runDream);
-  mountDashboardRoutes(app);
+  mountDashboardRoutes(app, forceDream);
 
   Bun.serve({
     port: config.daemon_port,

@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { Logger, mnemeRoute } from "@mneme/core";
+import type { DreamCycleResult } from "../dream.ts";
 
 /** Absolute path to `<plugin-root>/dashboard/dist/`.
  *  Resolution order:
@@ -69,7 +70,7 @@ the bundle, or you're running from a fresh dev checkout where
 <p>Then re-run <code>/plugin update mneme</code> &amp; <code>/reload-plugins</code>.</p>
 </body></html>`;
 
-export function mountDashboardRoutes(app: Hono): void {
+export function mountDashboardRoutes(app: Hono, forceDream: () => Promise<DreamCycleResult>): void {
   const distDir = dashboardDist();
 
   // GET /dashboard → index.html
@@ -119,6 +120,43 @@ export function mountDashboardRoutes(app: Hono): void {
     "/dashboard/api/status",
     mnemeRoute("daemon.dashboard.status"),
     proxyHandler("/api/_ops/status", "dashboard.status"),
+  );
+
+  // POST /dashboard/api/worker/:name/run — force one worker cycle.
+  // nap | digest: proxy a POST to the server's force endpoint. dream:
+  // run a forced cycle locally in the background and return 202 --
+  // dream distills via the LLM and can take minutes, so a synchronous
+  // response would hang the request.
+  app.post(
+    "/dashboard/api/worker/:name/run",
+    mnemeRoute("daemon.dashboard.worker_run"),
+    async (c) => {
+      const name = c.req.param("name");
+      if (name === "dream") {
+        void forceDream().catch((err) => {
+          Logger.error("dashboard: forced dream cycle failed", err);
+        });
+        return c.json({ queued: true, job: "dream" }, 202);
+      }
+      if (name === "nap" || name === "digest") {
+        const cfg = await readDaemonConfig();
+        if (!cfg) return c.json({ error: "config not loaded" }, 503);
+        try {
+          const resp = await fetch(`${cfg.serverUrl}/api/_ops/worker/${name}/run`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${cfg.token}` },
+          });
+          const body = await resp.text();
+          return c.body(body, resp.status as 200, {
+            "content-type": resp.headers.get("content-type") ?? "application/json",
+          });
+        } catch (err) {
+          Logger.warn("dashboard.worker_run: upstream fetch failed", err);
+          return c.json({ error: "upstream unavailable" }, 502);
+        }
+      }
+      return c.json({ error: "unknown worker" }, 400);
+    },
   );
 
   // GET /dashboard/api/machines — proxies /api/auth/machines (read-scoped)
