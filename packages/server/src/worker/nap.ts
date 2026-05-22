@@ -15,6 +15,31 @@ import {
 } from "../infra/config.ts";
 import { sql } from "../infra/db.ts";
 
+const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
+
+/** Keyset-paginate memory ids and apply a bounded UPDATE per batch.
+ *  `fetchBatch` returns up to `batchSize` ids strictly greater than the
+ *  cursor, ascending. `apply` runs the batch UPDATE and returns the
+ *  number of rows it affected. Iterating in id order with a monotonic
+ *  cursor guarantees termination and bounds every statement, so a
+ *  full-table pass never scales toward the 120s statement_timeout.
+ *  Pure control flow -- both callbacks are injected for testability. */
+export async function forEachIdBatch(
+  batchSize: number,
+  fetchBatch: (cursor: string, limit: number) => Promise<string[]>,
+  apply: (ids: string[]) => Promise<number>,
+): Promise<number> {
+  let cursor = ZERO_UUID;
+  let affected = 0;
+  for (;;) {
+    const ids = await fetchBatch(cursor, batchSize);
+    if (ids.length === 0) break;
+    affected += await apply(ids);
+    cursor = ids[ids.length - 1]!;
+  }
+  return affected;
+}
+
 export type NapResult = {
   decayed: number;
   ltp_decayed: number;
