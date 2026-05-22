@@ -76,3 +76,23 @@ describe.skipIf(!HAS_DB)("digest (requires DATABASE_URL)", () => {
     }
   });
 });
+
+describe("dedupePairs", () => {
+  test("collapses mirrored pairs, keeps first occurrence", async () => {
+    const { dedupePairs } = await import("../src/worker/digest.ts");
+    const out = dedupePairs([
+      { a_id: "x", b_id: "y" },
+      { a_id: "y", b_id: "x" },
+      { a_id: "x", b_id: "z" },
+    ]);
+    expect(out).toEqual([
+      { a_id: "x", b_id: "y" },
+      { a_id: "x", b_id: "z" },
+    ]);
+  });
+
+  test("returns empty for empty input", async () => {
+    const { dedupePairs } = await import("../src/worker/digest.ts");
+    expect(dedupePairs([])).toEqual([]);
+  });
+});

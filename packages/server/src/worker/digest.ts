@@ -104,11 +104,28 @@ export async function selectDigestClusterWindow(limit: number): Promise<string[]
   return rows.map((r) => r.id);
 }
 
+/** Collapse mirrored pairs: when both clusters of an unordered pair are
+ *  in the window, the scan returns both (A,B) and (B,A). Keyed on the
+ *  sorted id pair, first occurrence wins. Pure -- unit-tested directly. */
+export function dedupePairs(rows: MergePairRow[]): MergePairRow[] {
+  const seen = new Set<string>();
+  const deduped: MergePairRow[] = [];
+  for (const r of rows) {
+    const key = [r.a_id, r.b_id].sort().join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(r);
+  }
+  return deduped;
+}
+
 /** Merge-pair candidates: cluster pairs at cosine < DIGEST_MERGE_DISTANCE
  *  where side `a` is in this cycle's round-robin window. Side `b` is any
- *  non-superseded cluster, so a stale-window cluster still pairs with a
- *  fresh one. Unordered pairs are de-duplicated in TS because the
- *  windowed scan cannot use the old `b.id > a.id` trick. */
+ *  non-superseded cluster with a non-null embedding, so a stale-window
+ *  cluster still pairs with a fresh one. Unordered pairs are
+ *  de-duplicated in TS because the windowed scan cannot use the old
+ *  `b.id > a.id` trick. DIGEST_MAX_MERGE_PAIRS caps the SQL result
+ *  pre-dedup, so the deduped count can be lower. */
 export async function findMergePairs(windowIds: string[]): Promise<MergePairRow[]> {
   if (windowIds.length === 0) return [];
   const rows = (await sql<MergePairRow[]>`
@@ -127,15 +144,7 @@ export async function findMergePairs(windowIds: string[]): Promise<MergePairRow[
     LIMIT ${DIGEST_MAX_MERGE_PAIRS}
   `) as MergePairRow[];
 
-  const seen = new Set<string>();
-  const deduped: MergePairRow[] = [];
-  for (const r of rows) {
-    const key = [r.a_id, r.b_id].sort().join("|");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push(r);
-  }
-  return deduped;
+  return dedupePairs(rows);
 }
 
 export async function loadCluster(id: string): Promise<ClusterRow | null> {
