@@ -36,6 +36,31 @@ export function isForceableWorker(name: string): boolean {
   return (FORCEABLE_WORKERS as readonly string[]).includes(name);
 }
 
+export type ForceRunResult =
+  | { ok: true; job: string; next_run_at: Date }
+  | { ok: false; status: 400 | 404; error: string };
+
+/** Nudge a server-scheduled worker to run on the next scheduler tick.
+ *  Sets next_run_at = now() and clears last_status / last_error so the
+ *  scheduler's partial index re-claims a previously-failed job. The
+ *  scheduler's FOR UPDATE SKIP LOCKED claim guarantees the forced run
+ *  never overlaps a concurrent scheduled cycle. */
+export async function forceWorkerRun(name: string): Promise<ForceRunResult> {
+  if (!isForceableWorker(name)) {
+    return { ok: false, status: 400, error: "unknown worker" };
+  }
+  const rows = await sql<{ next_run_at: Date }[]>`
+    UPDATE _ops.worker_runs
+    SET next_run_at = now(), last_status = NULL, last_error = NULL
+    WHERE job_name = ${name}
+    RETURNING next_run_at
+  `;
+  if (rows.length === 0) {
+    return { ok: false, status: 404, error: "worker not registered" };
+  }
+  return { ok: true, job: name, next_run_at: rows[0]!.next_run_at };
+}
+
 type WorkerRow = {
   job_name: string;
   schedule_ms: string | number;
@@ -716,6 +741,17 @@ export function mountOpsRoutes(app: Hono): void {
       },
     });
   });
+
+  app.post(
+    "/api/_ops/worker/:name/run",
+    mnemeRoute("api._ops.worker.run"),
+    requireAuth("capture"),
+    async (c) => {
+      const r = await forceWorkerRun(c.req.param("name"));
+      if (!r.ok) return c.json({ error: r.error }, r.status);
+      return c.json({ queued: true, job: r.job, next_run_at: r.next_run_at });
+    },
+  );
 }
 
 type GraphNode = {
