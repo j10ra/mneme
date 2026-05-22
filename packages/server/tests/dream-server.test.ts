@@ -208,3 +208,43 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
     }
   });
 });
+
+describe("assembleRepos", () => {
+  test("includes neighbor content in seeds and preserves edges", async () => {
+    const { assembleRepos } = await import("../src/routes/dream.ts");
+    const repos = assembleRepos(
+      [
+        {
+          id: "s1",
+          repo: "r",
+          neighbor_id: "n1",
+          content: "seed one",
+          kind: "note",
+          created_at: new Date("2026-01-01T00:00:00Z"),
+        },
+        {
+          id: "s2",
+          repo: "r",
+          neighbor_id: null,
+          content: "seed two",
+          kind: "note",
+          created_at: new Date("2026-01-02T00:00:00Z"),
+        },
+      ],
+      [
+        {
+          id: "n1",
+          repo: "r",
+          content: "neighbor one",
+          kind: "decision",
+          created_at: new Date("2026-01-03T00:00:00Z"),
+        },
+      ],
+    );
+    const ids = repos.r!.seeds.map((s) => s.id).sort();
+    expect(ids).toEqual(["n1", "s1", "s2"]);
+    expect(repos.r!.edges).toContainEqual(["s1", "n1"]);
+    const n1 = repos.r!.seeds.find((s) => s.id === "n1")!;
+    expect(n1.content).toBe("neighbor one");
+  });
+});

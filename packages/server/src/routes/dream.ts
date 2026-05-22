@@ -117,6 +117,14 @@ type EdgeRow = {
   created_at: Date;
 };
 
+type NeighborRow = {
+  id: string;
+  repo: string | null;
+  content: string;
+  kind: string;
+  created_at: Date;
+};
+
 export type DreamCandidates = {
   window_key: number;
   repos: Record<
@@ -132,6 +140,46 @@ export type DreamCandidates = {
     }
   >;
 };
+
+/** Build the per-repo candidate map from the seed+edge scan rows plus
+ *  the separately-fetched neighbor rows. Seeds and neighbors both land
+ *  in `seeds` (the daemon treats every entry as a cluster-eligible
+ *  node); the field keeps its name for wire compatibility with
+ *  already-deployed daemons. Pure -- no DB access. */
+export function assembleRepos(
+  edgeRows: EdgeRow[],
+  neighborRows: NeighborRow[],
+): DreamCandidates["repos"] {
+  const repos: DreamCandidates["repos"] = {};
+  const seen = new Set<string>();
+
+  const addMemory = (
+    repoKey: string,
+    m: { id: string; content: string; kind: string; created_at: Date },
+  ): void => {
+    repos[repoKey] ??= { seeds: [], edges: [] };
+    if (seen.has(m.id)) return;
+    repos[repoKey]!.seeds.push({
+      id: m.id,
+      content: m.content,
+      kind: m.kind,
+      created_at: m.created_at.toISOString(),
+    });
+    seen.add(m.id);
+  };
+
+  for (const row of edgeRows) {
+    const repoKey = row.repo ?? "__none__";
+    addMemory(repoKey, row);
+    if (row.neighbor_id) {
+      repos[repoKey]!.edges.push([row.id, row.neighbor_id]);
+    }
+  }
+  for (const n of neighborRows) {
+    addMemory(n.repo ?? "__none__", n);
+  }
+  return repos;
+}
 
 export async function fetchDreamCandidates(
   windowKey: number,
