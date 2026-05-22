@@ -25,6 +25,7 @@ WITH RECURSIVE chain AS (
   FROM chain c
   JOIN memories m ON m.id = c.next_id
   WHERE (m.meta->>'superseded_by') IS NOT NULL
+    AND m.kind = 'cluster'
 ),
 terminal AS (
   SELECT DISTINCT ON (cluster_id) cluster_id, next_id AS terminal_id
