@@ -392,7 +392,13 @@ function prefixSurfaceForLLM(surface: string, strippedSurface: string): string {
   const reminder =
     `Mneme corpus: ${totals}. The surface below is a relevance-ranked slice. ` +
     `Unfold any [id] or query mneme_sql to access the rest.\n\n` +
-    `Glyph legend (the symbol after each [id]):\n${KIND_LEGEND}\n\n`;
+    `Glyph legend (the symbol after each [id]):\n${KIND_LEGEND}\n\n` +
+    `Memory writes: cross-machine project knowledge (conventions, decisions, ` +
+    `discoveries, references, fixes, postmortems) goes to Mneme via ` +
+    "`/mneme:memory <text>`, or `/mneme:pin <text>` for always-surface rules. " +
+    "Local auto-memory at `~/.claude/projects/.../memory/` is per-machine; " +
+    `reserve it for behavioral preferences about how the user collaborates ` +
+    `(tone, response style, harness quirks).\n\n`;
   return reminder + strippedSurface;
 }
 
