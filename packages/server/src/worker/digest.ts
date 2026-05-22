@@ -104,27 +104,38 @@ export async function selectDigestClusterWindow(limit: number): Promise<string[]
   return rows.map((r) => r.id);
 }
 
-export async function findMergePairs(): Promise<MergePairRow[]> {
-  // (a.id < b.id) bound dedups (A,B) vs (B,A). repo IS NOT DISTINCT
-  // FROM matches NULL-to-NULL (two no-repo clusters), unlike =. Excludes
-  // already-superseded clusters so we don't keep proposing the same
-  // merges every cycle.
-  return (await sql<MergePairRow[]>`
+/** Merge-pair candidates: cluster pairs at cosine < DIGEST_MERGE_DISTANCE
+ *  where side `a` is in this cycle's round-robin window. Side `b` is any
+ *  non-superseded cluster, so a stale-window cluster still pairs with a
+ *  fresh one. Unordered pairs are de-duplicated in TS because the
+ *  windowed scan cannot use the old `b.id > a.id` trick. */
+export async function findMergePairs(windowIds: string[]): Promise<MergePairRow[]> {
+  if (windowIds.length === 0) return [];
+  const rows = (await sql<MergePairRow[]>`
     SELECT a.id::text AS a_id, b.id::text AS b_id
     FROM memories a
     JOIN memories b
-      ON b.id > a.id
+      ON b.id <> a.id
         AND b.kind = 'cluster' AND b.archived_at IS NULL
         AND b.embedding IS NOT NULL
         AND b.repo IS NOT DISTINCT FROM a.repo
         AND (b.meta->>'superseded_by') IS NULL
         AND a.embedding <=> b.embedding < ${DIGEST_MERGE_DISTANCE}
-    WHERE a.kind = 'cluster' AND a.archived_at IS NULL
+    WHERE a.id = ANY(${windowIds})
       AND a.embedding IS NOT NULL
-      AND (a.meta->>'superseded_by') IS NULL
     ORDER BY a.embedding <=> b.embedding ASC
     LIMIT ${DIGEST_MAX_MERGE_PAIRS}
   `) as MergePairRow[];
+
+  const seen = new Set<string>();
+  const deduped: MergePairRow[] = [];
+  for (const r of rows) {
+    const key = [r.a_id, r.b_id].sort().join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(r);
+  }
+  return deduped;
 }
 
 export async function loadCluster(id: string): Promise<ClusterRow | null> {
@@ -256,7 +267,8 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
   const findSupersedes = dr.findSupersedes;
 
   // ─── Operation 1: cluster merge ─────────────────────────────────
-  const mergePairs = await findMergePairs();
+  const mergeWindow = await selectDigestClusterWindow(DIGEST_MERGE_WINDOW);
+  const mergePairs = await findMergePairs(mergeWindow);
   let mergesApplied = 0;
   for (const pair of mergePairs) {
     const a = await loadCluster(pair.a_id);
@@ -311,6 +323,10 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
       });
     }
   }
+
+  // Stamp every cluster in this cycle's window, merged or not, so the
+  // next cycle advances to the next-stalest clusters.
+  await stampDigested(mergeWindow);
 
   // ─── Operation 2: cross-cluster supersede ──────────────────────
   const candidates = await findCrossClusterSupersedeCandidates();
