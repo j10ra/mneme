@@ -320,7 +320,8 @@ function ForceButton({ worker }: { worker: string }) {
     try {
       await apiPost(`/worker/${worker}/run`);
       setPhase("done");
-    } catch {
+    } catch (err) {
+      console.error(`[ForceButton] ${worker} run failed`, err);
       setPhase("error");
     }
   };
