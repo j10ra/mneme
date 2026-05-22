@@ -86,7 +86,7 @@ type ClusterRow = {
   member_ids: string[];
 };
 
-async function findMergePairs(): Promise<MergePairRow[]> {
+export async function findMergePairs(): Promise<MergePairRow[]> {
   // (a.id < b.id) bound dedups (A,B) vs (B,A). repo IS NOT DISTINCT
   // FROM matches NULL-to-NULL (two no-repo clusters), unlike =. Excludes
   // already-superseded clusters so we don't keep proposing the same
@@ -109,7 +109,7 @@ async function findMergePairs(): Promise<MergePairRow[]> {
   `) as MergePairRow[];
 }
 
-async function loadCluster(id: string): Promise<ClusterRow | null> {
+export async function loadCluster(id: string): Promise<ClusterRow | null> {
   const rows = (await sql<ClusterRow[]>`
     SELECT
       id::text AS id,
@@ -158,7 +158,7 @@ type CrossClusterCandidateRow = {
   created_at: Date;
 };
 
-async function findCrossClusterSupersedeCandidates(): Promise<CrossClusterCandidateRow[]> {
+export async function findCrossClusterSupersedeCandidates(): Promise<CrossClusterCandidateRow[]> {
   // Pull memories that have at least one cosine-near neighbour in a
   // DIFFERENT cluster. Returns the union of both sides — the LLM scans
   // the batch for actual supersede pairs (existing prompt expects a
@@ -199,6 +199,19 @@ async function applySupersede(oldId: string, newId: string): Promise<boolean> {
       AND (meta->>'superseded_by') IS NULL
   `;
   return r.count > 0;
+}
+
+/** Stamp meta.last_digested_at = now() on the given ids. Used for both
+ *  digest operations -- Op1 stamps cluster rows, Op2 stamps member rows
+ *  -- so each cycle's round-robin advances past the rows it considered. */
+export async function stampDigested(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql`
+    UPDATE memories
+    SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb),
+                         '{last_digested_at}', to_jsonb(now()::text))
+    WHERE id = ANY(${ids})
+  `;
 }
 
 function chunk<T>(arr: T[], n: number): T[][] {
