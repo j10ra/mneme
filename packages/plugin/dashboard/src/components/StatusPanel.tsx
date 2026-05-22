@@ -3,12 +3,13 @@
 
 import { CircleAlert, Moon, Activity } from "lucide-react";
 import { useEffect, useState } from "react";
-import { ApiError, apiGet } from "../lib/api.ts";
+import { ApiError, apiGet, apiPost } from "../lib/api.ts";
 import { cn } from "../lib/cn.ts";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert.tsx";
 import { Badge } from "./ui/badge.tsx";
 import { Card, CardDescription, CardHeader, CardTitle } from "./ui/card.tsx";
 import { Skeleton } from "./ui/skeleton.tsx";
+import { Button } from "./ui/button.tsx";
 
 type WorkerRow = {
   name: string;
@@ -258,6 +259,7 @@ function StatusContent({
               {data.dream.stuck} stuck &gt; 30m
             </Badge>
           )}
+          <ForceButton worker="dream" />
         </div>
       </div>
 
@@ -283,6 +285,7 @@ function StatusContent({
 
 function WorkerRowItem({ w }: { w: WorkerRow }) {
   const status = w.last_status ?? "ok";
+  const forceable = w.name === "nap" || w.name === "digest";
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
       <div className="flex min-w-0 items-center gap-3">
@@ -302,8 +305,43 @@ function WorkerRowItem({ w }: { w: WorkerRow }) {
         <span className="whitespace-nowrap">
           next in {fmtAge(Math.max(0, new Date(w.next_run_at).getTime() - Date.now()))}
         </span>
+        {forceable && <ForceButton worker={w.name} />}
       </div>
     </div>
+  );
+}
+
+// Force-run button. Posts to /dashboard/api/worker/<worker>/run and
+// shows the outcome; the panel's 30s poll reflects the actual run.
+function ForceButton({ worker }: { worker: string }) {
+  const [phase, setPhase] = useState<"idle" | "busy" | "done" | "error">("idle");
+  const onClick = async () => {
+    setPhase("busy");
+    try {
+      await apiPost(`/worker/${worker}/run`);
+      setPhase("done");
+    } catch (err) {
+      console.error(`[ForceButton] ${worker} run failed`, err);
+      setPhase("error");
+    }
+  };
+  const label =
+    phase === "busy"
+      ? "running"
+      : phase === "done"
+        ? "queued"
+        : phase === "error"
+          ? "failed"
+          : "run now";
+  return (
+    <Button
+      size="xs"
+      variant={phase === "error" ? "secondary" : "ghost"}
+      disabled={phase === "busy"}
+      onClick={onClick}
+    >
+      {label}
+    </Button>
   );
 }
 

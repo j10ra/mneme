@@ -186,6 +186,12 @@ export const DIGEST_MERGE_DISTANCE = 0.1;
  *  many fresh clusters cover overlapping topics. */
 export const DIGEST_MAX_MERGE_PAIRS = 20;
 
+/** How many clusters one digest cycle pulls into its merge round-robin,
+ *  least-recently-digested first. Every cluster in the window is stamped
+ *  meta.last_digested_at, so the cluster set is fully woven over a few
+ *  cycles regardless of how large the cluster population grows. */
+export const DIGEST_MERGE_WINDOW = 100;
+
 /** Max cross-cluster supersede candidate memories pulled per cycle.
  *  Each batch of SUPERSEDE_LLM_BATCH_MAX_MEMBERS goes to one Sonnet
  *  call. 200 candidates ≈ 7 batches ≈ 7 LLM calls per cycle. */

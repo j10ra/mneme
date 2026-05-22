@@ -60,6 +60,7 @@ import {
   DIGEST_MAX_MERGE_PAIRS,
   DIGEST_MAX_SUPERSEDE_CANDIDATES,
   DIGEST_MERGE_DISTANCE,
+  DIGEST_MERGE_WINDOW,
   SUPERSEDE_LLM_ADJACENT_COSINE_MAX,
   SUPERSEDE_LLM_BATCH_MAX_MEMBERS,
 } from "../infra/config.ts";
@@ -86,30 +87,76 @@ type ClusterRow = {
   member_ids: string[];
 };
 
-async function findMergePairs(): Promise<MergePairRow[]> {
-  // (a.id < b.id) bound dedups (A,B) vs (B,A). repo IS NOT DISTINCT
-  // FROM matches NULL-to-NULL (two no-repo clusters), unlike =. Excludes
-  // already-superseded clusters so we don't keep proposing the same
-  // merges every cycle.
-  return (await sql<MergePairRow[]>`
+/** The merge round-robin window: the DIGEST_MERGE_WINDOW
+ *  least-recently-digested non-superseded clusters. No embedding filter
+ *  -- a null-embedding cluster simply yields no merge pairs and is still
+ *  stamped, which is correct. */
+export async function selectDigestClusterWindow(limit: number): Promise<string[]> {
+  const rows = await sql<{ id: string }[]>`
+    SELECT id::text AS id
+    FROM memories
+    WHERE kind = 'cluster'
+      AND archived_at IS NULL
+      AND (meta->>'superseded_by') IS NULL
+    ORDER BY meta->>'last_digested_at' NULLS FIRST, created_at ASC
+    LIMIT ${limit}
+  `;
+  return rows.map((r) => r.id);
+}
+
+/** Collapse mirrored pairs: when both clusters of an unordered pair are
+ *  in the window, the scan returns both (A,B) and (B,A). Keyed on the
+ *  sorted id pair, first occurrence wins. Pure -- unit-tested directly. */
+export function dedupePairs(rows: MergePairRow[]): MergePairRow[] {
+  const seen = new Set<string>();
+  const deduped: MergePairRow[] = [];
+  for (const r of rows) {
+    const key = [r.a_id, r.b_id].sort().join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(r);
+  }
+  return deduped;
+}
+
+/** Merge-pair candidates: cluster pairs at cosine < DIGEST_MERGE_DISTANCE
+ *  where side `a` is in this cycle's round-robin window. Side `b` is any
+ *  non-superseded cluster with a non-null embedding, so a stale-window
+ *  cluster still pairs with a fresh one. Unordered pairs are
+ *  de-duplicated in TS because the windowed scan cannot use the old
+ *  `b.id > a.id` trick. DIGEST_MAX_MERGE_PAIRS caps the SQL result
+ *  pre-dedup, so the deduped count can be lower. */
+export async function findMergePairs(windowIds: string[]): Promise<MergePairRow[]> {
+  if (windowIds.length === 0) return [];
+  const rows = (await sql<MergePairRow[]>`
     SELECT a.id::text AS a_id, b.id::text AS b_id
     FROM memories a
     JOIN memories b
-      ON b.id > a.id
+      ON b.id <> a.id
         AND b.kind = 'cluster' AND b.archived_at IS NULL
         AND b.embedding IS NOT NULL
         AND b.repo IS NOT DISTINCT FROM a.repo
         AND (b.meta->>'superseded_by') IS NULL
         AND a.embedding <=> b.embedding < ${DIGEST_MERGE_DISTANCE}
-    WHERE a.kind = 'cluster' AND a.archived_at IS NULL
+    WHERE a.id = ANY(${windowIds})
       AND a.embedding IS NOT NULL
-      AND (a.meta->>'superseded_by') IS NULL
     ORDER BY a.embedding <=> b.embedding ASC
     LIMIT ${DIGEST_MAX_MERGE_PAIRS}
   `) as MergePairRow[];
+
+  return dedupePairs(rows);
 }
 
-async function loadCluster(id: string): Promise<ClusterRow | null> {
+/** Load a cluster row by id. Returns null if the cluster does not exist,
+ *  is archived, or has already been superseded.
+ *
+ *  The superseded guard is critical for merge-loop correctness: within one
+ *  digest cycle, a cluster can be marked superseded by an earlier merge.
+ *  Without this filter, that dead cluster could still be loaded and chosen
+ *  as a merge winner, stranding the loser's members on a dead cluster.
+ *  The merge loop's existing `if (!a || !b) continue` then skips the pair
+ *  cleanly, and the still-valid merge is re-evaluated in the next cycle. */
+export async function loadCluster(id: string): Promise<ClusterRow | null> {
   const rows = (await sql<ClusterRow[]>`
     SELECT
       id::text AS id,
@@ -122,6 +169,7 @@ async function loadCluster(id: string): Promise<ClusterRow | null> {
       ) AS member_ids
     FROM memories
     WHERE id = ${id} AND kind = 'cluster' AND archived_at IS NULL
+      AND (meta->>'superseded_by') IS NULL
     LIMIT 1
   `) as ClusterRow[];
   return rows[0] ?? null;
@@ -156,9 +204,12 @@ type CrossClusterCandidateRow = {
   kind: Kind;
   content: string;
   created_at: Date;
+  // Unread by callers; present only because SELECT DISTINCT requires
+  // every ORDER BY expression to appear in the select list.
+  last_digested_at: string | null;
 };
 
-async function findCrossClusterSupersedeCandidates(): Promise<CrossClusterCandidateRow[]> {
+export async function findCrossClusterSupersedeCandidates(): Promise<CrossClusterCandidateRow[]> {
   // Pull memories that have at least one cosine-near neighbour in a
   // DIFFERENT cluster. Returns the union of both sides — the LLM scans
   // the batch for actual supersede pairs (existing prompt expects a
@@ -169,7 +220,8 @@ async function findCrossClusterSupersedeCandidates(): Promise<CrossClusterCandid
       a.id::text AS id,
       a.kind::text AS kind,
       a.content,
-      a.created_at
+      a.created_at,
+      a.meta->>'last_digested_at' AS last_digested_at
     FROM memories a
     JOIN memories b
       ON b.archived_at IS NULL
@@ -187,6 +239,7 @@ async function findCrossClusterSupersedeCandidates(): Promise<CrossClusterCandid
       AND (a.meta->>'in_cluster') IS NOT NULL
       AND (a.meta->>'superseded_by') IS NULL
       AND NOT COALESCE((a.meta->>'pinned')::boolean, false)
+    ORDER BY a.meta->>'last_digested_at' NULLS FIRST, a.created_at ASC
     LIMIT ${DIGEST_MAX_SUPERSEDE_CANDIDATES}
   `) as CrossClusterCandidateRow[];
 }
@@ -199,6 +252,19 @@ async function applySupersede(oldId: string, newId: string): Promise<boolean> {
       AND (meta->>'superseded_by') IS NULL
   `;
   return r.count > 0;
+}
+
+/** Stamp meta.last_digested_at = now() on the given ids. Used for both
+ *  digest operations -- Op1 stamps cluster rows, Op2 stamps member rows
+ *  -- so each cycle's round-robin advances past the rows it considered. */
+export async function stampDigested(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql`
+    UPDATE memories
+    SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb),
+                         '{last_digested_at}', to_jsonb(now()::text))
+    WHERE id = ANY(${ids})
+  `;
 }
 
 function chunk<T>(arr: T[], n: number): T[][] {
@@ -225,7 +291,8 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
   const findSupersedes = dr.findSupersedes;
 
   // ─── Operation 1: cluster merge ─────────────────────────────────
-  const mergePairs = await findMergePairs();
+  const mergeWindow = await selectDigestClusterWindow(DIGEST_MERGE_WINDOW);
+  const mergePairs = await findMergePairs(mergeWindow);
   let mergesApplied = 0;
   for (const pair of mergePairs) {
     const a = await loadCluster(pair.a_id);
@@ -281,6 +348,10 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
     }
   }
 
+  // Stamp every cluster in this cycle's window, merged or not, so the
+  // next cycle advances to the next-stalest clusters.
+  await stampDigested(mergeWindow);
+
   // ─── Operation 2: cross-cluster supersede ──────────────────────
   const candidates = await findCrossClusterSupersedeCandidates();
   let supersedesApplied = 0;
@@ -328,6 +399,10 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
       }
     }
   }
+
+  // Stamp every candidate considered this cycle so the next cycle's
+  // watermark-ordered scan advances to the next-stalest member rows.
+  await stampDigested(candidates.map((c) => c.id));
 
   const result: DigestResult = {
     merge_pairs_evaluated: mergePairs.length,

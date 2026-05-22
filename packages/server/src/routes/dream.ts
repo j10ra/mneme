@@ -27,11 +27,12 @@ import { EMBEDDER_DIM } from "../embedder/index.ts";
 // HNSW lookups against memories.embedding take ~50ms per probe in
 // practice (the index is global; per-repo filtering forces deep
 // traversal). Without a cap, a fresh fleet with thousands of
-// never-clustered memories blows past Railway's gateway timeout. The
-// architecture's intent is "recent (last 7d) OR never-processed", so
-// we order by created_at DESC and cap. Multiple dream cycles drain
-// the inaugural backlog; steady state (~50 new memories/day) is
-// always far below this limit.
+// never-clustered memories blows past Railway's gateway timeout.
+// fetchDreamCandidates orders seeds by the meta.last_dreamed_at
+// watermark (NULLS FIRST), so each cycle takes the least-recently-
+// dreamed slice and stamps it; successive cycles round-robin the whole
+// corpus rather than re-scanning the newest rows. This cap bounds one
+// slice; a full sweep spans ceil(corpus / cap) cycles.
 const DREAM_MAX_CANDIDATES_PER_CYCLE = 500;
 
 export type DreamLockResult =
@@ -117,6 +118,14 @@ type EdgeRow = {
   created_at: Date;
 };
 
+type NeighborRow = {
+  id: string;
+  repo: string | null;
+  content: string;
+  kind: string;
+  created_at: Date;
+};
+
 export type DreamCandidates = {
   window_key: number;
   repos: Record<
@@ -133,28 +142,60 @@ export type DreamCandidates = {
   >;
 };
 
+/** Build the per-repo candidate map from the seed+edge scan rows plus
+ *  the separately-fetched neighbor rows. Seeds and neighbors both land
+ *  in `seeds` (the daemon treats every entry as a cluster-eligible
+ *  node); the field keeps its name for wire compatibility with
+ *  already-deployed daemons. Pure -- no DB access. */
+export function assembleRepos(
+  edgeRows: EdgeRow[],
+  neighborRows: NeighborRow[],
+): DreamCandidates["repos"] {
+  const repos: DreamCandidates["repos"] = {};
+  const seen = new Set<string>();
+
+  const addMemory = (
+    repoKey: string,
+    m: { id: string; content: string; kind: string; created_at: Date },
+  ): void => {
+    repos[repoKey] ??= { seeds: [], edges: [] };
+    if (seen.has(m.id)) return;
+    repos[repoKey]!.seeds.push({
+      id: m.id,
+      content: m.content,
+      kind: m.kind,
+      created_at: m.created_at.toISOString(),
+    });
+    seen.add(m.id);
+  };
+
+  for (const row of edgeRows) {
+    const repoKey = row.repo ?? "__none__";
+    addMemory(repoKey, row);
+    if (row.neighbor_id) {
+      repos[repoKey]!.edges.push([row.id, row.neighbor_id]);
+    }
+  }
+  for (const n of neighborRows) {
+    addMemory(n.repo ?? "__none__", n);
+  }
+  return repos;
+}
+
 export async function fetchDreamCandidates(
   windowKey: number,
   machineId: string,
-): Promise<DreamCandidates> {
-  // Same WHERE clause applied twice (outer scan + inner LATERAL). We
-  // intentionally do NOT use a CTE here: a materialized CTE would
-  // hide the embedding column from pgvector's HNSW planner, forcing
-  // a full O(N^2) cosine scan that times out at Railway's gateway
-  // for any meaningful candidate set. Inlined predicates let the
-  // LATERAL's `ORDER BY embedding <=> ...` use the HNSW index on
-  // memories.embedding, which is what makes this query tractable
-  // even with thousands of candidates.
+): Promise<{ candidates: DreamCandidates; seedIds: string[] }> {
+  // Inlined predicates (no CTE materialization) keep pgvector's HNSW
+  // index usable on the LATERAL's cosine ORDER BY -- see git history
+  // for why a materialized CTE times out at Railway's gateway.
   //
-  // Privacy filter: caller sees public rows + their own private rows.
-  // Other machines' privates stay invisible.
-  const rows = await sql<EdgeRow[]>`
+  // Seed selection is now a round-robin: least-recently-dreamed rows
+  // first (NULLS FIRST drains never-dreamed rows), so every memory is
+  // eventually a seed regardless of age. Backed by
+  // memories_last_dreamed_at_idx (migration 0027).
+  const edgeRows = await sql<EdgeRow[]>`
     WITH seeds AS (
-      -- Outer scan picks at most DREAM_MAX_CANDIDATES_PER_CYCLE rows,
-      -- newest first. Every dream cycle works through this many
-      -- previously-unclustered memories; subsequent cycles process
-      -- the next 500 + the day's new arrivals. The inaugural backlog
-      -- drains over ~10 cycles for a fresh deployment.
       SELECT id, repo, embedding, content, kind, created_at
       FROM memories
       WHERE archived_at IS NULL
@@ -165,7 +206,7 @@ export async function fetchDreamCandidates(
         AND (meta->>'shadow_of') IS NULL
         AND (meta->>'superseded_by') IS NULL
         AND (meta->>'in_cluster') IS NULL
-      ORDER BY created_at DESC
+      ORDER BY meta->>'last_dreamed_at' NULLS FIRST, created_at ASC
       LIMIT ${DREAM_MAX_CANDIDATES_PER_CYCLE}
     )
     SELECT
@@ -173,9 +214,6 @@ export async function fetchDreamCandidates(
       n.neighbor_id
     FROM seeds s
     LEFT JOIN LATERAL (
-      -- Inner LATERAL still hits memories directly so HNSW is usable
-      -- on the cosine ORDER BY. The repo predicate is a hard filter
-      -- so HNSW oversamples and we drop non-matching neighbors.
       SELECT m.id AS neighbor_id
       FROM memories m
       WHERE m.archived_at IS NULL
@@ -194,28 +232,46 @@ export async function fetchDreamCandidates(
     ) n ON true
   `;
 
-  const repos: DreamCandidates["repos"] = {};
-  const seenSeed = new Set<string>();
+  const seedIds = [...new Set(edgeRows.map((r) => r.id))];
+  const seedIdSet = new Set(seedIds);
+  const neighborIds = [
+    ...new Set(
+      edgeRows
+        .map((r) => r.neighbor_id)
+        .filter((nid): nid is string => nid !== null && !seedIdSet.has(nid)),
+    ),
+  ];
 
-  for (const row of rows) {
-    const repoKey = row.repo ?? "__none__";
-    repos[repoKey] ??= { seeds: [], edges: [] };
-    if (!seenSeed.has(row.id)) {
-      repos[repoKey]!.seeds.push({
-        id: row.id,
-        content: row.content,
-        kind: row.kind,
-        created_at:
-          row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
-      });
-      seenSeed.add(row.id);
-    }
-    if (row.neighbor_id) {
-      repos[repoKey]!.edges.push([row.id, row.neighbor_id]);
-    }
-  }
+  // Neighbors that are not themselves seeds still need full content so
+  // the daemon can distill a cluster that includes them. One extra
+  // fetch by id -- the LATERAL already applied every eligibility filter.
+  const neighborRows = neighborIds.length
+    ? await sql<NeighborRow[]>`
+        SELECT id, repo, content, kind, created_at
+        FROM memories
+        WHERE id = ANY(${neighborIds})
+      `
+    : [];
 
-  return { window_key: windowKey, repos };
+  return {
+    candidates: { window_key: windowKey, repos: assembleRepos(edgeRows, neighborRows) },
+    seedIds,
+  };
+}
+
+/** Stamp meta.last_dreamed_at = now() on the given seed ids. Called by
+ *  the candidates route once per dream cycle so the next cycle's
+ *  watermark-ordered seed selection advances past these rows. Stamping
+ *  at fetch time (not cluster-write time) is crash-safe: a daemon that
+ *  dies mid-cycle does not lose the stamp. */
+export async function stampDreamedSeeds(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql`
+    UPDATE memories
+    SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb),
+                         '{last_dreamed_at}', to_jsonb(now()::text))
+    WHERE id = ANY(${ids})
+  `;
 }
 
 type ClusterSubmission = {
@@ -488,7 +544,8 @@ export function mountDreamRoutes(app: Hono): void {
       ) {
         return c.json({ error: "lock not held by caller" }, 403);
       }
-      const candidates = await fetchDreamCandidates(windowKey, auth.machineId);
+      const { candidates, seedIds } = await fetchDreamCandidates(windowKey, auth.machineId);
+      await stampDreamedSeeds(seedIds);
       return c.json(candidates);
     },
   );
