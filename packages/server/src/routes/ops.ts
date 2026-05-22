@@ -25,6 +25,17 @@ import { inspectBreakers } from "../llm/pick.ts";
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
 const DREAM_STUCK_AFTER_MS = 30 * 60 * 1000;
 
+// Workers the dashboard may force-run. dream is excluded -- it runs on
+// the daemon, not the server scheduler. keepalive / prune are not
+// operator-facing.
+const FORCEABLE_WORKERS = ["nap", "digest"] as const;
+
+/** True when `name` is a server-scheduled worker the force endpoint
+ *  will accept. Pure -- the route uses it to reject unknown names. */
+export function isForceableWorker(name: string): boolean {
+  return (FORCEABLE_WORKERS as readonly string[]).includes(name);
+}
+
 type WorkerRow = {
   job_name: string;
   schedule_ms: string | number;
