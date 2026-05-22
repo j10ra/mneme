@@ -259,7 +259,11 @@ function StatusContent({
               {data.dream.stuck} stuck &gt; 30m
             </Badge>
           )}
-          <ForceButton worker="dream" lastRunAt={data.dream.last_window_at} />
+          <ForceButton
+            worker="dream"
+            lastRunAt={data.dream.last_window_at}
+            serverPending={data.dream.in_flight > 0}
+          />
         </div>
       </div>
 
@@ -305,22 +309,38 @@ function WorkerRowItem({ w }: { w: WorkerRow }) {
         <span className="whitespace-nowrap">
           next in {fmtAge(Math.max(0, new Date(w.next_run_at).getTime() - Date.now()))}
         </span>
-        {forceable && <ForceButton worker={w.name} lastRunAt={w.last_run_at} />}
+        {forceable && (
+          <ForceButton
+            worker={w.name}
+            lastRunAt={w.last_run_at}
+            serverPending={w.last_status === null}
+          />
+        )}
       </div>
     </div>
   );
 }
 
-// Force-run button. Posts to /dashboard/api/worker/<worker>/run, then
-// stays disabled until the panel's 30s poll reports a `lastRunAt`
-// strictly newer than the click time. That blocks re-fires while a
-// cycle is in flight (forced dream cycles can run for minutes) and
-// auto-reverts to "run now" on the next poll without a manual refresh.
-function ForceButton({ worker, lastRunAt }: { worker: string; lastRunAt: string | null }) {
+// Force-run button. Disabled while the worker is pending. "Pending"
+// has two sources: the panel's polled server data (last_status === null
+// for nap/digest, in_flight > 0 for dream), which survives a browser
+// refresh; and a local clickedAt > lastRunAt fallback that covers the
+// brief gap between the POST returning and the next 30s poll. Either
+// signal keeps the button disabled.
+function ForceButton({
+  worker,
+  lastRunAt,
+  serverPending,
+}: {
+  worker: string;
+  lastRunAt: string | null;
+  serverPending: boolean;
+}) {
   const [clickedAt, setClickedAt] = useState<number | null>(null);
   const [errored, setErrored] = useState(false);
   const lastRunMs = lastRunAt ? new Date(lastRunAt).getTime() : 0;
-  const pending = clickedAt !== null && lastRunMs < clickedAt;
+  const localPending = clickedAt !== null && lastRunMs < clickedAt;
+  const pending = serverPending || localPending;
   const onClick = async () => {
     setErrored(false);
     setClickedAt(Date.now());
