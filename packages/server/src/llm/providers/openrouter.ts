@@ -2,7 +2,7 @@
 // openrouter.ai/api/v1. The server's only LLM surface is digest's two
 // judgments: findSupersedes (Op2 cross-cluster supersede) and
 // judgeClusterMerge (Op1 cluster merge). Both run against
-// OPENROUTER_DREAM_MODEL (typically anthropic/claude-sonnet-4).
+// OPENROUTER_DIGEST_MODEL (typically anthropic/claude-sonnet-4).
 //
 // Note on response_format: Anthropic models don't have a json_object
 // flag in their native API, but OpenRouter layers prompt-engineered
@@ -15,7 +15,7 @@ import { CLUSTER_MERGE_PROMPT, SUPERSEDE_PROMPT } from "../prompt.ts";
 import {
   type ClusterMergeJudgment,
   type ClusterSummary,
-  type DreamLimits,
+  type DigestLimits,
   type SupersedeCandidate,
   type SupersedePair,
 } from "../types.ts";
@@ -87,7 +87,7 @@ function authHeaders(): Record<string, string> {
  *  well and digest is a background batch job that benefits from rich
  *  cluster context. Real ceiling is the provider context window
  *  (~200K on Sonnet 4), so these values are well inside the budget. */
-export const dreamLimits: DreamLimits = {
+export const digestLimits: DigestLimits = {
   maxClusterChars: 40000,
   maxOutputTokens: 4096,
   temperature: 0.3,
@@ -96,12 +96,12 @@ export const dreamLimits: DreamLimits = {
 // Recorded into memories.meta.distiller_model so each digest-touched
 // cluster carries the model that judged it. Picks up env overrides so
 // a model swap (e.g. Sonnet 4 → GPT-5) is reflected without a code change.
-export const dreamModel = env.OPENROUTER_DREAM_MODEL;
+export const digestModel = env.OPENROUTER_DIGEST_MODEL;
 
-/** Cloud-only supersede detection. Same wire shape as distillCluster
- *  (SSE, json_object) but a different prompt + simpler validation.
- *  Caller in dream.ts validates returned pairs against the candidate
- *  set and the chronology check; this function trusts the JSON arrived. */
+/** Cross-cluster supersede detection (digest Op2). SSE + json_object
+ *  wire shape; the caller in worker/digest.ts validates returned pairs
+ *  against the candidate set and the chronology check before applying,
+ *  so this function trusts that the JSON arrived intact. */
 export const findSupersedes = mnemeFn(
   "llm.openrouter.supersede",
   async (candidates: SupersedeCandidate[]): Promise<SupersedePair[]> => {
@@ -118,7 +118,7 @@ export const findSupersedes = mnemeFn(
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({
-        model: env.OPENROUTER_DREAM_MODEL,
+        model: env.OPENROUTER_DIGEST_MODEL,
         // Tighter than distill — supersede should be conservative;
         // creative reasoning here would invent contradictions.
         temperature: 0.1,
@@ -137,7 +137,7 @@ export const findSupersedes = mnemeFn(
     Logger.info("llm.openrouter.supersede: response", {
       status: resp.status,
       candidates: candidates.length,
-      model: env.OPENROUTER_DREAM_MODEL,
+      model: env.OPENROUTER_DIGEST_MODEL,
     });
 
     if (!resp.ok) {
@@ -186,7 +186,7 @@ export const judgeClusterMerge = mnemeFn(
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({
-        model: env.OPENROUTER_DREAM_MODEL,
+        model: env.OPENROUTER_DIGEST_MODEL,
         // Same low-creativity setting as supersede — we want
         // conservative judgment, not invention.
         temperature: 0.1,
@@ -203,7 +203,7 @@ export const judgeClusterMerge = mnemeFn(
 
     Logger.info("llm.openrouter.merge: response", {
       status: resp.status,
-      model: env.OPENROUTER_DREAM_MODEL,
+      model: env.OPENROUTER_DIGEST_MODEL,
     });
 
     if (!resp.ok) {

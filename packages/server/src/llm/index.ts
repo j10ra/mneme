@@ -4,7 +4,7 @@
 
 export {
   KINDS,
-  type DreamLimits,
+  type DigestLimits,
   type Kind,
   type LLMProvider,
   type SupersedeCandidate,

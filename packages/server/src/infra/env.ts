@@ -30,7 +30,7 @@ const Schema = z.object({
   // provider exists — extract and distill moved to the per-machine daemon
   // entirely in 1.1.63.
   OPENROUTER_API_KEY: z.string().optional(),
-  OPENROUTER_DREAM_MODEL: z.string().default("anthropic/claude-sonnet-4"),
+  OPENROUTER_DIGEST_MODEL: z.string().default("anthropic/claude-sonnet-4"),
   OPENROUTER_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
 
   // ── Worker toggles ────────────────────────────────────────────────

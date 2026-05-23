@@ -1,7 +1,7 @@
 // Tuning knobs. Numbers and strings only — no env reads (those live in
-// env.ts). Per-provider `extractLimits` / `dreamLimits` stay with their
-// providers because they describe wire-shape contract (context window,
-// streaming behaviour) rather than tuning.
+// env.ts). Per-provider `digestLimits` stays with its provider because
+// it describes wire-shape contract (context window, streaming behaviour)
+// rather than tuning.
 //
 // Group by subsystem. New knob? Add it here, not at the top of a worker.
 // When a knob graduates to "operator wants to tune at runtime", it can

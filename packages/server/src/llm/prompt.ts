@@ -4,11 +4,11 @@
 // packages/server/src/llm/providers/openrouter.ts.
 
 // Cluster-merge judgment prompt — used by the digest worker (#30).
-// Input is two cluster summaries (each is itself the distilled output of a
-// dream cycle's clustering pass). Output is a same/different judgment.
-// Conservative by default: a wrong "merge" is hard to undo (members get
-// re-pointed, the loser cluster gets superseded), while a wrong "keep
-// separate" is benign and re-evaluated next digest cycle.
+// Input is two cluster summaries (each is itself the distilled output of
+// a daemon-side dream clustering pass). Output is a same/different
+// judgment. Conservative by default: a wrong "merge" is hard to undo
+// (members get re-pointed, the loser cluster gets superseded), while a
+// wrong "keep separate" is benign and re-evaluated next digest cycle.
 export const CLUSTER_MERGE_PROMPT = `You are reviewing two memory clusters to decide if they cover the same underlying topic and should be merged into one.
 
 Each cluster is a distillation of multiple memories. The TITLE names the topic; the SUMMARY explains it.
@@ -29,10 +29,10 @@ When in doubt, prefer false. Conservative judgment is correct here — re-mergin
 
 Output only the JSON object. No prose, no markdown, no commentary.`;
 
-// Supersede detection prompt — used by the dream worker after distillation
-// to identify which (if any) of a cluster's members + adjacent neighbors
-// are superseded by which. Only ever called against a strong model
-// (Sonnet via OpenRouter); the picker skips this step on local 7B/3B
+// Supersede detection prompt — used by digest's Op2 (cross-cluster
+// supersede pass) to identify which (if any) of a candidate set of
+// memories pulled across different clusters are superseded by which.
+// Only ever called against a strong model (Sonnet via OpenRouter)
 // because the cost of a wrong "this is obsolete" call is high.
 export const SUPERSEDE_PROMPT = `You are reviewing memory observations to find supersede relationships.
 

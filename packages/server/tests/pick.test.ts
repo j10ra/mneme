@@ -17,30 +17,30 @@ mock.module("../src/llm/providers/openrouter.ts", () => ({
     if (orState.fail) throw new Error("openrouter merge failed");
     return { same_topic: false, reason: "stub" };
   },
-  dreamLimits: { maxClusterChars: 1, maxOutputTokens: 1, temperature: 0 },
-  dreamModel: "or-dream",
+  digestLimits: { maxClusterChars: 1, maxOutputTokens: 1, temperature: 0 },
+  digestModel: "or-dream",
 }));
 
 const HAS_OR = Boolean(process.env.OPENROUTER_API_KEY);
 
-const { pickDream, inspectBreakers } = await import("../src/llm/pick.ts");
+const { pickDigest, inspectBreakers } = await import("../src/llm/pick.ts");
 
-describe("pickDream — instance shape", () => {
-  test("returns DreamInstance with name, limits, model", () => {
-    const dr = pickDream();
+describe("pickDigest — instance shape", () => {
+  test("returns DigestInstance with name, limits, model", () => {
+    const dr = pickDigest();
     expect(dr.name).toBe("openrouter");
     expect(dr.limits).toBeDefined();
     expect(dr.model).toBe("or-dream");
   });
 
   test.skipIf(!HAS_OR)("findSupersedes + judgeClusterMerge present when key is set", () => {
-    const dr = pickDream();
+    const dr = pickDigest();
     expect(typeof dr.findSupersedes).toBe("function");
     expect(typeof dr.judgeClusterMerge).toBe("function");
   });
 
   test.skipIf(HAS_OR)("findSupersedes + judgeClusterMerge hidden when key is missing", () => {
-    const dr = pickDream();
+    const dr = pickDigest();
     expect(dr.findSupersedes).toBeUndefined();
     expect(dr.judgeClusterMerge).toBeUndefined();
   });
@@ -59,9 +59,9 @@ describe.skipIf(!HAS_OR)("wrapper feeds the breaker on failure", () => {
     orState.fail = false;
     // Establish a baseline success first so this test doesn't inherit
     // failures from an earlier run in the same process.
-    await pickDream().findSupersedes?.([]);
+    await pickDigest().findSupersedes?.([]);
     orState.fail = true;
-    const dr = pickDream();
+    const dr = pickDigest();
     await expect(dr.findSupersedes?.([])).rejects.toThrow(/openrouter supersede failed/);
     orState.fail = false;
   });

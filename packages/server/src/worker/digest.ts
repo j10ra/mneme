@@ -66,7 +66,7 @@ import {
 } from "../infra/config.ts";
 import { sql } from "../infra/db.ts";
 import { validateSupersedePairs } from "../lib/supersede.ts";
-import { pickDream } from "../llm/pick.ts";
+import { pickDigest } from "../llm/pick.ts";
 import type { Kind, SupersedeCandidate, SupersedePair } from "../llm/types.ts";
 
 export type DigestResult = {
@@ -274,7 +274,7 @@ function chunk<T>(arr: T[], n: number): T[][] {
 }
 
 export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<DigestResult> => {
-  const dr = pickDream();
+  const dr = pickDigest();
   if (!dr.judgeClusterMerge || !dr.findSupersedes) {
     Logger.info("digest: skipped (provider lacks judgeClusterMerge or findSupersedes)", {
       provider: dr.name,

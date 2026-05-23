@@ -10,7 +10,7 @@
 //
 // Breaker semantics (see lib/breaker.ts):
 //   - 3 consecutive failures → cooldown opens for 5 min
-//   - while open, pickDream returns an instance without judgments, so
+//   - while open, pickDigest returns an instance without judgments, so
 //     digest skips the LLM passes for that cycle
 //   - first success after cooldown resets the state
 
@@ -22,7 +22,7 @@ import * as openrouter from "./providers/openrouter.ts";
 import type {
   ClusterMergeJudgment,
   ClusterSummary,
-  DreamLimits,
+  DigestLimits,
   LLMProvider,
   SupersedeCandidate,
   SupersedePair,
@@ -66,11 +66,11 @@ function reportingCall<TArgs extends unknown[], TResult>(
 }
 
 // findSupersedes + judgeClusterMerge are OPTIONAL: when OpenRouter is
-// missing the key or the breaker is open, pickDream returns an instance
+// missing the key or the breaker is open, pickDigest returns an instance
 // without them and digest's `if (!dr.judgeClusterMerge) skip` path fires.
-export type DreamInstance = {
+export type DigestInstance = {
   name: ProviderName;
-  limits: DreamLimits;
+  limits: DigestLimits;
   model: string;
   findSupersedes?: (candidates: SupersedeCandidate[]) => Promise<SupersedePair[]>;
   judgeClusterMerge?: (a: ClusterSummary, b: ClusterSummary) => Promise<ClusterMergeJudgment>;
@@ -83,11 +83,11 @@ export function inspectBreakers(): Record<ProviderName, BreakerState> {
   return { openrouter: breaker.inspect() };
 }
 
-export function pickDream(): DreamInstance {
-  const base: DreamInstance = {
+export function pickDigest(): DigestInstance {
+  const base: DigestInstance = {
     name: "openrouter",
-    limits: provider.dreamLimits,
-    model: provider.dreamModel,
+    limits: provider.digestLimits,
+    model: provider.digestModel,
   };
   // Hide the judgments when OpenRouter is unavailable. Digest's check is
   // `if (!dr.judgeClusterMerge || !dr.findSupersedes) skip`, so this is

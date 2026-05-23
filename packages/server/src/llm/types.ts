@@ -30,7 +30,7 @@ export type ClusterMergeJudgment = {
 };
 
 /** Per-cluster ceilings digest's cross-cluster Sonnet calls must respect. */
-export type DreamLimits = {
+export type DigestLimits = {
   maxClusterChars: number;
   maxOutputTokens: number;
   temperature: number;
@@ -65,6 +65,6 @@ export type SupersedePair = {
 export type LLMProvider = {
   findSupersedes?: (candidates: SupersedeCandidate[]) => Promise<SupersedePair[]>;
   judgeClusterMerge?: (a: ClusterSummary, b: ClusterSummary) => Promise<ClusterMergeJudgment>;
-  dreamLimits: DreamLimits;
-  dreamModel: string;
+  digestLimits: DigestLimits;
+  digestModel: string;
 };
