@@ -214,58 +214,28 @@ function StatusContent({
   data: StatusResponse;
   schedule: DaemonSchedule | null;
 }) {
+  const napRow = data.workers.find((w) => w.name === "nap");
+  const digestRow = data.workers.find((w) => w.name === "digest");
+  const otherWorkers = data.workers.filter((w) => w.name !== "nap" && w.name !== "digest");
   return (
     <>
-      <SectionHeading>Workers</SectionHeading>
-      {data.workers.length === 0 ? (
-        <Empty>No workers registered.</Empty>
-      ) : (
-        <div className="grid gap-2">
-          {data.workers.map((w) => (
-            <WorkerRowItem key={w.name} w={w} />
-          ))}
-        </div>
-      )}
-
-      <SectionHeading>Dream</SectionHeading>
-      <div className="rounded-md border border-border bg-card px-3 py-2 text-sm">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
-          <span className="flex items-center gap-1.5">
-            <Moon className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-muted-foreground">last window</span>{" "}
-            {data.dream.last_window_at
-              ? `${fmtAge(Date.now() - new Date(data.dream.last_window_at).getTime())} ago`
-              : "never"}
-          </span>
-          {schedule?.dream && (
-            <span>
-              <span className="text-muted-foreground">next in:</span>{" "}
-              <span className="tabular-nums">
-                {fmtAge(Math.max(0, new Date(schedule.dream.next_run_at).getTime() - Date.now()))}
-              </span>
-            </span>
-          )}
-          <span>
-            <span className="text-muted-foreground">clusters:</span>{" "}
-            <span className="tabular-nums">{data.dream.last_cluster_count ?? "—"}</span>
-          </span>
-          <span>
-            <span className="text-muted-foreground">in-flight:</span>{" "}
-            <span className="tabular-nums">{data.dream.in_flight}</span>
-          </span>
-          {data.dream.stuck > 0 && (
-            <Badge variant="warning">
-              <CircleAlert className="h-3 w-3" />
-              {data.dream.stuck} stuck &gt; 30m
-            </Badge>
-          )}
-          <ForceButton
-            worker="dream"
-            lastRunAt={data.dream.last_window_at}
-            serverPending={data.dream.in_flight > 0}
-          />
-        </div>
+      <SectionHeading>Brain</SectionHeading>
+      <div className="grid gap-2">
+        {napRow && <WorkerRowItem w={napRow} />}
+        <DreamRowItem data={data.dream} schedule={schedule} />
+        {digestRow && <WorkerRowItem w={digestRow} />}
       </div>
+
+      {otherWorkers.length > 0 && (
+        <>
+          <SectionHeading>Workers</SectionHeading>
+          <div className="grid gap-2">
+            {otherWorkers.map((w) => (
+              <WorkerRowItem key={w.name} w={w} />
+            ))}
+          </div>
+        </>
+      )}
 
       <SectionHeading>Breakers</SectionHeading>
       <div className="flex flex-wrap gap-2">
@@ -316,6 +286,54 @@ function WorkerRowItem({ w }: { w: WorkerRow }) {
             serverPending={w.last_status === null}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+// Dream row in the Brain section. Same shell as WorkerRowItem (dot,
+// name, last-run age on the left; metadata + run button on the right)
+// but the metadata shows clusters/in-flight/stuck rather than duration.
+function DreamRowItem({
+  data,
+  schedule,
+}: {
+  data: StatusResponse["dream"];
+  schedule: DaemonSchedule | null;
+}) {
+  const lastAge = data.last_window_at
+    ? fmtAge(Date.now() - new Date(data.last_window_at).getTime())
+    : null;
+  const nextInMs = schedule?.dream
+    ? Math.max(0, new Date(schedule.dream.next_run_at).getTime() - Date.now())
+    : null;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-success" />
+        <span className="font-medium truncate flex items-center gap-1.5">
+          <Moon className="h-3.5 w-3.5 text-muted-foreground" />
+          dream
+        </span>
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          last {lastAge ? `${lastAge} ago` : "never"}
+        </span>
+      </div>
+      <div className="flex items-center gap-3 text-xs text-muted-foreground tabular-nums">
+        <span>clusters: {data.last_cluster_count ?? "—"}</span>
+        <span>in-flight: {data.in_flight}</span>
+        {nextInMs !== null && <span className="whitespace-nowrap">next in {fmtAge(nextInMs)}</span>}
+        {data.stuck > 0 && (
+          <Badge variant="warning">
+            <CircleAlert className="h-3 w-3" />
+            {data.stuck} stuck &gt; 30m
+          </Badge>
+        )}
+        <ForceButton
+          worker="dream"
+          lastRunAt={data.last_window_at}
+          serverPending={data.in_flight > 0}
+        />
       </div>
     </div>
   );
