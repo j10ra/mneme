@@ -16,7 +16,6 @@ Memories aren't isolated rows; they form a graph. After a Layer-1 hit, walk the 
 | `member_ids[]` | cluster → members | dream worker | follow second, only if the summary is too compressed |
 | `related_to[]` | bidirectional | nap worker | follow when no cluster exists OR for surrounding context |
 | `superseded_by` | older → newer | nap (rule-based) + dream (LLM) | follow forward to find current truth |
-| `shadow_of` | dup → kept | nap worker | rarely walked — shadows are exact-text dupes, content is identical |
 
 ---
 
@@ -135,4 +134,3 @@ Never start at a superseded row — you'll narrate stale truth.
 - **One hop on `related_to`.** Two hops returns ~25 memories and the relevance is gone.
 - **Max 10 hops on supersede chains.** Recursive query has a `hops < 10` guard for cycles.
 - **Don't unfold cluster members unless the summary is genuinely too compressed.** The summary is the win; the members are the receipt.
-- **Don't follow `shadow_of`.** Shadows are exact-text duplicates; the kept row's content is the same.

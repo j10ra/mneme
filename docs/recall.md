@@ -50,7 +50,6 @@ SELECT id, content, kind, repo, importance,
        meta->'related_to' AS related_to, created_at
 FROM memories
 WHERE archived_at IS NULL
-  AND (meta->>'shadow_of') IS NULL
 ORDER BY
   (
     0.6  * (1 - (embedding <=> embed($1))) +
@@ -68,7 +67,7 @@ LIMIT 10;
 - **5% importance** — small but always-on so [`workers/nap.md`](./workers/nap.md)'s decay actually shifts retrieval.
 
 **Filters:**
-- Shadows (`shadow_of IS NOT NULL`) are filtered out — exact-text duplicates.
+- Archived rows (`archived_at IS NOT NULL`) are filtered out — nap's auto-archive pass moves fully decayed orphans here.
 - Superseded rows are **not** filtered — they get a `× 0.3` rank-down penalty (hardcoded in the using-mneme skill's SQL template) so historical context stays queryable below current truth.
 
 **No `private` filter in the query** — the `mneme_reader` role's RLS makes private rows physically unreachable. The skill explicitly tells the agent not to add a `private` filter.

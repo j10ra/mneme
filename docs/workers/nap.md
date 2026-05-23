@@ -65,14 +65,6 @@ The inner `LATERAL JOIN` for relate-pass still scans the full memories table for
 
 ---
 
-## Why no longer shadowing?
-
-Older versions of nap had an `napShadowDuplicates` phase that grouped by `content_hash` and marked duplicates with `meta.shadow_of`. That phase was deleted in 1.1.53: the `memories.chunk_id UNIQUE` constraint (where `chunk_id = sha256(content_hash + ":" + embedder_model)`) prevents identical-content rows from being created in the first place. The shadow phase ran every cycle and found zero rows, by construction.
-
-The `meta.shadow_of` filter still lives in recall paths as defensive code — if a row ever gets shadowed via some manual flow, recall will respect it. But nap no longer produces shadows.
-
----
-
 ## Why server-side, not pg_cron
 
 Same reason any process loop lives in code:

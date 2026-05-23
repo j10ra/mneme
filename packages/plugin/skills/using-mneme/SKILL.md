@@ -40,7 +40,6 @@ SELECT id, kind, repo, importance, created_at,
        substring(content, 1, 200) AS preview
 FROM memories
 WHERE archived_at IS NULL
-  AND (meta->>'shadow_of') IS NULL
 ORDER BY
   (
     0.6  * (1 - (embedding <=> embed('your query'))) +

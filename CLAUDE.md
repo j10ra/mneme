@@ -65,7 +65,7 @@ Prefer `mneme_sql` over `psql` for any read — same scrubbing + reader role + R
 - `--no-verify` on git commit
 - Drive-by refactoring (touch only what the task requires)
 - AI attribution in commits (no `Co-Authored-By`, no AI footer)
-- DELETE rows that should be archived/shadowed/superseded instead
+- DELETE rows that should be archived/superseded instead
 
 ## When stuck
 

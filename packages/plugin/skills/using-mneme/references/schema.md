@@ -32,7 +32,6 @@ Column types, jsonb shapes, and the source taxonomy. Load when you need to const
 | Key | Type | Set by | Meaning |
 |---|---|---|---|
 | `pinned` | bool | `/mneme:pin` slash | surfaces in every session, exempt from clustering and supersede |
-| `shadow_of` | uuid string | nap | exact-text duplicate; the referenced id is kept |
 | `superseded_by` | uuid string | nap (rule) + dream/digest (LLM) | the newer memory (or, on a losing cluster row, the winning cluster) that replaced this row. Recall rank-down × 0.3 |
 | `related_to` | uuid array | nap | bidirectional semantic neighbours (cosine < 0.15) |
 | `in_cluster` | uuid string | dream | the `kind='cluster'` row this memory is a member of |

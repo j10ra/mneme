@@ -67,7 +67,6 @@ erDiagram
 | Bitemporal supersede | `meta.superseded_by: "<id>"` on the older memory |
 | Pinned by user | `meta.pinned: true` |
 | Source coalescing window | `meta.coalesced_from: ["<capture_id>", ...]` |
-| Exact-text shadow (legacy) | `meta.shadow_of: "<kept_id>"` — no longer produced (chunk_id UNIQUE constraint makes dupes impossible); filter stays in recall as defensive code |
 | Cross-machine handoff slug | `meta.handoff_slug: "<kebab-case>"` — set by `/mneme:handoff` and the compact auto-capture path; consumed by `/mneme:resume <slug>` |
 | Provenance | `meta.extractor_provider`, `meta.extractor_model`, `meta.distiller_provider`, `meta.distiller_model` |
 | Nap pagination | `meta.last_napped_at: timestamptz` |
@@ -150,7 +149,7 @@ Three layers, in order of strictness:
 3. **Dream dedup (additive, semantic).** Every 8h: clustering produces `kind='cluster'` summaries. Member memories aren't deleted; their importance fades relative to the summary. See [`workers/dream.md`](./workers/dream.md).
 4. **Digest consolidation (cross-cluster).** Every 24h, opt-in. Merges near-duplicate cluster summaries (cosine < 0.15) into one canonical cluster + cross-cluster member supersede. See [`workers/digest.md`](./workers/digest.md).
 
-Net effect at recall time: the default hybrid query in the skill includes `WHERE archived_at IS NULL AND (meta->>'shadow_of') IS NULL`, and applies a `× 0.3` rank penalty for `meta.superseded_by IS NOT NULL`. Archived entries are invisible by default; superseded entries are visible but rank-penalised; both are recoverable by an explicit query.
+Net effect at recall time: the default hybrid query in the skill filters by `WHERE archived_at IS NULL` and applies a `× 0.3` rank penalty for `meta.superseded_by IS NOT NULL`. Archived entries are invisible by default; superseded entries are visible but rank-penalised; both are recoverable by an explicit query (drop the filter for archived, drop the penalty for superseded).
 
 **Why never DELETE:**
 - Every dedup decision is a guess. Hard delete forecloses on revisiting it.

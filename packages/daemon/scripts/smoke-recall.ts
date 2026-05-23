@@ -66,7 +66,6 @@ for (const query of queries) {
            round(((1 - (embedding <=> ${vecLit}::vector)))::numeric, 3)::float8 AS similarity
     FROM memories
     WHERE archived_at IS NULL
-      AND (meta->>'shadow_of') IS NULL
     ORDER BY embedding <=> ${vecLit}::vector
     LIMIT ${TOP_K};
   `;

@@ -202,7 +202,6 @@ export async function fetchDreamCandidates(
         AND kind <> 'cluster'
         AND (private = false OR machine_id = ${machineId})
         AND NOT COALESCE((meta->>'pinned')::boolean, false)
-        AND (meta->>'shadow_of') IS NULL
         AND (meta->>'superseded_by') IS NULL
         AND (meta->>'in_cluster') IS NULL
       ORDER BY meta->>'last_dreamed_at' NULLS FIRST, created_at ASC
@@ -220,7 +219,6 @@ export async function fetchDreamCandidates(
         AND m.kind <> 'cluster'
         AND (m.private = false OR m.machine_id = ${machineId})
         AND NOT COALESCE((m.meta->>'pinned')::boolean, false)
-        AND (m.meta->>'shadow_of') IS NULL
         AND (m.meta->>'superseded_by') IS NULL
         AND (m.meta->>'in_cluster') IS NULL
         AND m.repo IS NOT DISTINCT FROM s.repo
@@ -271,7 +269,6 @@ export async function fetchDreamSeedIds(machineId: string): Promise<string[]> {
       AND kind <> 'cluster'
       AND (private = false OR machine_id = ${machineId})
       AND NOT COALESCE((meta->>'pinned')::boolean, false)
-      AND (meta->>'shadow_of') IS NULL
       AND (meta->>'superseded_by') IS NULL
       AND (meta->>'in_cluster') IS NULL
     ORDER BY meta->>'last_dreamed_at' NULLS FIRST, created_at ASC
@@ -307,7 +304,6 @@ export async function fetchDreamEdgeBatch(
         AND m.kind <> 'cluster'
         AND (m.private = false OR m.machine_id = ${machineId})
         AND NOT COALESCE((m.meta->>'pinned')::boolean, false)
-        AND (m.meta->>'shadow_of') IS NULL
         AND (m.meta->>'superseded_by') IS NULL
         AND (m.meta->>'in_cluster') IS NULL
         AND m.repo IS NOT DISTINCT FROM s.repo

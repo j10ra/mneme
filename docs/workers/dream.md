@@ -72,7 +72,6 @@ Candidates are pulled **across every machine** (Mneme's whole point), scoped by 
 On top of the scope filter, these never enter a cluster:
 - `kind='cluster'` rows (the cluster summaries themselves)
 - Pinned memories (user-curated, shouldn't be subsumed)
-- Shadowed rows (`meta.shadow_of IS NOT NULL`) — defensive, no longer produced by nap
 - Superseded rows (`meta.superseded_by IS NOT NULL`)
 - Anything where `meta.in_cluster IS NOT NULL` (already in a cluster)
 - Archived rows (`archived_at IS NOT NULL`)

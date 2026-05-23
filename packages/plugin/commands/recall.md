@@ -18,7 +18,6 @@ Run a query like this (substitute the query text into both `embed(...)` and `web
 SELECT id, content, kind, repo, importance, meta->'related_to' AS related_to, created_at
 FROM memories
 WHERE archived_at IS NULL
-  AND (meta->>'shadow_of') IS NULL
   AND (meta->>'superseded_by') IS NULL
 ORDER BY
   0.50 * (1 - (embedding <=> embed('the user query'))) +
@@ -60,7 +59,6 @@ WHERE name = 'macbook-air-bc' AND revoked_at IS NULL;
 SELECT id, content, kind, repo, importance, created_at
 FROM memories
 WHERE archived_at IS NULL
-  AND (meta->>'shadow_of') IS NULL
   AND (meta->>'superseded_by') IS NULL
   AND machine_id = '<uuid from step 1>'
 ORDER BY created_at DESC
