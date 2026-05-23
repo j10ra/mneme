@@ -149,17 +149,11 @@ export const SUPERSEDE_LLM_ADJACENT_COSINE_MAX = 0.15;
 /** Cap on cluster-members + adjacent-neighbors fed to one Sonnet call. */
 export const SUPERSEDE_LLM_BATCH_MAX_MEMBERS = 30;
 
-/** Recall ranking penalty applied to memories with `meta.superseded_by`
- *  set. 0.3 means a superseded memory needs to be ~3.3× more relevant
- *  than its successor to outrank it.
- *
- *  NOTE: this constant is currently a phantom knob. The active value is
- *  hardcoded in the recall SQL template at packages/plugin/skills/
- *  using-mneme/SKILL.md and the docs in docs/recall.md. Changing the
- *  constant alone does nothing. Either (a) template-generate the skill
- *  from this value at plugin build time, or (b) accept that the skill
- *  template is the source of truth and delete this constant. */
-export const SUPERSEDE_RECALL_PENALTY = 0.3;
+// Recall ranking penalty for superseded rows (× 0.3) lives in the recall
+// SQL template, not here. Recall is agent-driven via mneme_sql, so the
+// authoritative value is in packages/plugin/skills/using-mneme/SKILL.md
+// (the SQL the agent copies) and the docs in docs/recall.md. Adding a
+// server constant would be a phantom knob: nothing imports it.
 
 // ── Recall LTP (use-driven reinforcement, #37) ────────────────────────
 // LTP = long-term potentiation. Every successful mneme_sql query becomes

@@ -69,7 +69,7 @@ LIMIT 10;
 
 **Filters:**
 - Shadows (`shadow_of IS NOT NULL`) are filtered out — exact-text duplicates.
-- Superseded rows are **not** filtered — they get a `× 0.3` rank-down penalty (`SUPERSEDE_RECALL_PENALTY`) so historical context stays queryable below current truth.
+- Superseded rows are **not** filtered — they get a `× 0.3` rank-down penalty (hardcoded in the using-mneme skill's SQL template) so historical context stays queryable below current truth.
 
 **No `private` filter in the query** — the `mneme_reader` role's RLS makes private rows physically unreachable. The skill explicitly tells the agent not to add a `private` filter.
 

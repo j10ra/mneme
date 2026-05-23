@@ -63,7 +63,8 @@ const toSection = (rows: Row[]): SurfaceSection => {
  *
  *  All section queries exclude `meta.superseded_by` rows: surfaced facts
  *  must be the current version. Old versions are still queryable via
- *  recall (rank-down × SUPERSEDE_RECALL_PENALTY); the surface is curated. */
+ *  recall (rank-down × 0.3 applied in the using-mneme skill template);
+ *  the surface is curated. */
 export const buildSurface = mnemeFn(
   "surface.build",
   async (repos: string[], callerMachineId: string | null): Promise<Surface> => {
