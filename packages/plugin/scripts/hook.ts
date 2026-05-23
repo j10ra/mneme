@@ -391,14 +391,16 @@ function prefixSurfaceForLLM(surface: string, strippedSurface: string): string {
   const totals = p.sections.map((s) => `${s.total} ${s.name}`).join(" · ");
   const reminder =
     `Mneme corpus: ${totals}. The surface below is a relevance-ranked slice. ` +
-    `Unfold any [id] or query mneme_sql to access the rest.\n\n` +
+    `Unfold any [id] or query mneme_sql to access the rest. The using-mneme ` +
+    `skill has the full recall workflow (3-layer search → walk → unfold), ` +
+    `live-state verification, and self-correcting recall — load it when ` +
+    `working with memory beyond what the surface already gave you.\n\n` +
     `Glyph legend (the symbol after each [id]):\n${KIND_LEGEND}\n\n` +
-    `Memory writes: cross-machine project knowledge (conventions, decisions, ` +
-    `discoveries, references, fixes, postmortems) goes to Mneme via ` +
-    "`/mneme:memory <text>`, or `/mneme:pin <text>` for always-surface rules. " +
-    "Local auto-memory at `~/.claude/projects/.../memory/` is per-machine; " +
-    `reserve it for behavioral preferences about how the user collaborates ` +
-    `(tone, response style, harness quirks).\n\n`;
+    `Memory split: Mneme = cross-machine project knowledge (decisions, fixes, ` +
+    "references, postmortems). Local auto-memory at `~/.claude/projects/.../memory/` " +
+    `= per-machine behavioral preferences (tone, response style, harness quirks). ` +
+    `Captures happen automatically via hooks; slash commands like \`/mneme:memory\` ` +
+    `and \`/mneme:pin\` are user-triggered, not for agent use.\n\n`;
   return reminder + strippedSurface;
 }
 
