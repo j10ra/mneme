@@ -137,6 +137,56 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
     }
   });
 
+  test("fetchDreamSeedIds returns watermark-ordered eligible ids only", async () => {
+    const { fetchDreamSeedIds } = await import("../src/routes/dream.ts");
+    const { sql } = await import("../src/infra/db.ts");
+
+    const machineId = "00000000-0000-0000-0000-00000000e001";
+    const captureId = "00000000-0000-0000-0000-00000000e0ca";
+    const idEligibleA = "00000000-0000-0000-0000-00000000e0a1";
+    const idEligibleB = "00000000-0000-0000-0000-00000000e0a2";
+    const idClustered = "00000000-0000-0000-0000-00000000e0a3";
+    const idArchived = "00000000-0000-0000-0000-00000000e0a4";
+
+    try {
+      await sql`
+        INSERT INTO captures (id, content, content_sha256, source, machine_id, hostname, harness)
+        VALUES (${captureId}, 'seed', ${`sha-${captureId}`}, 'test',
+                ${machineId}, 'testhost', 'test')
+      `;
+      const insert = async (
+        id: string,
+        opts: { meta?: object; archived?: boolean } = {},
+      ): Promise<void> => {
+        await sql`
+          INSERT INTO memories (
+            id, capture_id, chunk_id, content, content_hash,
+            embedding, embedding_model, kind, machine_id, harness,
+            meta, archived_at
+          ) VALUES (
+            ${id}, ${captureId}, ${`chunk-${id}`}, ${`c ${id}`}, ${`hash-${id}`},
+            ${`[${Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)).join(",")}]`}::vector,
+            'test', 'note', ${machineId}, 'test',
+            ${sql.json(opts.meta ?? {})}, ${opts.archived ? sql`now()` : null}
+          )
+        `;
+      };
+      await insert(idEligibleA);
+      await insert(idEligibleB);
+      await insert(idClustered, { meta: { in_cluster: "00000000-0000-0000-0000-000000000123" } });
+      await insert(idArchived, { archived: true });
+
+      const ids = await fetchDreamSeedIds(machineId);
+      expect(ids).toContain(idEligibleA);
+      expect(ids).toContain(idEligibleB);
+      expect(ids).not.toContain(idClustered);
+      expect(ids).not.toContain(idArchived);
+    } finally {
+      await sql`DELETE FROM memories WHERE capture_id = ${captureId}`;
+      await sql`DELETE FROM captures WHERE id = ${captureId}`;
+    }
+  });
+
   test("writeClusters applies valid supersede pairs, rejects backwards + hallucinated", async () => {
     const { writeClusters } = await import("../src/routes/dream.ts");
     const { sql } = await import("../src/infra/db.ts");

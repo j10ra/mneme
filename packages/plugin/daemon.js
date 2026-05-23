@@ -1198,13 +1198,115 @@ async function fetchCandidates(deps, windowKey) {
   const url = `${deps.serverUrl}/api/dream/candidates?window_key=${windowKey}`;
   const response = await deps.fetch(url, {
     method: "GET",
-    headers: { Authorization: `Bearer ${deps.token}` }
+    headers: {
+      Authorization: `Bearer ${deps.token}`,
+      Accept: "application/x-ndjson"
+    }
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     throw new Error(`candidates returned ${response.status}: ${detail.slice(0, 500)}`);
   }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/x-ndjson")) {
+    return parseNdjsonCandidates(response, windowKey);
+  }
   return await response.json();
+}
+async function parseNdjsonCandidates(response, expectedWindowKey) {
+  if (!response.body)
+    throw new Error("candidates: no response body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder;
+  let buf = "";
+  const repos = {};
+  const seen = new Set;
+  let receivedWindowKey = null;
+  let sawDone = false;
+  let errorMessage = null;
+  const addMemory = (repoKey, m) => {
+    if (seen.has(m.id))
+      return;
+    repos[repoKey] ??= { seeds: [], edges: [] };
+    repos[repoKey].seeds.push({
+      id: m.id,
+      content: m.content,
+      kind: m.kind,
+      created_at: m.created_at
+    });
+    seen.add(m.id);
+  };
+  const handleFrame = (line) => {
+    if (!line.trim())
+      return;
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      throw new Error(`candidates: malformed NDJSON line: ${line.slice(0, 120)}`);
+    }
+    switch (msg.t) {
+      case "meta":
+        receivedWindowKey = msg.window_key;
+        break;
+      case "edge": {
+        const repoKey = msg.repo ?? "__none__";
+        addMemory(repoKey, {
+          id: msg.id,
+          content: msg.content,
+          kind: msg.kind,
+          created_at: msg.created_at
+        });
+        const neighborId = msg.neighbor_id;
+        if (neighborId) {
+          repos[repoKey] ??= { seeds: [], edges: [] };
+          repos[repoKey].edges.push([msg.id, neighborId]);
+        }
+        break;
+      }
+      case "neighbor":
+        addMemory(msg.repo ?? "__none__", {
+          id: msg.id,
+          content: msg.content,
+          kind: msg.kind,
+          created_at: msg.created_at
+        });
+        break;
+      case "error":
+        errorMessage = String(msg.error ?? "unknown");
+        break;
+      case "done":
+        sawDone = true;
+        break;
+      default:
+        break;
+    }
+  };
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done)
+      break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf(`
+`)) >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      handleFrame(line);
+    }
+  }
+  if (buf.trim())
+    handleFrame(buf);
+  if (errorMessage) {
+    throw new Error(`candidates stream errored: ${errorMessage}`);
+  }
+  if (!sawDone) {
+    throw new Error("candidates stream ended without done frame");
+  }
+  if (receivedWindowKey !== expectedWindowKey) {
+    throw new Error(`candidates window_key mismatch: expected ${expectedWindowKey}, got ${receivedWindowKey}`);
+  }
+  return { window_key: receivedWindowKey, repos };
 }
 async function submitClusters(deps, windowKey, clusters) {
   const response = await deps.fetch(`${deps.serverUrl}/api/dream/clusters`, {

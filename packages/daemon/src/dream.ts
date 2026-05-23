@@ -160,13 +160,136 @@ async function fetchCandidates(
   const url = `${deps.serverUrl}/api/dream/candidates?window_key=${windowKey}`;
   const response = await deps.fetch(url, {
     method: "GET",
-    headers: { Authorization: `Bearer ${deps.token}` },
+    headers: {
+      Authorization: `Bearer ${deps.token}`,
+      Accept: "application/x-ndjson",
+    },
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     throw new Error(`candidates returned ${response.status}: ${detail.slice(0, 500)}`);
   }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/x-ndjson")) {
+    return parseNdjsonCandidates(response, windowKey);
+  }
+  // Old server -- buffered JSON path. Backward-compat for one release.
   return (await response.json()) as DreamCandidatesResponse;
+}
+
+/** Read an NDJSON stream from /api/dream/candidates and assemble the
+ *  per-repo seeds + edges. Frames:
+ *    {t:"meta",   window_key}         once at the start
+ *    {t:"edge",   id, repo, content, kind, created_at, neighbor_id}
+ *    {t:"neighbor", id, repo, content, kind, created_at}
+ *    {t:"error",  error}              terminal on server failure
+ *    {t:"done",   seeds, neighbors}   terminal on success
+ *  Unknown frames are ignored (forward-compat). The stream must reach
+ *  the {t:"done"} frame -- a truncated stream throws so the lock can
+ *  reap and the next cycle retries the same slice. */
+export async function parseNdjsonCandidates(
+  response: Response,
+  expectedWindowKey: number,
+): Promise<DreamCandidatesResponse> {
+  if (!response.body) throw new Error("candidates: no response body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const repos: DreamCandidatesResponse["repos"] = {};
+  const seen = new Set<string>();
+  let receivedWindowKey: number | null = null;
+  let sawDone = false;
+  let errorMessage: string | null = null;
+
+  const addMemory = (
+    repoKey: string,
+    m: { id: string; content: string; kind: string; created_at: string },
+  ): void => {
+    if (seen.has(m.id)) return;
+    repos[repoKey] ??= { seeds: [], edges: [] };
+    repos[repoKey]!.seeds.push({
+      id: m.id,
+      content: m.content,
+      kind: m.kind,
+      created_at: m.created_at,
+    });
+    seen.add(m.id);
+  };
+
+  const handleFrame = (line: string): void => {
+    if (!line.trim()) return;
+    let msg: { t?: string; [k: string]: unknown };
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      throw new Error(`candidates: malformed NDJSON line: ${line.slice(0, 120)}`);
+    }
+    switch (msg.t) {
+      case "meta":
+        receivedWindowKey = msg.window_key as number;
+        break;
+      case "edge": {
+        const repoKey = (msg.repo as string | null) ?? "__none__";
+        addMemory(repoKey, {
+          id: msg.id as string,
+          content: msg.content as string,
+          kind: msg.kind as string,
+          created_at: msg.created_at as string,
+        });
+        const neighborId = msg.neighbor_id as string | null;
+        if (neighborId) {
+          repos[repoKey] ??= { seeds: [], edges: [] };
+          repos[repoKey]!.edges.push([msg.id as string, neighborId]);
+        }
+        break;
+      }
+      case "neighbor":
+        addMemory((msg.repo as string | null) ?? "__none__", {
+          id: msg.id as string,
+          content: msg.content as string,
+          kind: msg.kind as string,
+          created_at: msg.created_at as string,
+        });
+        break;
+      case "error":
+        errorMessage = String(msg.error ?? "unknown");
+        break;
+      case "done":
+        sawDone = true;
+        break;
+      default:
+        /* unknown frame -- ignore for forward-compat */
+        break;
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      handleFrame(line);
+    }
+  }
+  // Producers usually terminate with \n, but be defensive about a
+  // trailing line without one.
+  if (buf.trim()) handleFrame(buf);
+
+  if (errorMessage) {
+    throw new Error(`candidates stream errored: ${errorMessage}`);
+  }
+  if (!sawDone) {
+    throw new Error("candidates stream ended without done frame");
+  }
+  if (receivedWindowKey !== expectedWindowKey) {
+    throw new Error(
+      `candidates window_key mismatch: expected ${expectedWindowKey}, got ${receivedWindowKey}`,
+    );
+  }
+  return { window_key: receivedWindowKey, repos };
 }
 
 async function submitClusters(

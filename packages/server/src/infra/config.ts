@@ -88,6 +88,24 @@ export const DREAM_MAX_CLUSTER_SIZE = 20;
  *  for hub memories in dense graphs. */
 export const DREAM_MAX_NEIGHBORS_PER_MEMORY = 20;
 
+/** Watermark-ordered seed slice per dream cycle. Each cycle takes the
+ *  least-recently-dreamed N rows and stamps meta.last_dreamed_at, so
+ *  successive cycles round-robin the whole corpus rather than re-scanning
+ *  the newest rows. A full sweep spans ceil(corpus / cap) cycles. */
+export const DREAM_MAX_CANDIDATES_PER_CYCLE = 500;
+
+/** Per-batch seed count for the NDJSON streaming candidates endpoint.
+ *  Each batch runs ≤ DREAM_STREAM_SEED_BATCH × DREAM_MAX_NEIGHBORS_PER_MEMORY
+ *  HNSW probes (~1000 with current limits, several seconds wall-clock).
+ *  Bytes flush after every batch, so Railway's gateway never sees an
+ *  idle HTTP connection longer than one batch. */
+export const DREAM_STREAM_SEED_BATCH = 50;
+
+/** Per-batch neighbor-content fetch size for the NDJSON streaming
+ *  candidates endpoint. Plain id-lookup, no HNSW — kept large enough to
+ *  amortise the round-trip but small enough to flush bytes regularly. */
+export const DREAM_STREAM_NEIGHBOR_BATCH = 200;
+
 // ── Supersede ─────────────────────────────────────────────────────────
 
 /** Rule-based pass (runs in nap, every 6h). Tight cosine + explicit

@@ -18,22 +18,21 @@
 // Stale claims (no completed_at after 30min) are reaped by nap.
 
 import { Hono } from "hono";
+import { stream } from "hono/streaming";
 import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
-import { DREAM_CLUSTER_DISTANCE, DREAM_MAX_NEIGHBORS_PER_MEMORY } from "../infra/config.ts";
+import {
+  DREAM_CLUSTER_DISTANCE,
+  DREAM_MAX_CANDIDATES_PER_CYCLE,
+  DREAM_MAX_NEIGHBORS_PER_MEMORY,
+  DREAM_STREAM_NEIGHBOR_BATCH,
+  DREAM_STREAM_SEED_BATCH,
+} from "../infra/config.ts";
 import { validateSupersedePairs } from "../lib/supersede.ts";
 import { sha256Hex, sql } from "../infra/db.ts";
 import { EMBEDDER_DIM } from "../embedder/index.ts";
 
-// HNSW lookups against memories.embedding take ~50ms per probe in
-// practice (the index is global; per-repo filtering forces deep
-// traversal). Without a cap, a fresh fleet with thousands of
-// never-clustered memories blows past Railway's gateway timeout.
-// fetchDreamCandidates orders seeds by the meta.last_dreamed_at
-// watermark (NULLS FIRST), so each cycle takes the least-recently-
-// dreamed slice and stamps it; successive cycles round-robin the whole
-// corpus rather than re-scanning the newest rows. This cap bounds one
-// slice; a full sweep spans ceil(corpus / cap) cycles.
-const DREAM_MAX_CANDIDATES_PER_CYCLE = 500;
+// All dream tuning knobs (cycle cap, neighbor cap, stream batch sizes)
+// live in ../infra/config.ts -- imported at the top of this file.
 
 export type DreamLockResult =
   | { acquired: true; window_key: number }
@@ -257,6 +256,79 @@ export async function fetchDreamCandidates(
     candidates: { window_key: windowKey, repos: assembleRepos(edgeRows, neighborRows) },
     seedIds,
   };
+}
+
+/** Pick up to DREAM_MAX_CANDIDATES_PER_CYCLE seed ids ordered by the
+ *  watermark. No embedding / content here -- just ids, so the request
+ *  is fast (partial functional index hit) and we can batch the heavy
+ *  LATERAL work afterwards. Used by the NDJSON streaming path. */
+export async function fetchDreamSeedIds(machineId: string): Promise<string[]> {
+  const rows = await sql<{ id: string }[]>`
+    SELECT id
+    FROM memories
+    WHERE archived_at IS NULL
+      AND embedding IS NOT NULL
+      AND kind <> 'cluster'
+      AND (private = false OR machine_id = ${machineId})
+      AND NOT COALESCE((meta->>'pinned')::boolean, false)
+      AND (meta->>'shadow_of') IS NULL
+      AND (meta->>'superseded_by') IS NULL
+      AND (meta->>'in_cluster') IS NULL
+    ORDER BY meta->>'last_dreamed_at' NULLS FIRST, created_at ASC
+    LIMIT ${DREAM_MAX_CANDIDATES_PER_CYCLE}
+  `;
+  return rows.map((r) => r.id);
+}
+
+/** Resolve a batch of seed ids into edge rows (seed + up to
+ *  DREAM_MAX_NEIGHBORS_PER_MEMORY HNSW neighbors per seed). Same
+ *  eligibility predicates as fetchDreamCandidates' LATERAL -- the seed
+ *  picker already filtered, so the inner CTE is a simple id-fetch. */
+export async function fetchDreamEdgeBatch(
+  seedIds: string[],
+  machineId: string,
+): Promise<EdgeRow[]> {
+  if (seedIds.length === 0) return [];
+  return sql<EdgeRow[]>`
+    WITH seeds AS (
+      SELECT id, repo, embedding, content, kind, created_at
+      FROM memories
+      WHERE id = ANY(${seedIds})
+    )
+    SELECT
+      s.id, s.repo, s.content, s.kind, s.created_at,
+      n.neighbor_id
+    FROM seeds s
+    LEFT JOIN LATERAL (
+      SELECT m.id AS neighbor_id
+      FROM memories m
+      WHERE m.archived_at IS NULL
+        AND m.embedding IS NOT NULL
+        AND m.kind <> 'cluster'
+        AND (m.private = false OR m.machine_id = ${machineId})
+        AND NOT COALESCE((m.meta->>'pinned')::boolean, false)
+        AND (m.meta->>'shadow_of') IS NULL
+        AND (m.meta->>'superseded_by') IS NULL
+        AND (m.meta->>'in_cluster') IS NULL
+        AND m.repo IS NOT DISTINCT FROM s.repo
+        AND m.id <> s.id
+        AND s.embedding <=> m.embedding < ${DREAM_CLUSTER_DISTANCE}
+      ORDER BY s.embedding <=> m.embedding
+      LIMIT ${DREAM_MAX_NEIGHBORS_PER_MEMORY}
+    ) n ON true
+  `;
+}
+
+/** Fetch content for neighbor ids that are not themselves in the seed
+ *  set. The LATERAL already applied every eligibility filter, so we can
+ *  trust these ids and just load content. */
+export async function fetchDreamNeighborContent(ids: string[]): Promise<NeighborRow[]> {
+  if (ids.length === 0) return [];
+  return sql<NeighborRow[]>`
+    SELECT id, repo, content, kind, created_at
+    FROM memories
+    WHERE id = ANY(${ids})
+  `;
 }
 
 /** Stamp meta.last_dreamed_at = now() on the given seed ids. Called by
@@ -526,6 +598,7 @@ export function mountDreamRoutes(app: Hono): void {
       if (!auth?.machineId) {
         return c.json({ error: "candidates require per-machine token" }, 400);
       }
+      const machineId = auth.machineId;
       const windowKeyStr = c.req.query("window_key");
       const windowKey = windowKeyStr ? Number(windowKeyStr) : NaN;
       if (!Number.isFinite(windowKey)) {
@@ -539,12 +612,99 @@ export function mountDreamRoutes(app: Hono): void {
       `;
       if (
         !rows[0] ||
-        rows[0].claimed_by_machine_id !== auth.machineId ||
+        rows[0].claimed_by_machine_id !== machineId ||
         rows[0].completed_at !== null
       ) {
         return c.json({ error: "lock not held by caller" }, 403);
       }
-      const { candidates, seedIds } = await fetchDreamCandidates(windowKey, auth.machineId);
+
+      // NDJSON path: stream batches so Railway's gateway never sees an
+      // idle HTTP connection longer than one LATERAL batch (~5-10s),
+      // even when the slice is dense. Buffered JSON path stays as a
+      // backward-compat fallback for pre-1.1.41 daemons.
+      const accept = c.req.header("accept") ?? "";
+      if (accept.includes("application/x-ndjson")) {
+        c.header("Content-Type", "application/x-ndjson; charset=utf-8");
+        c.header("Cache-Control", "no-store");
+        return stream(c, async (s) => {
+          const seenSeeds = new Set<string>();
+          const neighborIds = new Set<string>();
+          try {
+            await s.writeln(JSON.stringify({ t: "meta", window_key: windowKey }));
+
+            const seedIds = await fetchDreamSeedIds(machineId);
+            for (let i = 0; i < seedIds.length; i += DREAM_STREAM_SEED_BATCH) {
+              if (s.aborted) return;
+              const batch = seedIds.slice(i, i + DREAM_STREAM_SEED_BATCH);
+              const edgeRows = await fetchDreamEdgeBatch(batch, machineId);
+              for (const row of edgeRows) {
+                seenSeeds.add(row.id);
+                if (row.neighbor_id) neighborIds.add(row.neighbor_id);
+                await s.writeln(
+                  JSON.stringify({
+                    t: "edge",
+                    id: row.id,
+                    repo: row.repo,
+                    content: row.content,
+                    kind: row.kind,
+                    created_at: row.created_at.toISOString(),
+                    neighbor_id: row.neighbor_id,
+                  }),
+                );
+              }
+            }
+
+            const unseenNeighborIds = [...neighborIds].filter((id) => !seenSeeds.has(id));
+            for (let i = 0; i < unseenNeighborIds.length; i += DREAM_STREAM_NEIGHBOR_BATCH) {
+              if (s.aborted) return;
+              const batch = unseenNeighborIds.slice(i, i + DREAM_STREAM_NEIGHBOR_BATCH);
+              const nrows = await fetchDreamNeighborContent(batch);
+              for (const row of nrows) {
+                await s.writeln(
+                  JSON.stringify({
+                    t: "neighbor",
+                    id: row.id,
+                    repo: row.repo,
+                    content: row.content,
+                    kind: row.kind,
+                    created_at: row.created_at.toISOString(),
+                  }),
+                );
+              }
+            }
+
+            // Stamp only after the whole stream succeeded -- if the
+            // daemon disconnected mid-flight, leave the slice intact so
+            // the next cycle re-attempts the same rows.
+            if (!s.aborted && seenSeeds.size > 0) {
+              await stampDreamedSeeds([...seenSeeds]);
+            }
+            if (!s.aborted) {
+              await s.writeln(
+                JSON.stringify({
+                  t: "done",
+                  seeds: seenSeeds.size,
+                  neighbors: unseenNeighborIds.length,
+                }),
+              );
+            }
+          } catch (err) {
+            Logger.warn("dream candidates stream failed", err, { window_key: windowKey });
+            try {
+              await s.writeln(
+                JSON.stringify({
+                  t: "error",
+                  error: err instanceof Error ? err.message : String(err),
+                }),
+              );
+            } catch {
+              /* connection probably already closed */
+            }
+          }
+        });
+      }
+
+      const { candidates, seedIds } = await fetchDreamCandidates(windowKey, machineId);
       await stampDreamedSeeds(seedIds);
       return c.json(candidates);
     },
