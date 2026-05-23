@@ -22,7 +22,7 @@ import { isDaemonConfigStale } from "./daemon-install.ts";
 import { baseScope as buildScope, discoverRepos, repoForFile } from "./scope.ts";
 import { scrubData } from "./scrub.ts";
 import { decryptAdminPassword } from "./admin-secret.ts";
-import { EMBEDDER_MODEL } from "./embedder.ts";
+import { EMBEDDER_MODEL, embedViaDaemon } from "./embedder.ts";
 
 const event = process.argv[2] ?? "unknown";
 
@@ -662,14 +662,24 @@ async function main(): Promise<void> {
         const summaryText = extractCompactSummary(transcriptPath);
         if (summaryText) {
           const slug = compactSlug();
-          void postHandoffMemory(cfg, {
-            ...baseScope,
-            content: summaryText,
-            kind: "summary",
-            importance: 0.6,
-            embedding_model: EMBEDDER_MODEL,
-            handoff_slug: slug,
-          });
+          // Embed via local daemon so the compact summary is
+          // semantically searchable when another machine resumes it.
+          // Wrapped in a thenable chain so we keep fire-and-forget
+          // semantics — failure to embed never blocks SessionStart.
+          void (async () => {
+            const embedding = cfg.daemon
+              ? await embedViaDaemon(cfg.daemon.port, summaryText)
+              : null;
+            await postHandoffMemory(cfg, {
+              ...baseScope,
+              content: summaryText,
+              kind: "summary",
+              importance: 0.6,
+              embedding_model: EMBEDDER_MODEL,
+              ...(embedding ? { embedding } : {}),
+              handoff_slug: slug,
+            });
+          })();
         }
       }
 

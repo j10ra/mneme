@@ -37,6 +37,7 @@ const silentTrace: MiddlewareHandler = async (c, next) => {
   });
 };
 import { sql, sha256Hex } from "../infra/db.ts";
+import { EMBEDDER_DIM } from "../infra/config.ts";
 import { actuateRawMeta } from "../lib/actuate.ts";
 import { KINDS, type Kind } from "../llm/index.ts";
 
@@ -110,6 +111,13 @@ type MemoryBody = {
    *  about which embedder produced the eventual vector — it just stores
    *  what's sent and hashes chunk_id against it. */
   embedding_model: string;
+  /** Optional pre-computed vector for the content, sized to EMBEDDER_DIM.
+   *  When present the row lands semantically searchable from the start.
+   *  When absent (daemon /embed unreachable, or caller doesn't bother)
+   *  the row writes with embedding=NULL — still keyword-searchable via
+   *  tsv, just invisible to mneme_sql embed() until something else
+   *  re-embeds the content. */
+  embedding?: number[];
   /** Short kebab-case slug for cross-machine handoff. When present, the
    *  memory's meta gets meta.handoff_slug = <slug> and the memory is
    *  resumable via /mneme:resume <slug>. Used by /mneme:handoff and the
@@ -255,6 +263,26 @@ export function mountIngestRoutes(app: Hono): void {
     const meta: Record<string, unknown> = { pinned, source_slash: true };
     if (handoffSlug) meta.handoff_slug = handoffSlug;
 
+    // Optional pre-computed vector from the caller's local daemon. When
+    // present the row is semantically searchable from the start instead
+    // of waiting on an eventual re-embed. Validate shape strictly so a
+    // bad payload can't corrupt the vector column.
+    let vectorLiteral: string | null = null;
+    if (body.embedding !== undefined) {
+      if (!Array.isArray(body.embedding) || body.embedding.length !== EMBEDDER_DIM) {
+        return c.json(
+          { error: `embedding must be a ${EMBEDDER_DIM}-dim number array if present` },
+          400,
+        );
+      }
+      for (const v of body.embedding) {
+        if (typeof v !== "number" || !Number.isFinite(v)) {
+          return c.json({ error: "embedding contains non-finite values" }, 400);
+        }
+      }
+      vectorLiteral = `[${body.embedding.join(",")}]`;
+    }
+
     const result = await sql.begin(async (tx) => {
       // Synthetic capture for provenance. Distinguishable from hook-driven
       // captures via source. Re-running with the same content dedups via
@@ -278,14 +306,15 @@ export function mountIngestRoutes(app: Hono): void {
       const memRows = await tx<{ id: string; created: boolean }[]>`
           INSERT INTO memories (
             capture_id, chunk_id, content, content_hash,
-            embedding_model, tsv,
+            embedding_model, embedding, tsv,
             kind, importance,
             machine_id, repo, harness, agent, topics, private,
             meta
           )
           VALUES (
             ${captureId}, ${chunkId}, ${cleaned}, ${contentHash},
-            ${embeddingModel}, to_tsvector('english', ${cleaned}),
+            ${embeddingModel}, ${vectorLiteral}::vector,
+            to_tsvector('english', ${cleaned}),
             ${kind}, ${importance},
             ${machineId}, ${cleanedRepo}, ${cleanedHarness}, ${cleanedAgent},
             ${cleanedTopics}, ${body.private ?? false},
@@ -293,17 +322,19 @@ export function mountIngestRoutes(app: Hono): void {
           )
           ON CONFLICT (chunk_id) DO UPDATE
           SET meta = memories.meta || ${sql.json(meta as never)},
-              importance = GREATEST(memories.importance, EXCLUDED.importance)
+              importance = GREATEST(memories.importance, EXCLUDED.importance),
+              embedding = COALESCE(memories.embedding, EXCLUDED.embedding)
           RETURNING id, (xmax = 0) AS created
         `;
       const memId = memRows[0]!.id;
       const created = memRows[0]!.created;
-      // No embed enqueue: the legacy server-side embed worker was
-      // retired in #29. This row is written with embedding=NULL and
-      // can be re-extracted via /api/bundle from a daemon if a later
-      // capture matches the content. Today this row is reachable
-      // through keyword (tsv) and metadata queries even without an
-      // embedding.
+      // Callers (slash.ts, hook.ts) pre-compute the embedding via the
+      // local daemon's /embed endpoint when possible, so direct-write
+      // rows land semantically searchable. If the daemon was unreachable
+      // the body has no `embedding` field and vectorLiteral=null; the
+      // row writes with embedding=NULL and stays keyword-searchable via
+      // tsv until something else re-embeds it. ON CONFLICT preserves any
+      // existing non-NULL vector on re-pin/re-handoff.
       return { id: memId, created };
     });
 

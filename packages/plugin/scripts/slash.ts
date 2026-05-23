@@ -24,7 +24,7 @@ import {
 } from "./config.ts";
 import { decryptAdminPassword, encryptAdminPassword } from "./admin-secret.ts";
 import { installDaemonService, pickFreePortDeterministic } from "./daemon-install.ts";
-import { EMBEDDER_MODEL } from "./embedder.ts";
+import { EMBEDDER_MODEL, embedViaDaemon } from "./embedder.ts";
 import { baseScope } from "./scope.ts";
 
 async function readStdin(): Promise<string> {
@@ -148,12 +148,18 @@ async function handoff(slugArg: string): Promise<void> {
   const text = await readStdin();
   if (!text) throw new Error("no handoff text on stdin");
   const cfg = loadConfig();
+  // Embed via local daemon so the handoff is semantically searchable
+  // immediately. Soft-fails to embedding=NULL if the daemon is down —
+  // row still writes; recall via mneme_sql embed() will miss it until
+  // re-embed, but slug lookup via /mneme:resume still works.
+  const embedding = cfg.daemon ? await embedViaDaemon(cfg.daemon.port, text) : null;
   const r = await postMemory(cfg, {
     ...baseScope(cfg),
     content: text,
     kind: "summary",
     importance: 0.7,
     embedding_model: EMBEDDER_MODEL,
+    ...(embedding ? { embedding } : {}),
     handoff_slug: slug,
   });
   const shortId = r.id.slice(0, 8);
@@ -180,6 +186,11 @@ async function pin(input: string): Promise<void> {
     return;
   }
 
+  // Embed via local daemon so the pinned memory is semantically
+  // searchable immediately. Soft-fails to embedding=NULL if the daemon
+  // is down — row still writes and pin still surfaces, just absent from
+  // semantic recall until re-embed.
+  const embedding = cfg.daemon ? await embedViaDaemon(cfg.daemon.port, input) : null;
   const r = await postMemory(cfg, {
     ...baseScope(cfg),
     content: input,
@@ -187,6 +198,7 @@ async function pin(input: string): Promise<void> {
     importance: 1.0,
     pinned: true,
     embedding_model: EMBEDDER_MODEL,
+    ...(embedding ? { embedding } : {}),
   });
   console.log(
     `✓ ${r.created ? "wrote and pinned" : "re-pinned"} memory ${r.id}: "${input.slice(0, 80)}${input.length > 80 ? "…" : ""}"`,
