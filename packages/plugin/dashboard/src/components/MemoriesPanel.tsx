@@ -359,35 +359,69 @@ function ClusterGrouped({
   onToggle: (id: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggle = (key: string) => () =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   return (
     <div className="space-y-3">
       {grouped.map(([cid, members]) => {
         const key = cid ?? "_orphaned";
         const isCollapsed = collapsed.has(key);
+
+        // Orphaned group: no real cluster to encompass, so render as a
+        // flat list with a thin standalone header. Keeps the visual
+        // signal that real clusters carry weight while orphans don't.
+        if (cid === null) {
+          return (
+            <div key={key} className="space-y-1">
+              <ClusterHeader
+                clusterId={cid}
+                memberCount={members.length}
+                collapsed={isCollapsed}
+                onToggle={toggle(key)}
+              />
+              {!isCollapsed &&
+                members.map((m) => (
+                  <MemoryRow
+                    key={m.id}
+                    data={m}
+                    expanded={expandedIds.has(m.id)}
+                    onToggle={() => onToggle(m.id)}
+                  />
+                ))}
+            </div>
+          );
+        }
+
+        // Real cluster: encompassing card. The header lives as the
+        // title bar of the card; members render inside an inset
+        // region with subtle bg differentiation so it's visually
+        // clear they belong to the cluster above.
         return (
-          <div key={key} className="space-y-1">
+          <div key={key} className="rounded-lg border border-border/70 bg-muted/10 overflow-hidden">
             <ClusterHeader
               clusterId={cid}
               memberCount={members.length}
               collapsed={isCollapsed}
-              onToggle={() =>
-                setCollapsed((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(key)) next.delete(key);
-                  else next.add(key);
-                  return next;
-                })
-              }
+              onToggle={toggle(key)}
+              attached
             />
-            {!isCollapsed &&
-              members.map((m) => (
-                <MemoryRow
-                  key={m.id}
-                  data={m}
-                  expanded={expandedIds.has(m.id)}
-                  onToggle={() => onToggle(m.id)}
-                />
-              ))}
+            {!isCollapsed && (
+              <div className="border-t border-border/50 bg-background/40 p-2 space-y-1.5">
+                {members.map((m) => (
+                  <MemoryRow
+                    key={m.id}
+                    data={m}
+                    expanded={expandedIds.has(m.id)}
+                    onToggle={() => onToggle(m.id)}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         );
       })}
