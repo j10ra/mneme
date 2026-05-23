@@ -85,17 +85,18 @@ export const DREAM_MIN_CLUSTER_SIZE = 3;
 export const DREAM_MAX_CLUSTER_SIZE = 20;
 
 /** Per-memory NN cap inside the LATERAL JOIN — keeps union-find bounded
- *  for hub memories in dense graphs. Bumped from 20 → 40 once NDJSON
- *  streaming made per-batch HNSW cost safe; richer connectivity surfaces
- *  more eligible 3+ components per slice on sparse corpora where seeds
- *  rarely had 20 near-neighbors. */
-export const DREAM_MAX_NEIGHBORS_PER_MEMORY = 40;
+ *  for hub memories in dense graphs. 20 → 40 → 80 as NDJSON streaming
+ *  proved gateway-safe; richer connectivity surfaces more eligible 3+
+ *  components per slice on sparse corpora where seeds rarely had even
+ *  20 near-neighbors. */
+export const DREAM_MAX_NEIGHBORS_PER_MEMORY = 80;
 
 /** Watermark-ordered seed slice per dream cycle. Each cycle takes the
  *  least-recently-dreamed N rows and stamps meta.last_dreamed_at, so
  *  successive cycles round-robin the whole corpus rather than re-scanning
- *  the newest rows. A full sweep spans ceil(corpus / cap) cycles. */
-export const DREAM_MAX_CANDIDATES_PER_CYCLE = 500;
+ *  the newest rows. A full sweep spans ceil(corpus / cap) cycles. Bumped
+ *  500 → 1000 so a ~14k corpus drains in 14 cycles instead of 28. */
+export const DREAM_MAX_CANDIDATES_PER_CYCLE = 1000;
 
 /** Per-batch seed count for the NDJSON streaming candidates endpoint.
  *  Each batch runs ≤ DREAM_STREAM_SEED_BATCH × DREAM_MAX_NEIGHBORS_PER_MEMORY
