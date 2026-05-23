@@ -216,11 +216,11 @@ async function postHandoffMemory(cfg: MnemeConfig, body: Record<string, unknown>
   }
 }
 
-/** Walk the transcript looking for the entry with `isCompactSummary: true`.
- *  Claude Code writes the compact summary as a user-role entry with that
- *  flag set and `message.content` containing the full summary text. Returns
- *  the content string, or null if not found. */
+/** Walk the transcript and return the *most recent* `isCompactSummary: true`
+ *  entry. Chained compactions leave older summary entries in the transcript,
+ *  so the first match is usually stale — we want the one CC just wrote. */
 function extractCompactSummary(transcriptPath: string): string | null {
+  let latest: string | null = null;
   try {
     const raw = readFileSync(transcriptPath, "utf8");
     for (const line of raw.split("\n")) {
@@ -236,7 +236,8 @@ function extractCompactSummary(transcriptPath: string): string | null {
       if (!message) continue;
       const content = message.content;
       if (typeof content === "string" && content.trim().length > 0) {
-        return content;
+        latest = content;
+        continue;
       }
       if (Array.isArray(content)) {
         const text = content
@@ -250,13 +251,13 @@ function extractCompactSummary(transcriptPath: string): string | null {
           .map((b) => b.text)
           .join("\n\n")
           .trim();
-        if (text.length > 0) return text;
+        if (text.length > 0) latest = text;
       }
     }
   } catch {
     /* unreadable transcript -- nothing to capture */
   }
-  return null;
+  return latest;
 }
 
 /** Generate a date-stamped slug for compact auto-captures. Format:
