@@ -2009,6 +2009,10 @@ function forwardMemoriesWithLocalEmbed() {
     const url = new URL(c.req.url);
     const q = (url.searchParams.get("q") ?? "").trim();
     if (q) {
+      Logger.info("dashboard.memories: embedding query", {
+        source: "dashboard:search",
+        q_len: q.length
+      });
       try {
         const [vec] = await embedBatch([q]);
         if (vec && vec.length > 0) {
@@ -2279,18 +2283,20 @@ function mountEmbedRoute(app) {
       return c.json({ error: "texts[] required" }, 400);
     }
     const texts = body.texts.filter((t) => typeof t === "string");
-    Logger.info("embed request", { count: texts.length });
+    const source = typeof body.source === "string" ? body.source : "unknown";
+    Logger.info("embed request", { count: texts.length, source });
     try {
       const t0 = Date.now();
       const vectors = await embedBatch(texts);
       Logger.info("embed result", {
         count: vectors.length,
-        duration_ms: Date.now() - t0
+        duration_ms: Date.now() - t0,
+        source
       });
       return c.json({ vectors });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      Logger.error("embed failed", err, { count: texts.length });
+      Logger.error("embed failed", err, { count: texts.length, source });
       return c.json({ error: msg }, 500);
     }
   });

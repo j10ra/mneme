@@ -25,6 +25,7 @@ import {
 import { decryptAdminPassword, encryptAdminPassword } from "./admin-secret.ts";
 import { installDaemonService, pickFreePortDeterministic } from "./daemon-install.ts";
 import { EMBEDDER_MODEL, embedViaDaemon } from "./embedder.ts";
+import { plog } from "./log.ts";
 import { baseScope } from "./scope.ts";
 
 async function readStdin(): Promise<string> {
@@ -152,7 +153,9 @@ async function handoff(slugArg: string): Promise<void> {
   // immediately. Soft-fails to embedding=NULL if the daemon is down —
   // row still writes; recall via mneme_sql embed() will miss it until
   // re-embed, but slug lookup via /mneme:resume still works.
-  const embedding = cfg.daemon ? await embedViaDaemon(cfg.daemon.port, text) : null;
+  const embedding = cfg.daemon
+    ? await embedViaDaemon(cfg.daemon.port, text, "slash:handoff")
+    : null;
   const r = await postMemory(cfg, {
     ...baseScope(cfg),
     content: text,
@@ -190,7 +193,7 @@ async function pin(input: string): Promise<void> {
   // searchable immediately. Soft-fails to embedding=NULL if the daemon
   // is down — row still writes and pin still surfaces, just absent from
   // semantic recall until re-embed.
-  const embedding = cfg.daemon ? await embedViaDaemon(cfg.daemon.port, input) : null;
+  const embedding = cfg.daemon ? await embedViaDaemon(cfg.daemon.port, input, "slash:pin") : null;
   const r = await postMemory(cfg, {
     ...baseScope(cfg),
     content: input,
@@ -822,6 +825,11 @@ function parseSetupArgs(args: string[]): {
 
 async function main(): Promise<void> {
   const cmd = process.argv[2];
+  // One INFO line per slash invocation so the dashboard log panel
+  // shows which command ran without needing CC's transcript. Args are
+  // omitted (might contain memory text/uuids the user just typed) —
+  // only the command name is logged.
+  plog("INFO", `slash.${cmd ?? "unknown"}`, "invoked");
   switch (cmd) {
     case "setup": {
       const { url, adminPassword, name } = parseSetupArgs(process.argv.slice(3));

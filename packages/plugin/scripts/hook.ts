@@ -23,6 +23,7 @@ import { baseScope as buildScope, discoverRepos, repoForFile } from "./scope.ts"
 import { scrubData } from "./scrub.ts";
 import { decryptAdminPassword } from "./admin-secret.ts";
 import { EMBEDDER_MODEL, embedViaDaemon } from "./embedder.ts";
+import { plog } from "./log.ts";
 
 const event = process.argv[2] ?? "unknown";
 
@@ -601,10 +602,25 @@ async function main(): Promise<void> {
   // wherever Claude Code spawned the hook script.
   const sessionCwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
 
+  // One INFO line per hook firing so the dashboard log panel shows
+  // every event end-to-end (SessionStart, UserPromptSubmit, PostToolUse,
+  // Stop, PreCompact, SessionEnd). Fields kept short — tool/source/cwd
+  // basename — to stay grep-friendly in the live tail.
+  plog("INFO", `hook.${event.toLowerCase()}`, "fired", {
+    source: typeof payload.source === "string" ? payload.source : undefined,
+    tool: typeof payload.tool_name === "string" ? payload.tool_name : undefined,
+    cwd: sessionCwd && typeof sessionCwd === "string" ? sessionCwd.split("/").pop() : undefined,
+  });
+
   // Hard blacklist: claude-internal dirs, /tmp, system mounts. Captures from
   // these paths are ghost-agent activity (claude-mem observer subagents,
   // transient subprocess workdirs from other plugins).
-  if (sessionCwd && isBlacklistedPath(sessionCwd)) return;
+  if (sessionCwd && isBlacklistedPath(sessionCwd)) {
+    plog("INFO", `hook.${event.toLowerCase()}`, "skipped: blacklisted cwd", {
+      cwd: sessionCwd,
+    });
+    return;
+  }
 
   // SessionStart is the trust anchor: if cwd looks like a real project (passed
   // the blacklist above), auto-register it so subsequent events flow through.
@@ -668,7 +684,7 @@ async function main(): Promise<void> {
           // semantics — failure to embed never blocks SessionStart.
           void (async () => {
             const embedding = cfg.daemon
-              ? await embedViaDaemon(cfg.daemon.port, summaryText)
+              ? await embedViaDaemon(cfg.daemon.port, summaryText, "hook:compact")
               : null;
             await postHandoffMemory(cfg, {
               ...baseScope,

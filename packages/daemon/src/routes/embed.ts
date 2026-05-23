@@ -13,24 +13,29 @@ import { embedBatch } from "../embed.ts";
 
 export function mountEmbedRoute(app: Hono): void {
   app.post("/embed", mnemeRoute("daemon.embed_route"), async (c) => {
-    const body = (await c.req.json().catch(() => null)) as { texts?: unknown } | null;
+    const body = (await c.req.json().catch(() => null)) as {
+      texts?: unknown;
+      source?: unknown;
+    } | null;
     if (!body || !Array.isArray(body.texts)) {
       Logger.warn("embed: invalid body");
       return c.json({ error: "texts[] required" }, 400);
     }
     const texts = body.texts.filter((t): t is string => typeof t === "string");
-    Logger.info("embed request", { count: texts.length });
+    const source = typeof body.source === "string" ? body.source : "unknown";
+    Logger.info("embed request", { count: texts.length, source });
     try {
       const t0 = Date.now();
       const vectors = await embedBatch(texts);
       Logger.info("embed result", {
         count: vectors.length,
         duration_ms: Date.now() - t0,
+        source,
       });
       return c.json({ vectors });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      Logger.error("embed failed", err, { count: texts.length });
+      Logger.error("embed failed", err, { count: texts.length, source });
       return c.json({ error: msg }, 500);
     }
   });

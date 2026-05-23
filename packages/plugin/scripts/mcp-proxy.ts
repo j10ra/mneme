@@ -22,8 +22,14 @@ const SERVER_VERSION = "1.0.0";
 // a clear error rather than forwarding doomed SQL.
 const EMBED_RE = /\bembed\(\s*'((?:[^'\\]|\\.)*)'\s*\)/gi;
 
-function plog(msg: string): void {
-  // stdout is reserved for JSON-RPC; diagnostics go to stderr.
+import { plog as sharedPlog } from "./log.ts";
+
+function plog(msg: string, fields?: Record<string, unknown>): void {
+  // stdout is reserved for JSON-RPC; diagnostics go to the shared log
+  // file (~/.mneme/logs/daemon.log) so the dashboard's log panel sees
+  // them. Also mirror to stderr so CC's transcript still shows them
+  // when running interactively.
+  sharedPlog("INFO", "mcp.proxy", msg, fields);
   process.stderr.write(`mneme-mcp: ${msg}\n`);
 }
 
@@ -57,7 +63,7 @@ async function substituteEmbedsViaDaemon(
     const resp = await fetch(`http://127.0.0.1:${cfg.daemon.port}/embed`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ texts: cleanedTexts }),
+      body: JSON.stringify({ texts: cleanedTexts, source: "mcp:sql" }),
       signal: AbortSignal.timeout(15_000),
     });
     if (!resp.ok) {
@@ -207,6 +213,8 @@ for await (const rawLine of rl) {
         ? (params.arguments.query as string)
         : null;
     if (sql) {
+      const hasEmbed = /\bembed\(/i.test(sql);
+      plog("mneme_sql: tools/call", { chars: sql.length, has_embed: hasEmbed });
       const result = await substituteEmbedsViaDaemon(cfg, sql);
       if (result.kind === "error") {
         plog(`tools/call: ${result.message}`);

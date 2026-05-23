@@ -22,13 +22,20 @@ export const EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5";
 
 /** Fetch a single-text embedding from the local daemon. Returns null on
  *  any failure; the caller writes the row without an embedding in that
- *  case (acceptable degradation — row stays keyword-searchable). */
-export async function embedViaDaemon(daemonPort: number, text: string): Promise<number[] | null> {
+ *  case (acceptable degradation — row stays keyword-searchable).
+ *  `source` (e.g. "slash:handoff", "hook:compact", "mcp:sql",
+ *  "dashboard:search") flows into the daemon's /embed log line so the
+ *  dashboard log panel can show which path triggered each call. */
+export async function embedViaDaemon(
+  daemonPort: number,
+  text: string,
+  source: string,
+): Promise<number[] | null> {
   try {
     const resp = await fetch(`http://127.0.0.1:${daemonPort}/embed`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ texts: [text] }),
+      body: JSON.stringify({ texts: [text], source }),
       signal: AbortSignal.timeout(15_000),
     });
     if (!resp.ok) return null;

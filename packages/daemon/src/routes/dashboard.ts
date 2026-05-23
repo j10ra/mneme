@@ -300,6 +300,10 @@ function forwardMemoriesWithLocalEmbed() {
     const url = new URL(c.req.url);
     const q = (url.searchParams.get("q") ?? "").trim();
     if (q) {
+      Logger.info("dashboard.memories: embedding query", {
+        source: "dashboard:search",
+        q_len: q.length,
+      });
       try {
         const [vec] = await embedBatch([q]);
         if (vec && vec.length > 0) {
