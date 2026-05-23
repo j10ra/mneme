@@ -522,9 +522,12 @@ export async function writeClusters(
           supersedesRejected++;
         }
         for (const pair of valid) {
+          // Drop in_cluster atomically: a superseded memory is logically
+          // retired, so it shouldn't keep claiming cluster membership.
+          // Migration 0029 backfills the pre-fix corpora.
           await tx`
             UPDATE memories
-            SET meta = meta || jsonb_build_object('superseded_by', ${pair.new_id}::text)
+            SET meta = (meta - 'in_cluster') || jsonb_build_object('superseded_by', ${pair.new_id}::text)
             WHERE id = ${pair.old_id} AND (meta->>'superseded_by') IS NULL
           `;
           supersedes++;

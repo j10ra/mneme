@@ -156,7 +156,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
       `;
       const insert = async (
         id: string,
-        opts: { meta?: object; archived?: boolean } = {},
+        opts: { meta?: Record<string, unknown>; archived?: boolean } = {},
       ): Promise<void> => {
         await sql`
           INSERT INTO memories (
@@ -167,7 +167,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
             ${id}, ${captureId}, ${`chunk-${id}`}, ${`c ${id}`}, ${`hash-${id}`},
             ${`[${Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)).join(",")}]`}::vector,
             'test', 'note', ${machineId}, 'test',
-            ${sql.json(opts.meta ?? {})}, ${opts.archived ? sql`now()` : null}
+            ${sql.json((opts.meta ?? {}) as never)}, ${opts.archived ? sql`now()` : null}
           )
         `;
       };

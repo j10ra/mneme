@@ -187,7 +187,7 @@ async function applyMerge(winner: ClusterRow, loser: ClusterRow): Promise<void> 
     `;
     await tx`
       UPDATE memories
-      SET meta = meta || jsonb_build_object('superseded_by', ${winner.id}::text)
+      SET meta = (meta - 'in_cluster') || jsonb_build_object('superseded_by', ${winner.id}::text)
       WHERE id = ${loser.id}
         AND (meta->>'superseded_by') IS NULL
     `;
@@ -247,7 +247,7 @@ export async function findCrossClusterSupersedeCandidates(): Promise<CrossCluste
 async function applySupersede(oldId: string, newId: string): Promise<boolean> {
   const r = await sql`
     UPDATE memories
-    SET meta = meta || jsonb_build_object('superseded_by', ${newId}::text)
+    SET meta = (meta - 'in_cluster') || jsonb_build_object('superseded_by', ${newId}::text)
     WHERE id = ${oldId}
       AND (meta->>'superseded_by') IS NULL
   `;

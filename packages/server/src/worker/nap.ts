@@ -225,7 +225,7 @@ async function napSeedPhase(): Promise<{ related: number; superseded: number }> 
               LIMIT ${SUPERSEDE_RULE_PER_CYCLE_CAP}
             )
             UPDATE memories m
-            SET meta = m.meta || jsonb_build_object('superseded_by', p.newer_id::text)
+            SET meta = (m.meta - 'in_cluster') || jsonb_build_object('superseded_by', p.newer_id::text)
             FROM pairs p
             WHERE m.id = p.older_id
             RETURNING p.older_id::text, p.newer_id::text
