@@ -399,6 +399,19 @@ export function mountOpsRoutes(app: Hono): void {
     async (c) => {
       const id = c.req.param("id");
       const k = clamp(Number(c.req.query("k") ?? 6), 1, 20, 6);
+      // Direct-write memories (e.g. /mneme:pin <text>, /mneme:handoff)
+      // land with embedding=NULL until the daemon picks them up. Without
+      // a seed vector `m.embedding <=> NULL` returns NULL for every row,
+      // producing a related list of NULL distances that the dashboard
+      // can't render. Short-circuit with empty instead.
+      const [seedRow] = await sql<{ has_embedding: boolean }[]>`
+        SELECT embedding IS NOT NULL AS has_embedding
+        FROM memories
+        WHERE id = ${id}::uuid AND archived_at IS NULL
+      `;
+      if (!seedRow?.has_embedding) {
+        return c.json({ related: [] });
+      }
       const rows = (await sql<
         { id: string; content_preview: string; distance: number; kind: string | null }[]
       >`
@@ -413,6 +426,7 @@ export function mountOpsRoutes(app: Hono): void {
         FROM memories m, seed
         WHERE m.id <> ${id}::uuid
           AND m.archived_at IS NULL
+          AND m.embedding IS NOT NULL
         ORDER BY m.embedding <=> seed.embedding
         LIMIT ${k}
       `) as unknown as Array<{

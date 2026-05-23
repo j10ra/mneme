@@ -152,7 +152,9 @@ function RelatedTab({ id }: { id: string }) {
         <li key={r.id} className="rounded-md border border-border/60 bg-card/40 px-2 py-1.5">
           <div className="flex items-center gap-2 text-[9px] text-muted-foreground uppercase tracking-wider">
             {r.kind && <span>{r.kind}</span>}
-            <span className="ml-auto tabular-nums">dist {r.distance.toFixed(3)}</span>
+            <span className="ml-auto tabular-nums">
+              dist {typeof r.distance === "number" ? r.distance.toFixed(3) : "—"}
+            </span>
           </div>
           <div className="mt-0.5 line-clamp-3 text-foreground/85 leading-snug">
             {r.content_preview}
