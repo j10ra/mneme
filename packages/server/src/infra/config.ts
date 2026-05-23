@@ -67,8 +67,20 @@ export const NAP_FLOOR = 0.05;
 /** Floor for pinned memories' importance — gives `pin` its meaning. */
 export const NAP_PIN_FLOOR = 0.5;
 
-/** Per-cycle multiplier for shadowed memories (exact-text duplicates). */
-export const NAP_SHADOW_DECAY = 0.1;
+/** Archive a memory once it lands at or below this importance AND has
+ *  no recall_weight AND is at least NAP_ARCHIVE_MIN_AGE_DAYS old. Archived
+ *  rows stay queryable (the using-mneme template can opt them in) but are
+ *  excluded from surface so the relevance-ranked slice stays clean. */
+export const NAP_ARCHIVE_IMPORTANCE_MAX = 0.1;
+
+/** A memory must be at least this old before nap may archive it. Gives
+ *  every memory a fair shot at being recalled before we declare it dead. */
+export const NAP_ARCHIVE_MIN_AGE_DAYS = 30;
+
+/** Per-cycle cap on auto-archives so a one-time eligibility bloom doesn't
+ *  archive thousands in a single nap tick. 200 × 6 cycles/day = 1200/day
+ *  max, well above expected inflow of dead memories under normal use. */
+export const NAP_ARCHIVE_PER_CYCLE_CAP = 200;
 
 /** Cosine-distance ceiling for adding to `meta.related_to`. */
 export const NAP_RELATE_DISTANCE = 0.15;

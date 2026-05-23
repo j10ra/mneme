@@ -1,12 +1,14 @@
 import { Logger, mnemeFn } from "@mneme/core";
 import {
+  NAP_ARCHIVE_IMPORTANCE_MAX,
+  NAP_ARCHIVE_MIN_AGE_DAYS,
+  NAP_ARCHIVE_PER_CYCLE_CAP,
   NAP_DECAY_PER_CYCLE,
   NAP_FLOOR,
   NAP_PER_CYCLE_CAP,
   NAP_PIN_FLOOR,
   NAP_RELATE_DISTANCE,
   NAP_RELATE_MAX_NEIGHBORS,
-  NAP_SHADOW_DECAY,
   RECALL_LTD_DECAY,
   SUPERSEDE_RULE_AGE_GAP,
   SUPERSEDE_RULE_COSINE_MAX,
@@ -46,7 +48,7 @@ export async function forEachIdBatch(
 export type NapResult = {
   decayed: number;
   ltp_decayed: number;
-  shadowed: number;
+  archived: number;
   related: number;
   superseded: number;
 };
@@ -99,36 +101,37 @@ async function napDecayRecallWeight(): Promise<number> {
   });
 }
 
-/** Phase 2: exact-text shadow-marking. Single statement in its own
- *  transaction. The UPDATE only touches rows in duplicate groups; the
- *  statement is bounded by the GROUP BY scan over the live corpus.
- *  Runs after the decay phases on purpose: keeper selection orders by
- *  importance, so it must see this cycle's decayed values. */
-async function napShadowDuplicates(): Promise<number> {
-  const shadowed = await sql`
-    WITH groups AS (
-      SELECT content_hash,
-             COALESCE(repo, '__null__') AS repo_key,
-             CASE WHEN private THEN machine_id ELSE 'public' END AS scope_key,
-             (array_agg(id ORDER BY importance DESC, created_at DESC))[1] AS keeper_id
-      FROM memories
+/** Phase 2: archive memories that have decayed to irrelevance and were
+ *  never recalled. Criteria (all required):
+ *    - importance ≤ NAP_ARCHIVE_IMPORTANCE_MAX
+ *    - recall_weight = 0 (never queried, or fully LTD-decayed)
+ *    - created_at older than NAP_ARCHIVE_MIN_AGE_DAYS
+ *    - NOT pinned, NOT clustered, NOT superseded
+ *    - kind != 'cluster' (cluster summaries are derived; archive their
+ *       members instead if we want to free them)
+ *  Capped at NAP_ARCHIVE_PER_CYCLE_CAP so a one-time eligibility bloom
+ *  doesn't dump thousands at once. Archived rows stay in the table and
+ *  are still queryable via mneme_sql when an agent opts them in. */
+async function napArchiveOrphans(): Promise<number> {
+  const archived = await sql`
+    WITH targets AS (
+      SELECT id FROM memories
       WHERE archived_at IS NULL
-        AND (meta->>'shadow_of') IS NULL
-      GROUP BY content_hash, COALESCE(repo, '__null__'),
-               CASE WHEN private THEN machine_id ELSE 'public' END
-      HAVING count(*) > 1
+        AND kind <> 'cluster'
+        AND importance <= ${NAP_ARCHIVE_IMPORTANCE_MAX}::real
+        AND COALESCE(recall_weight, 0) = 0
+        AND created_at < now() - (${NAP_ARCHIVE_MIN_AGE_DAYS}::int || ' days')::interval
+        AND NOT COALESCE((meta->>'pinned')::boolean, false)
+        AND (meta->>'in_cluster') IS NULL
+        AND (meta->>'superseded_by') IS NULL
+      ORDER BY importance ASC, created_at ASC
+      LIMIT ${NAP_ARCHIVE_PER_CYCLE_CAP}
     )
-    UPDATE memories m
-    SET importance = m.importance * ${NAP_SHADOW_DECAY}::real,
-        meta = m.meta || jsonb_build_object('shadow_of', g.keeper_id::text)
-    FROM groups g
-    WHERE m.content_hash = g.content_hash
-      AND COALESCE(m.repo, '__null__') = g.repo_key
-      AND CASE WHEN m.private THEN m.machine_id ELSE 'public' END = g.scope_key
-      AND m.id <> g.keeper_id
-      AND (m.meta->>'shadow_of') IS NULL
+    UPDATE memories
+    SET archived_at = now()
+    WHERE id IN (SELECT id FROM targets)
   `;
-  return shadowed.count;
+  return archived.count;
 }
 
 /** Phase 3: seed-bounded relate + rule-supersede + stamp. One
@@ -254,13 +257,13 @@ async function napSeedPhase(): Promise<{ related: number; superseded: number }> 
 export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult> => {
   const decayed = await napDecayImportance();
   const ltpDecayed = await napDecayRecallWeight();
-  const shadowed = await napShadowDuplicates();
+  const archived = await napArchiveOrphans();
   const seed = await napSeedPhase();
 
   const result: NapResult = {
     decayed,
     ltp_decayed: ltpDecayed,
-    shadowed,
+    archived,
     related: seed.related,
     superseded: seed.superseded,
   };
