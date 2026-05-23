@@ -26,10 +26,10 @@ import {
   DREAM_MAX_NEIGHBORS_PER_MEMORY,
   DREAM_STREAM_NEIGHBOR_BATCH,
   DREAM_STREAM_SEED_BATCH,
+  EMBEDDER_DIM,
 } from "../infra/config.ts";
 import { validateSupersedePairs } from "../lib/supersede.ts";
 import { sha256Hex, sql } from "../infra/db.ts";
-import { EMBEDDER_DIM } from "../infra/config.ts";
 
 // All dream tuning knobs (cycle cap, neighbor cap, stream batch sizes)
 // live in ../infra/config.ts -- imported at the top of this file.
@@ -346,7 +346,11 @@ type ClusterSubmission = {
   member_ids: string[];
   title: string;
   summary: string;
-  /** Optional bge-large vector of the summary. When present the cluster
+  /** Required. Daemon's embedder identity, carried into the cluster row's
+   *  embedding_model column AND into the chunk_id hash. Server is
+   *  label-agnostic — it stores whatever the daemon stamps. */
+  embedding_model: string;
+  /** Optional vector of the summary. When present the cluster
    *  row gets embedding + embedding_model populated, so semantic recall
    *  finds it. When absent, the row is keyword-only via tsv. */
   summary_embedding?: number[];
@@ -389,6 +393,9 @@ export function validateClustersBody(input: unknown): ClustersValidation {
     }
     if (typeof c.summary !== "string" || !c.summary.trim()) {
       return { ok: false, error: `clusters[${i}].summary required` };
+    }
+    if (typeof c.embedding_model !== "string" || !c.embedding_model.trim()) {
+      return { ok: false, error: `clusters[${i}].embedding_model required` };
     }
     if (
       c.summary_embedding !== undefined &&
@@ -440,11 +447,12 @@ export async function writeClusters(
 
       // chunk_id is NOT NULL on memories. Same scheme as the bundle
       // path: sha256(content) -> content_hash, sha256(content_hash +
-      // ":" + embedding_model) -> chunk_id. Always set embedding_model
-      // to the canonical name even when the embedding itself is null,
-      // so chunk_id is deterministic and ON CONFLICT dedupes
-      // re-runs of the same cluster.
-      const embeddingModel = "BAAI/bge-large-en-v1.5";
+      // ":" + embedding_model) -> chunk_id. The daemon supplies
+      // embedding_model in the cluster submission — server is
+      // label-agnostic and just hashes against what was sent. Pre-1.1.62
+      // this was a hardcoded "BAAI/bge-large-en-v1.5" literal that
+      // produced 89 mislabeled cluster rows; migration 0030 backfills.
+      const embeddingModel = cluster.embedding_model;
       const contentHash = await sha256Hex(cluster.summary);
       const chunkId = await sha256Hex(`${contentHash}:${embeddingModel}`);
       const vectorLiteral = cluster.summary_embedding

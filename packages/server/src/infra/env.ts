@@ -64,14 +64,10 @@ const Schema = z.object({
   RECALL_RANKING_COEF: z.coerce.number().default(0.1),
 
   // ── Embedder ──────────────────────────────────────────────────────
-  // The server doesn't embed anything itself. All embedding happens in
-  // the per-machine daemon's bge-small subprocess: the MCP proxy
-  // substitutes embed() macros locally before SQL reaches /mcp, and
-  // the dashboard memories endpoint accepts pre-embedded qvec from the
-  // daemon. Only EMBEDDER_MODEL remains as a server-side constant —
-  // it's part of the chunk_id hash, so the server validates incoming
-  // bundles' embedding_model against it.
-  EMBEDDER_MODEL: z.string().default("BAAI/bge-small-en-v1.5"),
+  // No embedder env vars on the server. The per-machine daemon owns the
+  // embedder identity and stamps `embedding_model` on every write the
+  // server receives. EMBEDDER_DIM (vector column shape) lives as a
+  // constant in infra/config.ts because it's tied to the DB schema.
 });
 
 const parsed = (() => {

@@ -14,18 +14,14 @@
 
 import { env } from "./env.ts";
 
-// ── Embedder constants ────────────────────────────────────────────────
-// Server doesn't embed anything itself anymore — query-time embedding
-// runs on each per-machine daemon's bge-small subprocess, mneme_sql
-// embed() substitution lands in mcp-proxy.ts before SQL hits the server,
-// and dashboard search embeds query text in the daemon proxy before
-// forwarding to /api/_ops/memories?qvec=... These two constants are
-// kept here because they're still load-bearing: EMBEDDER_MODEL is part
-// of the chunk_id hash (so the server can validate against an incoming
-// bundle's model string), and EMBEDDER_DIM is the vector-shape check
-// for /api/bundle and /api/dream/clusters.
+// ── Vector dim ────────────────────────────────────────────────────────
+// The only embedder-shaped constant the server still owns: EMBEDDER_DIM
+// matches `memories.embedding vector(384)`. Bumping this requires a
+// migration + re-embed pass (see #36 Phase 1 for the pattern). The
+// embedder MODEL identity is owned by the daemon — every write path
+// (bundle, /api/memory, /api/dream/clusters) carries embedding_model
+// from the caller; the server just stores what's sent.
 
-export const EMBEDDER_MODEL = env.EMBEDDER_MODEL;
 export const EMBEDDER_DIM = 384;
 
 // ── Telemetry retention ───────────────────────────────────────────────

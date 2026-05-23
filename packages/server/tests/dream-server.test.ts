@@ -228,6 +228,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
               member_ids: [idA, idB, idC],
               title: "test cluster",
               summary: `test summary ${windowKey}`,
+              embedding_model: "BAAI/bge-small-en-v1.5",
               supersede_pairs: [
                 { old_id: idA, new_id: idC, reason: "good — A older than C" },
                 { old_id: idC, new_id: idB, reason: "backwards — C newer than B" },

@@ -38,7 +38,6 @@ const silentTrace: MiddlewareHandler = async (c, next) => {
 };
 import { sql, sha256Hex } from "../infra/db.ts";
 import { actuateRawMeta } from "../lib/actuate.ts";
-import { EMBEDDER_MODEL } from "../infra/config.ts";
 import { KINDS, type Kind } from "../llm/index.ts";
 
 // Cap a single forwarded batch so a runaway daemon can't OOM the
@@ -106,6 +105,11 @@ type MemoryBody = {
   session_id?: string | null;
   topics?: string[];
   private?: boolean;
+  /** Required. The caller (slash.ts on the user's machine) carries this
+   *  from the local daemon's embedder identity. Server is label-agnostic
+   *  about which embedder produced the eventual vector — it just stores
+   *  what's sent and hashes chunk_id against it. */
+  embedding_model: string;
   /** Short kebab-case slug for cross-machine handoff. When present, the
    *  memory's meta gets meta.handoff_slug = <slug> and the memory is
    *  resumable via /mneme:resume <slug>. Used by /mneme:handoff and the
@@ -215,6 +219,13 @@ export function mountIngestRoutes(app: Hono): void {
     }
     if (!body.hostname) return c.json({ error: "hostname required" }, 400);
     if (!body.harness) return c.json({ error: "harness required" }, 400);
+    if (!body.embedding_model || typeof body.embedding_model !== "string") {
+      return c.json({ error: "embedding_model required" }, 400);
+    }
+    const embeddingModel = scrub(body.embedding_model).trim();
+    if (!embeddingModel) {
+      return c.json({ error: "embedding_model empty after scrub" }, 400);
+    }
 
     const auth = currentAuth();
     const machineId =
@@ -236,7 +247,7 @@ export function mountIngestRoutes(app: Hono): void {
     const cleanedTopics = (body.topics ?? []).map(scrub);
 
     const contentHash = await sha256Hex(cleaned);
-    const chunkId = await sha256Hex(`${contentHash}:${EMBEDDER_MODEL}`);
+    const chunkId = await sha256Hex(`${contentHash}:${embeddingModel}`);
     const handoffSlug =
       typeof body.handoff_slug === "string" && body.handoff_slug.trim()
         ? scrub(body.handoff_slug).trim()
@@ -274,7 +285,7 @@ export function mountIngestRoutes(app: Hono): void {
           )
           VALUES (
             ${captureId}, ${chunkId}, ${cleaned}, ${contentHash},
-            ${EMBEDDER_MODEL}, to_tsvector('english', ${cleaned}),
+            ${embeddingModel}, to_tsvector('english', ${cleaned}),
             ${kind}, ${importance},
             ${machineId}, ${cleanedRepo}, ${cleanedHarness}, ${cleanedAgent},
             ${cleanedTopics}, ${body.private ?? false},

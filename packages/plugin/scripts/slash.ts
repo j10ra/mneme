@@ -24,6 +24,7 @@ import {
 } from "./config.ts";
 import { decryptAdminPassword, encryptAdminPassword } from "./admin-secret.ts";
 import { installDaemonService, pickFreePortDeterministic } from "./daemon-install.ts";
+import { EMBEDDER_MODEL } from "./embedder.ts";
 import { baseScope } from "./scope.ts";
 
 async function readStdin(): Promise<string> {
@@ -152,6 +153,7 @@ async function handoff(slugArg: string): Promise<void> {
     content: text,
     kind: "summary",
     importance: 0.7,
+    embedding_model: EMBEDDER_MODEL,
     handoff_slug: slug,
   });
   const shortId = r.id.slice(0, 8);
@@ -184,6 +186,7 @@ async function pin(input: string): Promise<void> {
     kind: "note",
     importance: 1.0,
     pinned: true,
+    embedding_model: EMBEDDER_MODEL,
   });
   console.log(
     `✓ ${r.created ? "wrote and pinned" : "re-pinned"} memory ${r.id}: "${input.slice(0, 80)}${input.length > 80 ? "…" : ""}"`,

@@ -18,6 +18,7 @@
 import { Logger } from "@mneme/core";
 import type { DreamOutput, Memory, SupersedeCandidate, SupersedePair } from "./agents/types.ts";
 import { type DistilledCluster, type DreamOutbox, clusterIdFor } from "./dream-outbox.ts";
+import { EMBEDDER_MODEL } from "./embed.ts";
 import {
   DREAM_MAX_CLUSTER_SIZE,
   DREAM_MIN_CLUSTER_SIZE,
@@ -94,7 +95,10 @@ export type ClusterSubmission = {
   member_ids: string[];
   title: string;
   summary: string;
-  /** Pre-computed bge-large vector of `summary`, so the server stores
+  /** Daemon's embedder identity. Server is label-agnostic — it stores
+   *  whatever the daemon stamps and hashes chunk_id against it. */
+  embedding_model: string;
+  /** Pre-computed bge-small vector of `summary`, so the server stores
    *  the cluster row with embedding populated and recall finds it via
    *  semantic search just like raw memories. Without this the cluster
    *  is keyword-searchable only (via tsv) and embed('...') queries
@@ -473,6 +477,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     member_ids: c.member_ids,
     title: c.title,
     summary: c.summary,
+    embedding_model: EMBEDDER_MODEL,
     ...(c.summary_embedding ? { summary_embedding: c.summary_embedding } : {}),
     ...(c.supersede_pairs && c.supersede_pairs.length
       ? { supersede_pairs: c.supersede_pairs }
@@ -559,6 +564,7 @@ export async function resumeDreamCycles(
       member_ids: c.member_ids,
       title: c.title,
       summary: c.summary,
+      embedding_model: EMBEDDER_MODEL,
       ...(c.summary_embedding ? { summary_embedding: c.summary_embedding } : {}),
       ...(c.supersede_pairs && c.supersede_pairs.length
         ? { supersede_pairs: c.supersede_pairs }

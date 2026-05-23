@@ -1136,6 +1136,180 @@ async function clusterIdFor(memberIds) {
   return hex;
 }
 
+// packages/daemon/src/embed.ts
+import { existsSync as existsSync3 } from "fs";
+import { dirname, join as join3 } from "path";
+import { fileURLToPath } from "url";
+var EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5";
+var PIPELINE_IDLE_MS = 60 * 1000;
+var DISPOSE_GRACE_MS = 2000;
+var child = null;
+var readLoop = null;
+var inflight = null;
+var queue = [];
+var lastUsedAt = 0;
+function workerScriptPath() {
+  const fromEnv = process.env.MNEME_PLUGIN_ROOT;
+  if (fromEnv && fromEnv.trim()) {
+    const p = join3(fromEnv.trim(), "embed-worker.js");
+    if (existsSync3(p))
+      return p;
+  }
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join3(here, "embed-worker.js"),
+    join3(here, "embed-worker.ts"),
+    join3(here, "..", "..", "..", "packages", "plugin", "embed-worker.js")
+  ];
+  for (const p of candidates) {
+    if (existsSync3(p))
+      return p;
+  }
+  throw new Error(`embed-worker not found. Checked MNEME_PLUGIN_ROOT and ${candidates.join(", ")}`);
+}
+function failPending(err) {
+  if (inflight) {
+    inflight.reject(err);
+    inflight = null;
+  }
+  while (queue.length > 0)
+    queue.shift().reject(err);
+}
+async function ensureChild() {
+  if (child && child.proc.exitCode === null)
+    return child;
+  const script = workerScriptPath();
+  const bunBin = process.execPath;
+  Logger.info("embedder: spawning worker", { script, bun: bunBin });
+  const proc = Bun.spawn([bunBin, script], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "inherit",
+    env: process.env
+  });
+  if (!proc.stdin || !proc.stdout) {
+    throw new Error("embed-worker spawn did not return stdio pipes");
+  }
+  const handle = {
+    proc,
+    stdin: proc.stdin
+  };
+  child = handle;
+  readLoop = readStdoutLoop(handle).catch((err) => {
+    Logger.warn("embedder: read loop crashed", {
+      err: err instanceof Error ? err.message : String(err)
+    });
+  });
+  proc.exited.then((code) => {
+    if (child === handle)
+      child = null;
+    if (code !== 0 && code !== null) {
+      Logger.warn("embed-worker exited unexpectedly", { code });
+      failPending(new Error(`embed-worker exited (code=${code})`));
+    }
+  });
+  return handle;
+}
+async function readStdoutLoop(handle) {
+  const reader = handle.proc.stdout.getReader();
+  const decoder = new TextDecoder;
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done)
+      return;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf(`
+`)) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line)
+        continue;
+      const handler = inflight;
+      inflight = null;
+      if (!handler) {
+        Logger.warn("embedder: stray response from worker", {
+          preview: line.slice(0, 200)
+        });
+        continue;
+      }
+      try {
+        const resp = JSON.parse(line);
+        if (resp.error)
+          handler.reject(new Error(resp.error));
+        else if (resp.vectors)
+          handler.resolve(resp.vectors);
+        else
+          handler.reject(new Error("invalid embed-worker response"));
+      } catch (err) {
+        handler.reject(err);
+      }
+      pumpQueue();
+    }
+  }
+}
+function pumpQueue() {
+  if (inflight || queue.length === 0 || !child)
+    return;
+  const next = queue.shift();
+  inflight = next;
+  const line = JSON.stringify({ texts: next.texts }) + `
+`;
+  const enc = new TextEncoder;
+  try {
+    child.stdin.write(enc.encode(line));
+    child.stdin.flush();
+  } catch (err) {
+    if (inflight === next)
+      inflight = null;
+    next.reject(err instanceof Error ? err : new Error(String(err)));
+    return;
+  }
+  lastUsedAt = Date.now();
+}
+async function embedBatch(texts) {
+  if (texts.length === 0)
+    return [];
+  await ensureChild();
+  return new Promise((resolve, reject) => {
+    queue.push({ texts, resolve, reject });
+    pumpQueue();
+  });
+}
+async function disposeIfIdle(idleMs = PIPELINE_IDLE_MS) {
+  if (!child)
+    return false;
+  if (inflight || queue.length > 0)
+    return false;
+  if (Date.now() - lastUsedAt < idleMs)
+    return false;
+  Logger.info("embedder: disposing idle worker", {
+    idle_seconds: Math.round((Date.now() - lastUsedAt) / 1000)
+  });
+  const handle = child;
+  child = null;
+  try {
+    handle.stdin.end();
+  } catch (err) {
+    Logger.warn("embedder: stdin end threw", {
+      err: err instanceof Error ? err.message : String(err)
+    });
+  }
+  const timeout = new Promise((resolve) => setTimeout(() => resolve("timeout"), DISPOSE_GRACE_MS));
+  const winner = await Promise.race([handle.proc.exited, timeout]);
+  if (winner === "timeout") {
+    Logger.warn("embed-worker did not exit on stdin close, sending SIGTERM");
+    handle.proc.kill();
+    await handle.proc.exited;
+  }
+  if (readLoop) {
+    await readLoop.catch(() => {});
+    readLoop = null;
+  }
+  return true;
+}
+
 // packages/daemon/src/infra/config.ts
 var SCHEDULER_TICK_MS = 60000;
 var DREAM_WINDOW_HOURS = 8;
@@ -1459,6 +1633,7 @@ async function runDreamCycle(deps) {
     member_ids: c.member_ids,
     title: c.title,
     summary: c.summary,
+    embedding_model: EMBEDDER_MODEL,
     ...c.summary_embedding ? { summary_embedding: c.summary_embedding } : {},
     ...c.supersede_pairs && c.supersede_pairs.length ? { supersede_pairs: c.supersede_pairs } : {}
   }));
@@ -1522,6 +1697,7 @@ async function resumeDreamCycles(deps) {
       member_ids: c.member_ids,
       title: c.title,
       summary: c.summary,
+      embedding_model: EMBEDDER_MODEL,
       ...c.summary_embedding ? { summary_embedding: c.summary_embedding } : {},
       ...c.supersede_pairs && c.supersede_pairs.length ? { supersede_pairs: c.supersede_pairs } : {}
     }));
@@ -1545,180 +1721,6 @@ async function resumeDreamCycles(deps) {
     }
   }
   return { resumed: resumedClusters, written: writtenClusters };
-}
-
-// packages/daemon/src/embed.ts
-import { existsSync as existsSync3 } from "fs";
-import { dirname, join as join3 } from "path";
-import { fileURLToPath } from "url";
-var EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5";
-var PIPELINE_IDLE_MS = 60 * 1000;
-var DISPOSE_GRACE_MS = 2000;
-var child = null;
-var readLoop = null;
-var inflight = null;
-var queue = [];
-var lastUsedAt = 0;
-function workerScriptPath() {
-  const fromEnv = process.env.MNEME_PLUGIN_ROOT;
-  if (fromEnv && fromEnv.trim()) {
-    const p = join3(fromEnv.trim(), "embed-worker.js");
-    if (existsSync3(p))
-      return p;
-  }
-  const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join3(here, "embed-worker.js"),
-    join3(here, "embed-worker.ts"),
-    join3(here, "..", "..", "..", "packages", "plugin", "embed-worker.js")
-  ];
-  for (const p of candidates) {
-    if (existsSync3(p))
-      return p;
-  }
-  throw new Error(`embed-worker not found. Checked MNEME_PLUGIN_ROOT and ${candidates.join(", ")}`);
-}
-function failPending(err) {
-  if (inflight) {
-    inflight.reject(err);
-    inflight = null;
-  }
-  while (queue.length > 0)
-    queue.shift().reject(err);
-}
-async function ensureChild() {
-  if (child && child.proc.exitCode === null)
-    return child;
-  const script = workerScriptPath();
-  const bunBin = process.execPath;
-  Logger.info("embedder: spawning worker", { script, bun: bunBin });
-  const proc = Bun.spawn([bunBin, script], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "inherit",
-    env: process.env
-  });
-  if (!proc.stdin || !proc.stdout) {
-    throw new Error("embed-worker spawn did not return stdio pipes");
-  }
-  const handle = {
-    proc,
-    stdin: proc.stdin
-  };
-  child = handle;
-  readLoop = readStdoutLoop(handle).catch((err) => {
-    Logger.warn("embedder: read loop crashed", {
-      err: err instanceof Error ? err.message : String(err)
-    });
-  });
-  proc.exited.then((code) => {
-    if (child === handle)
-      child = null;
-    if (code !== 0 && code !== null) {
-      Logger.warn("embed-worker exited unexpectedly", { code });
-      failPending(new Error(`embed-worker exited (code=${code})`));
-    }
-  });
-  return handle;
-}
-async function readStdoutLoop(handle) {
-  const reader = handle.proc.stdout.getReader();
-  const decoder = new TextDecoder;
-  let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done)
-      return;
-    buf += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf(`
-`)) !== -1) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line)
-        continue;
-      const handler = inflight;
-      inflight = null;
-      if (!handler) {
-        Logger.warn("embedder: stray response from worker", {
-          preview: line.slice(0, 200)
-        });
-        continue;
-      }
-      try {
-        const resp = JSON.parse(line);
-        if (resp.error)
-          handler.reject(new Error(resp.error));
-        else if (resp.vectors)
-          handler.resolve(resp.vectors);
-        else
-          handler.reject(new Error("invalid embed-worker response"));
-      } catch (err) {
-        handler.reject(err);
-      }
-      pumpQueue();
-    }
-  }
-}
-function pumpQueue() {
-  if (inflight || queue.length === 0 || !child)
-    return;
-  const next = queue.shift();
-  inflight = next;
-  const line = JSON.stringify({ texts: next.texts }) + `
-`;
-  const enc = new TextEncoder;
-  try {
-    child.stdin.write(enc.encode(line));
-    child.stdin.flush();
-  } catch (err) {
-    if (inflight === next)
-      inflight = null;
-    next.reject(err instanceof Error ? err : new Error(String(err)));
-    return;
-  }
-  lastUsedAt = Date.now();
-}
-async function embedBatch(texts) {
-  if (texts.length === 0)
-    return [];
-  await ensureChild();
-  return new Promise((resolve, reject) => {
-    queue.push({ texts, resolve, reject });
-    pumpQueue();
-  });
-}
-async function disposeIfIdle(idleMs = PIPELINE_IDLE_MS) {
-  if (!child)
-    return false;
-  if (inflight || queue.length > 0)
-    return false;
-  if (Date.now() - lastUsedAt < idleMs)
-    return false;
-  Logger.info("embedder: disposing idle worker", {
-    idle_seconds: Math.round((Date.now() - lastUsedAt) / 1000)
-  });
-  const handle = child;
-  child = null;
-  try {
-    handle.stdin.end();
-  } catch (err) {
-    Logger.warn("embedder: stdin end threw", {
-      err: err instanceof Error ? err.message : String(err)
-    });
-  }
-  const timeout = new Promise((resolve) => setTimeout(() => resolve("timeout"), DISPOSE_GRACE_MS));
-  const winner = await Promise.race([handle.proc.exited, timeout]);
-  if (winner === "timeout") {
-    Logger.warn("embed-worker did not exit on stdin close, sending SIGTERM");
-    handle.proc.kill();
-    await handle.proc.exited;
-  }
-  if (readLoop) {
-    await readLoop.catch(() => {});
-    readLoop = null;
-  }
-  return true;
 }
 
 // packages/daemon/src/outbox.ts

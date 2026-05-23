@@ -22,6 +22,7 @@ import { isDaemonConfigStale } from "./daemon-install.ts";
 import { baseScope as buildScope, discoverRepos, repoForFile } from "./scope.ts";
 import { scrubData } from "./scrub.ts";
 import { decryptAdminPassword } from "./admin-secret.ts";
+import { EMBEDDER_MODEL } from "./embedder.ts";
 
 const event = process.argv[2] ?? "unknown";
 
@@ -666,6 +667,7 @@ async function main(): Promise<void> {
             content: summaryText,
             kind: "summary",
             importance: 0.6,
+            embedding_model: EMBEDDER_MODEL,
             handoff_slug: slug,
           });
         }
