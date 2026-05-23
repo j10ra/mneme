@@ -734,12 +734,17 @@ Examples of thin-but-real observations worth extracting at importance 0.2-0.4:
 
 A session that consists entirely of "user explored repo X for an upcoming refactor" SHOULD produce at least one observation summarizing that focus area \u2014 not return []. Returning [] is for captures that are pure noise (a one-word ping, a status check, an empty payload).
 
+Guiding rule: code is the source of truth. If \`git status\`, \`grep\`, \`git log\`, or reading the file would tell future-you the same thing right now, it's not memory, it's lookup. Memory is for what the code and git history CANNOT tell you: the *why*, decisions, constraints, things learned the hard way, pointers to systems outside this repo.
+
 Avoid extracting (these are noise, not memory):
 - The assistant's own actions ("Assistant ran X", "Claude noticed Y") \u2014 the *finding* from those actions is fine, the action itself is not.
 - Conversation meta ("User asked about X", "Assistant explained Y").
 - Tool calls as events ("Bash command executed", "Search returned 3 results") \u2014 only the finding matters.
-- Trivial status ("Build passed", "Worker started") unless it flags a regression or unusual constraint.
-- Restating things that are obvious from the current codebase (function names, file paths, present-tense behavior).
+- Trivial status ("Build passed", "Worker started", "typecheck clean") unless it flags a regression or unusual constraint.
+- Git or working-tree state ("branch rebased on origin/development with no conflicts", "working directory has uncommitted modifications", "git clean ran"). Agents can re-derive this from \`git status\` / \`git log\` whenever they need it.
+- Build or version metadata ("plugin version 1.0.90", "dashboard bundle 478.1KB", "tsc passes after rebase"). Already in package.json, lock files, or trivially re-runnable.
+- Code structure restatement that maps 1:1 to the codebase ("ComponentX lives in module Y", "method X calls service Y at line Z", "frontend service calls GET /api/...", "long URLs wrapped via overflow-wrap on .chat-md a"). If a grep or file read in this repo would tell future-you the same thing, don't write it. The exception is non-obvious *behaviour* a reader of the code would miss.
+- Schema, column, or field documentation that the schema file or the code comment already states ("BillingTypeSchedule.RunDate tracks when billing schedules execute", "boolean columns follow grid Yes/No dropdown pattern"). The schema and comments are the source of truth.
 
 Strong sources of observations include:
 - Decisions with rationale (architectural choices, library picks, schema shapes, "we'll do X because Y")
