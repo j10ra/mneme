@@ -85,8 +85,11 @@ export const DREAM_MIN_CLUSTER_SIZE = 3;
 export const DREAM_MAX_CLUSTER_SIZE = 20;
 
 /** Per-memory NN cap inside the LATERAL JOIN — keeps union-find bounded
- *  for hub memories in dense graphs. */
-export const DREAM_MAX_NEIGHBORS_PER_MEMORY = 20;
+ *  for hub memories in dense graphs. Bumped from 20 → 40 once NDJSON
+ *  streaming made per-batch HNSW cost safe; richer connectivity surfaces
+ *  more eligible 3+ components per slice on sparse corpora where seeds
+ *  rarely had 20 near-neighbors. */
+export const DREAM_MAX_NEIGHBORS_PER_MEMORY = 40;
 
 /** Watermark-ordered seed slice per dream cycle. Each cycle takes the
  *  least-recently-dreamed N rows and stamps meta.last_dreamed_at, so
