@@ -18,12 +18,14 @@
 import { Logger } from "@mneme/core";
 import type { DreamOutput, Memory, SupersedeCandidate, SupersedePair } from "./agents/types.ts";
 import { type DistilledCluster, type DreamOutbox, clusterIdFor } from "./dream-outbox.ts";
+import {
+  DREAM_MAX_CLUSTER_SIZE,
+  DREAM_MIN_CLUSTER_SIZE,
+  DREAM_WINDOW_HOURS,
+} from "./infra/config.ts";
 
-const WINDOW_HOURS = 8;
-const WINDOW_SECONDS = WINDOW_HOURS * 3600;
-const WINDOW_MINUTES = WINDOW_HOURS * 60;
-const MIN_CLUSTER_SIZE = 3;
-const MAX_CLUSTER_SIZE = 20;
+const WINDOW_SECONDS = DREAM_WINDOW_HOURS * 3600;
+const WINDOW_MINUTES = DREAM_WINDOW_HOURS * 60;
 
 export function computeWindowKey(date = new Date()): number {
   return Math.floor(date.getTime() / 1000 / WINDOW_SECONDS);
@@ -346,7 +348,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
 
     const components = buildComponents([...seedById.keys()], repoData.edges);
     const eligible = components.filter(
-      (c) => c.length >= MIN_CLUSTER_SIZE && c.length <= MAX_CLUSTER_SIZE,
+      (c) => c.length >= DREAM_MIN_CLUSTER_SIZE && c.length <= DREAM_MAX_CLUSTER_SIZE,
     );
     if (eligible.length > 0) {
       Logger.info("dream: clusters found in repo", {
@@ -357,7 +359,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     }
 
     for (const memberIds of components) {
-      if (memberIds.length < MIN_CLUSTER_SIZE || memberIds.length > MAX_CLUSTER_SIZE) {
+      if (memberIds.length < DREAM_MIN_CLUSTER_SIZE || memberIds.length > DREAM_MAX_CLUSTER_SIZE) {
         continue;
       }
       const cluster_id = await clusterIdFor(memberIds);

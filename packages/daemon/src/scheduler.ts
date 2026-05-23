@@ -24,8 +24,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Logger } from "@mneme/core";
+import { SCHEDULER_TICK_MS } from "./infra/config.ts";
 
-const TICK_MS = 60_000;
+const TICK_MS = SCHEDULER_TICK_MS;
 const STATE_PATH = join(homedir(), ".mneme", "schedule.json");
 const STALE_NEW_JOB_SLACK_MS = 5 * 60_000;
 

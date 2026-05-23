@@ -9,8 +9,9 @@
 
 import { Logger, errorMessageOf } from "@mneme/core";
 import { sql } from "../infra/db.ts";
+import { SCHEDULER_TICK_MS } from "../infra/config.ts";
 
-const TICK_MS = 60_000;
+const TICK_MS = SCHEDULER_TICK_MS;
 
 type RegisteredJob = {
   name: string;

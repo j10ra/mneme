@@ -87,7 +87,7 @@ Each member memory gets `meta.in_cluster = <cluster_id>` so the next dream pass 
 
 ## LLM supersede (post-distill)
 
-After distillation, a second LLM call against `findSupersedes` asks "among these memories, which (if any) are superseded by which?". The candidate set is exactly the cluster's members (the same memories that were just distilled); `findSupersedes` is fed `memberIds` only. Cross-cluster supersede, which pulls cosine-near neighbours from other clusters (`SUPERSEDE_LLM_ADJACENT_COSINE_MAX`, `SUPERSEDE_LLM_ADJACENT_AGE_WINDOW`), is digest's job (see [`digest.md`](./digest.md)).
+After distillation, a second LLM call against `findSupersedes` asks "among these memories, which (if any) are superseded by which?". The candidate set is exactly the cluster's members (the same memories that were just distilled); `findSupersedes` is fed `memberIds` only. Cross-cluster supersede, which pulls cosine-near neighbours from other clusters (`SUPERSEDE_LLM_ADJACENT_COSINE_MAX`), is digest's job (see [`digest.md`](./digest.md)).
 
 Returns pairs `[{ old_id, new_id, reason }]`. The daemon posts them unmodified in the `/api/dream/clusters` submission; the **server** validates each pair at the write boundary (`validateSupersedePairs` — both ids must be in the cluster's `member_ids`, and `old.created_at` must be strictly older than `new.created_at`, checked against authoritative DB timestamps). Surviving pairs are written to `meta.superseded_by` inside the same transaction as the cluster insert; rejected pairs are logged and counted (`supersedes_rejected`).
 

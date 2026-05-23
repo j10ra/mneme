@@ -1135,12 +1135,15 @@ async function clusterIdFor(memberIds) {
   return hex;
 }
 
+// packages/daemon/src/infra/config.ts
+var SCHEDULER_TICK_MS = 60000;
+var DREAM_WINDOW_HOURS = 8;
+var DREAM_MIN_CLUSTER_SIZE = 3;
+var DREAM_MAX_CLUSTER_SIZE = 20;
+
 // packages/daemon/src/dream.ts
-var WINDOW_HOURS = 8;
-var WINDOW_SECONDS = WINDOW_HOURS * 3600;
-var WINDOW_MINUTES = WINDOW_HOURS * 60;
-var MIN_CLUSTER_SIZE = 3;
-var MAX_CLUSTER_SIZE = 20;
+var WINDOW_SECONDS = DREAM_WINDOW_HOURS * 3600;
+var WINDOW_MINUTES = DREAM_WINDOW_HOURS * 60;
 function computeWindowKey(date = new Date) {
   return Math.floor(date.getTime() / 1000 / WINDOW_SECONDS);
 }
@@ -1353,7 +1356,7 @@ async function runDreamCycle(deps) {
     for (const s of repoData.seeds)
       seedById.set(s.id, s);
     const components = buildComponents([...seedById.keys()], repoData.edges);
-    const eligible = components.filter((c) => c.length >= MIN_CLUSTER_SIZE && c.length <= MAX_CLUSTER_SIZE);
+    const eligible = components.filter((c) => c.length >= DREAM_MIN_CLUSTER_SIZE && c.length <= DREAM_MAX_CLUSTER_SIZE);
     if (eligible.length > 0) {
       Logger.info("dream: clusters found in repo", {
         repo,
@@ -1362,7 +1365,7 @@ async function runDreamCycle(deps) {
       });
     }
     for (const memberIds of components) {
-      if (memberIds.length < MIN_CLUSTER_SIZE || memberIds.length > MAX_CLUSTER_SIZE) {
+      if (memberIds.length < DREAM_MIN_CLUSTER_SIZE || memberIds.length > DREAM_MAX_CLUSTER_SIZE) {
         continue;
       }
       const cluster_id = await clusterIdFor(memberIds);
@@ -2775,7 +2778,7 @@ function createRuntime(deps) {
 import { mkdir as mkdir4, readFile as readFile3, rename as rename3, writeFile as writeFile3 } from "fs/promises";
 import { homedir as homedir5 } from "os";
 import { dirname as dirname3, join as join7 } from "path";
-var TICK_MS = 60000;
+var TICK_MS = SCHEDULER_TICK_MS;
 var STATE_PATH = join7(homedir5(), ".mneme", "schedule.json");
 var STALE_NEW_JOB_SLACK_MS = 5 * 60000;
 var registry = new Map;

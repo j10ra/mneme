@@ -75,14 +75,17 @@ export const NAP_RELATE_DISTANCE = 0.15;
 export const NAP_RELATE_MAX_NEIGHBORS = 5;
 
 // ── Dream (clustering) ────────────────────────────────────────────────
+//
+// Dream cluster-size bounds (DREAM_MIN_CLUSTER_SIZE / DREAM_MAX_CLUSTER_SIZE)
+// and the 8h window live in packages/daemon/src/infra/config.ts -- the
+// daemon owns the union-find + distill path. Server-side dream knobs
+// below are only the ones the server uses (cosine ceiling, candidate
+// fetch caps, NDJSON stream batch sizes).
 
 /** Cosine-distance ceiling for cluster membership. Tighter than
  *  NAP_RELATE_DISTANCE — cluster members must be genuinely about the
  *  same thing, not just topically adjacent. */
 export const DREAM_CLUSTER_DISTANCE = 0.1;
-
-export const DREAM_MIN_CLUSTER_SIZE = 3;
-export const DREAM_MAX_CLUSTER_SIZE = 20;
 
 /** Per-memory NN cap inside the LATERAL JOIN — keeps union-find bounded
  *  for hub memories in dense graphs. 20 → 40 → 80 as NDJSON streaming
@@ -143,17 +146,19 @@ export const SUPERSEDE_RULE_PER_CYCLE_CAP = 50;
  *  in alongside the cluster's members must be within this cosine. */
 export const SUPERSEDE_LLM_ADJACENT_COSINE_MAX = 0.15;
 
-/** Adjacent memories considered for the LLM pass must be no older than
- *  this. Stops the prompt from ballooning over the entire history. */
-export const SUPERSEDE_LLM_ADJACENT_AGE_WINDOW = "60 days";
-
 /** Cap on cluster-members + adjacent-neighbors fed to one Sonnet call. */
 export const SUPERSEDE_LLM_BATCH_MAX_MEMBERS = 30;
 
 /** Recall ranking penalty applied to memories with `meta.superseded_by`
  *  set. 0.3 means a superseded memory needs to be ~3.3× more relevant
- *  than its successor to outrank it. Tunable here; recall query
- *  templates / using-mneme skill read this. */
+ *  than its successor to outrank it.
+ *
+ *  NOTE: this constant is currently a phantom knob. The active value is
+ *  hardcoded in the recall SQL template at packages/plugin/skills/
+ *  using-mneme/SKILL.md and the docs in docs/recall.md. Changing the
+ *  constant alone does nothing. Either (a) template-generate the skill
+ *  from this value at plugin build time, or (b) accept that the skill
+ *  template is the source of truth and delete this constant. */
 export const SUPERSEDE_RECALL_PENALTY = 0.3;
 
 // ── Recall LTP (use-driven reinforcement, #37) ────────────────────────
