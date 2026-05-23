@@ -23,26 +23,15 @@ const Schema = z.object({
   // sees missing/empty cases at boot.
   ADMIN_PASSWORD: z.string().min(1),
 
-  // Shared bearer used by Caddy upstream of Ollama/TEI. Specific
-  // bearers below fall back to this when not set.
-  AUTH_BEARER: z.string().optional(),
-
-  // ── Local LLM (compute.jalipalo.dev → Ollama) ─────────────────────
-  LLM_URL: z.string().url(),
-  LLM_BEARER: z.string().optional(),
-  LLM_MODEL: z.string().default("mneme-llm"),
-  LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
-
-  // ── OpenRouter (cloud LLM, primary path) ──────────────────────────
+  // ── OpenRouter (the only server-side LLM path) ────────────────────
+  // Digest runs its two cross-cluster judgments (findSupersedes for Op2,
+  // judgeClusterMerge for Op1) against OpenRouter. When OPENROUTER_API_KEY
+  // is unset or the breaker opens, digest skips. No other server-side LLM
+  // provider exists — extract and distill moved to the per-machine daemon
+  // entirely in 1.1.63.
   OPENROUTER_API_KEY: z.string().optional(),
-  OPENROUTER_EXTRACT_MODEL: z.string().default("qwen/qwen-2.5-72b-instruct"),
   OPENROUTER_DREAM_MODEL: z.string().default("anthropic/claude-sonnet-4"),
   OPENROUTER_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
-
-  // ── Picker override ───────────────────────────────────────────────
-  LLM_PROVIDER_FORCE: z
-    .union([z.literal(""), z.literal("local"), z.literal("openrouter")])
-    .default(""),
 
   // ── Worker toggles ────────────────────────────────────────────────
   // Boolean envs as "1" / "0" strings (Railway convention). Default
@@ -83,20 +72,9 @@ const parsed = (() => {
   return result.data;
 })();
 
-// Resolve fallback chains once so callers don't have to repeat them.
-// LLM_BEARER falls back to AUTH_BEARER (still used by the picker for
-// the local LLM provider, if configured).
-const LLM_BEARER_RESOLVED = parsed.LLM_BEARER ?? parsed.AUTH_BEARER ?? "";
-
-if (!LLM_BEARER_RESOLVED) {
-  throw new Error("env: LLM_BEARER (or AUTH_BEARER) must be set");
-}
-
 export const env = {
   ...parsed,
-  // Resolved fallbacks (overrides the optional-typed originals)
-  LLM_BEARER: LLM_BEARER_RESOLVED,
-  // Derived flags for the picker
+  // Derived flags
   HAS_OPENROUTER: !!parsed.OPENROUTER_API_KEY,
   IS_PRODUCTION: parsed.NODE_ENV === "production",
   // Worker toggles as bools (parsed from "0"/"1" strings)

@@ -16,18 +16,6 @@ export const KINDS = [
 
 export type Kind = (typeof KINDS)[number];
 
-export type Observation = {
-  content: string;
-  kind: Kind;
-  importance: number;
-  topics: string[];
-};
-
-export type ClusterDistillation = {
-  title: string;
-  summary: string;
-};
-
 /** Inputs for the cluster-merge judgment used by the digest worker
  *  (#30). Two cluster summaries → "are these the same underlying
  *  topic, or topically adjacent but distinct?" */
@@ -41,18 +29,7 @@ export type ClusterMergeJudgment = {
   reason: string;
 };
 
-/** Per-pipeline batching/output ceilings the extract worker must respect.
- *  Each provider declares its own values — local stays conservative under
- *  the CF Tunnel 100s no-data window; cloud providers can be much more
- *  generous since prompt-eval is fast and there's no tunnel in the path. */
-export type ExtractLimits = {
-  maxCharsPerCapture: number;
-  maxTotalChars: number;
-  maxSiblings: number;
-  maxOutputTokens: number;
-};
-
-/** Per-cluster ceilings the dream worker must respect. */
+/** Per-cluster ceilings digest's cross-cluster Sonnet calls must respect. */
 export type DreamLimits = {
   maxClusterChars: number;
   maxOutputTokens: number;
@@ -76,23 +53,18 @@ export type SupersedePair = {
 };
 
 /** All providers must export these functions and constants. The model
- *  fields are recorded on every memory's meta JSONB for provenance —
- *  e.g. so you can later query "memories extracted by Sonnet vs 7B".
+ *  field is recorded on every cluster's meta JSONB for provenance.
  *
- *  `findSupersedes` is OPTIONAL: only providers we trust to make this
- *  judgement implement it (today: openrouter only). The picker checks
- *  for its presence and skips the supersede pass on local. */
+ *  Server-side extract + distill are gone — the daemon owns those.
+ *  Server's remaining LLM surface is digest's two judgments:
+ *  findSupersedes (Op2 cross-cluster supersede) and judgeClusterMerge
+ *  (Op1 cluster merge). Both are OPTIONAL: only providers we trust to
+ *  make these calls implement them (today: openrouter only). The
+ *  picker checks for their presence and digest skips when they're
+ *  missing. */
 export type LLMProvider = {
-  extractObservations: (captureText: string) => Promise<Observation[]>;
-  distillCluster: (memberContents: string) => Promise<ClusterDistillation>;
   findSupersedes?: (candidates: SupersedeCandidate[]) => Promise<SupersedePair[]>;
-  /** Cross-cluster merge judgment for the digest worker (#30). Like
-   *  `findSupersedes`, only providers we trust to make this call
-   *  implement it (today: openrouter only). Local omits to keep the
-   *  7B/3B path off a high-stakes decision. */
   judgeClusterMerge?: (a: ClusterSummary, b: ClusterSummary) => Promise<ClusterMergeJudgment>;
-  extractLimits: ExtractLimits;
   dreamLimits: DreamLimits;
-  extractModel: string;
   dreamModel: string;
 };

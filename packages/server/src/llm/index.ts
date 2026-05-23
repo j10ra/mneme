@@ -4,12 +4,9 @@
 
 export {
   KINDS,
-  type ClusterDistillation,
   type DreamLimits,
-  type ExtractLimits,
   type Kind,
   type LLMProvider,
-  type Observation,
   type SupersedeCandidate,
   type SupersedePair,
 } from "./types.ts";

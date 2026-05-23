@@ -1,37 +1,21 @@
 // OpenRouter LLM provider — OpenAI-compatible chat completions at
-// openrouter.ai/api/v1. Used as the primary LLM path for extract + dream
-// when OPENROUTER_API_KEY is set; the local provider takes over when the
-// per-provider circuit breaker (see pick.ts) trips.
+// openrouter.ai/api/v1. The server's only LLM surface is digest's two
+// judgments: findSupersedes (Op2 cross-cluster supersede) and
+// judgeClusterMerge (Op1 cluster merge). Both run against
+// OPENROUTER_DREAM_MODEL (typically anthropic/claude-sonnet-4).
 //
-// Two model envs because extract (hot path, structured JSON) and dream
-// (background, synthesis) often want different models — typical pairing
-// is qwen/qwen-2.5-72b-instruct for extract and anthropic/claude-sonnet-4
-// for dream. Both target the same wire-shape (OpenAI-compat SSE) so the
-// picker dispatches to the same provider with different per-call config.
-//
-// Note on response_format: Qwen models honour {type: "json_object"}
-// natively; Anthropic models don't have that flag in their API but
-// OpenRouter layers prompt-engineered JSON coercion on top, and our
-// SYSTEM_PROMPT / CLUSTER_PROMPT explicitly request JSON anyway, so we
-// pass response_format on every call and trust OpenRouter to handle
-// per-model differences.
+// Note on response_format: Anthropic models don't have a json_object
+// flag in their native API, but OpenRouter layers prompt-engineered
+// JSON coercion on top and our SUPERSEDE_PROMPT / CLUSTER_MERGE_PROMPT
+// explicitly request JSON. We pass response_format on every call.
 
 import { Logger, mnemeFn } from "@mneme/core";
 import { env } from "../../infra/env.ts";
+import { CLUSTER_MERGE_PROMPT, SUPERSEDE_PROMPT } from "../prompt.ts";
 import {
-  CLUSTER_MERGE_PROMPT,
-  CLUSTER_PROMPT,
-  SUPERSEDE_PROMPT,
-  SYSTEM_PROMPT,
-} from "../prompt.ts";
-import {
-  type ClusterDistillation,
   type ClusterMergeJudgment,
   type ClusterSummary,
   type DreamLimits,
-  type ExtractLimits,
-  KINDS,
-  type Observation,
   type SupersedeCandidate,
   type SupersedePair,
 } from "../types.ts";
@@ -99,137 +83,19 @@ function authHeaders(): Record<string, string> {
   };
 }
 
-export const extractObservations = mnemeFn(
-  "llm.openrouter.extract",
-  async (captureText: string): Promise<Observation[]> => {
-    if (!env.HAS_OPENROUTER) throw new Error("OPENROUTER_API_KEY not set");
-    if (!captureText.trim()) return [];
-
-    const resp = await fetch(URL, {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({
-        model: env.OPENROUTER_EXTRACT_MODEL,
-        temperature: 0.2,
-        max_tokens: extractLimits.maxOutputTokens,
-        stream: true,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: captureText },
-        ],
-      }),
-      signal: AbortSignal.timeout(env.OPENROUTER_TIMEOUT_MS),
-    });
-
-    Logger.info("llm.openrouter.extract: response", {
-      status: resp.status,
-      model: env.OPENROUTER_EXTRACT_MODEL,
-    });
-
-    if (!resp.ok) {
-      const err = cleanErrorBody(await resp.text());
-      throw new Error(`llm.openrouter extract failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
-    }
-
-    const raw = await consumeStream(resp);
-    if (!raw.trim()) throw new Error("llm.openrouter extract: empty response");
-
-    let parsed: { observations?: unknown };
-    try {
-      parsed = JSON.parse(raw) as { observations?: unknown };
-    } catch {
-      throw new Error(`llm.openrouter extract: bad JSON: ${raw.slice(0, 200)}`);
-    }
-
-    const obs = parsed.observations;
-    if (!Array.isArray(obs)) return [];
-    return obs.filter(
-      (o: unknown): o is Observation =>
-        !!o &&
-        typeof o === "object" &&
-        typeof (o as Observation).content === "string" &&
-        (o as Observation).content.trim().length > 0 &&
-        (KINDS as readonly string[]).includes((o as Observation).kind),
-    );
-  },
-);
-
-export const distillCluster = mnemeFn(
-  "llm.openrouter.distill",
-  async (memberContents: string): Promise<ClusterDistillation> => {
-    if (!env.HAS_OPENROUTER) throw new Error("OPENROUTER_API_KEY not set");
-    if (!memberContents.trim()) throw new Error("distillCluster: empty input");
-
-    const resp = await fetch(URL, {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({
-        model: env.OPENROUTER_DREAM_MODEL,
-        temperature: dreamLimits.temperature,
-        max_tokens: dreamLimits.maxOutputTokens,
-        stream: true,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: CLUSTER_PROMPT },
-          { role: "user", content: memberContents },
-        ],
-      }),
-      signal: AbortSignal.timeout(env.OPENROUTER_TIMEOUT_MS),
-    });
-
-    Logger.info("llm.openrouter.distill: response", {
-      status: resp.status,
-      model: env.OPENROUTER_DREAM_MODEL,
-    });
-
-    if (!resp.ok) {
-      const err = cleanErrorBody(await resp.text());
-      throw new Error(`llm.openrouter distill failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
-    }
-
-    const raw = await consumeStream(resp);
-    if (!raw.trim()) throw new Error("llm.openrouter distill: empty response");
-
-    let parsed: { title?: unknown; summary?: unknown };
-    try {
-      parsed = JSON.parse(raw) as { title?: unknown; summary?: unknown };
-    } catch {
-      throw new Error(`llm.openrouter distill: bad JSON: ${raw.slice(0, 200)}`);
-    }
-
-    const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
-    const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
-    if (!title || !summary) {
-      throw new Error("llm.openrouter distill: missing title or summary");
-    }
-    return { title, summary };
-  },
-);
-
-/** Generous limits for the cloud path — no CF Tunnel in the way, prompt-eval
- *  is sub-second on hosted infra, and 72B / Sonnet handle large prompts
- *  well. Hot path can absorb ~10k-char extract prompts without quality
- *  loss; dream is a background batch job that benefits from rich cluster
- *  context. Real ceiling here is provider context windows (128K+ on both
- *  default models), so these values are well inside the budget. */
-export const extractLimits: ExtractLimits = {
-  maxCharsPerCapture: 2500,
-  maxTotalChars: 10000,
-  maxSiblings: 30,
-  maxOutputTokens: 4096,
-};
-
+/** Generous limits for the cloud path — Sonnet handles large prompts
+ *  well and digest is a background batch job that benefits from rich
+ *  cluster context. Real ceiling is the provider context window
+ *  (~200K on Sonnet 4), so these values are well inside the budget. */
 export const dreamLimits: DreamLimits = {
   maxClusterChars: 40000,
   maxOutputTokens: 4096,
   temperature: 0.3,
 };
 
-// Recorded into memories.meta.extractor_model / distiller_model so each
-// memory carries the model that wrote it. Picks up env overrides so a
-// model swap (e.g. Sonnet 4 → GPT-5) is reflected without a code change.
-export const extractModel = env.OPENROUTER_EXTRACT_MODEL;
+// Recorded into memories.meta.distiller_model so each digest-touched
+// cluster carries the model that judged it. Picks up env overrides so
+// a model swap (e.g. Sonnet 4 → GPT-5) is reflected without a code change.
 export const dreamModel = env.OPENROUTER_DREAM_MODEL;
 
 /** Cloud-only supersede detection. Same wire shape as distillCluster

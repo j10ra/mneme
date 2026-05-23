@@ -1,97 +1,61 @@
-// Per-pipeline LLM provider picker with per-provider circuit breaker.
+// LLM provider picker for the digest worker.
 //
-// Mneme talks to two providers: "openrouter" (cloud, primary when
-// OPENROUTER_API_KEY is set) and "local" (compute.jalipalo.dev, the
-// always-available fallback that also serves embeddings). Each pipeline
-// asks the picker at lock time for an instance; the instance carries the
-// provider's limits + model and exposes wrapped methods that report
-// success/failure to the breaker transparently — callers no longer need
-// to remember a `reportSuccess(name)` / `reportFailure(name)` pair after
-// every LLM round-trip.
+// As of 1.1.63 the server has exactly one LLM path: OpenRouter, used by
+// digest's two cross-cluster judgments (findSupersedes for Op2,
+// judgeClusterMerge for Op1). Extract and distill both moved to the
+// per-machine daemon. The picker survives only to (a) gate digest off
+// when OPENROUTER_API_KEY is unset and (b) trip the circuit breaker
+// after consecutive failures so a flapping OpenRouter doesn't burn the
+// cycle's Sonnet budget.
 //
-// Breaker semantics (see breaker.ts):
-//   - 3 consecutive failures on a provider → cooldown opens for 5 min
-//   - while open, picker returns the other provider
+// Breaker semantics (see lib/breaker.ts):
+//   - 3 consecutive failures → cooldown opens for 5 min
+//   - while open, pickDream returns an instance without judgments, so
+//     digest skips the LLM passes for that cycle
 //   - first success after cooldown resets the state
-//   - both breakers open simultaneously is rare and "fail open": picker
-//     returns the configured-default and the call fails naturally
-//
-// Override:
-//   - LLM_PROVIDER_FORCE=local       → always local
-//   - LLM_PROVIDER_FORCE=openrouter  → always openrouter (bypasses the
-//                                      pick-time breaker check; the
-//                                      wrapped methods still report,
-//                                      so the breaker state is visible
-//                                      in logs even when forced)
-//   - blank / unset                  → auto
 
 import { Logger } from "@mneme/core";
 import { Breaker, type BreakerState } from "../lib/breaker.ts";
 import { PICKER_COOLDOWN_MS, PICKER_FAILURE_THRESHOLD } from "../infra/config.ts";
 import { env } from "../infra/env.ts";
-import * as local from "./providers/local.ts";
 import * as openrouter from "./providers/openrouter.ts";
 import type {
-  ClusterDistillation,
   ClusterMergeJudgment,
   ClusterSummary,
   DreamLimits,
-  ExtractLimits,
   LLMProvider,
-  Observation,
   SupersedeCandidate,
   SupersedePair,
 } from "./types.ts";
 
-const PROVIDERS = {
-  local,
-  openrouter,
-} as const satisfies Record<string, LLMProvider>;
+export type ProviderName = "openrouter";
 
-export type ProviderName = keyof typeof PROVIDERS;
+const provider: LLMProvider = openrouter;
+const breaker = new Breaker({
+  threshold: PICKER_FAILURE_THRESHOLD,
+  pauseMs: PICKER_COOLDOWN_MS,
+});
 
-const breakers: Record<ProviderName, Breaker> = {
-  local: new Breaker({
-    threshold: PICKER_FAILURE_THRESHOLD,
-    pauseMs: PICKER_COOLDOWN_MS,
-  }),
-  openrouter: new Breaker({
-    threshold: PICKER_FAILURE_THRESHOLD,
-    pauseMs: PICKER_COOLDOWN_MS,
-  }),
-};
-
-const FORCE: ProviderName | null = env.LLM_PROVIDER_FORCE || null;
-
-function pickProviderName(): ProviderName {
-  if (FORCE) return FORCE;
-  if (!env.HAS_OPENROUTER) return "local";
-  if (breakers.openrouter.gate().open) return "local";
-  return "openrouter";
-}
-
-// Wrap an LLM call so success/failure transparently feeds the
-// per-provider breaker and the transition log. Errors re-throw — the
-// caller still needs to handle them (mark a job state='error', skip a
-// cluster, etc); the wrapper just removes the bookkeeping ceremony.
+// Wrap an LLM call so success/failure transparently feeds the breaker
+// and the transition log. Errors re-throw — the caller still needs to
+// handle them (skip a cycle, log a warn, etc); the wrapper just removes
+// the bookkeeping ceremony.
 function reportingCall<TArgs extends unknown[], TResult>(
-  name: ProviderName,
   fn: (...args: TArgs) => Promise<TResult>,
 ): (...args: TArgs) => Promise<TResult> {
   return async (...args) => {
-    const breaker = breakers[name];
     try {
       const result = await fn(...args);
       const r = breaker.report("success");
       if (r.priorFailures > 0) {
-        Logger.info("llm.pick: breaker reset", { provider: name });
+        Logger.info("llm.pick: breaker reset", { provider: "openrouter" });
       }
       return result;
     } catch (e) {
       const r = breaker.report("failure");
       if (r.openedNow) {
         Logger.info("llm.pick: breaker opened", {
-          provider: name,
+          provider: "openrouter",
           failures: r.priorFailures + 1,
           reopensAt: new Date(Date.now() + PICKER_COOLDOWN_MS).toISOString(),
         });
@@ -101,69 +65,44 @@ function reportingCall<TArgs extends unknown[], TResult>(
   };
 }
 
-export type ExtractInstance = {
-  name: ProviderName;
-  limits: ExtractLimits;
-  model: string;
-  extractObservations: (text: string) => Promise<Observation[]>;
-};
-
-// findSupersedes + judgeClusterMerge are OPTIONAL: only providers we
-// trust to make these judgements implement them (today: openrouter only).
-// Local providers omit the methods entirely; callers do
-// `if (!instance.findSupersedes) return` — a typed presence check, no
-// runtime name comparison required.
+// findSupersedes + judgeClusterMerge are OPTIONAL: when OpenRouter is
+// missing the key or the breaker is open, pickDream returns an instance
+// without them and digest's `if (!dr.judgeClusterMerge) skip` path fires.
 export type DreamInstance = {
   name: ProviderName;
   limits: DreamLimits;
   model: string;
-  distillCluster: (text: string) => Promise<ClusterDistillation>;
   findSupersedes?: (candidates: SupersedeCandidate[]) => Promise<SupersedePair[]>;
   judgeClusterMerge?: (a: ClusterSummary, b: ClusterSummary) => Promise<ClusterMergeJudgment>;
 };
 
-/** Snapshot of every per-provider breaker. Used by /api/_ops/status so the
- *  operator sees breaker state alongside worker / daemon health without
- *  shelling into the server. In-process state — fine here because the
- *  endpoint runs in the same process. */
+/** Snapshot of the breaker for /api/_ops/status. Returns a single-key
+ *  record keyed on the only provider so the dashboard shape stays
+ *  stable even though we collapsed to one provider. */
 export function inspectBreakers(): Record<ProviderName, BreakerState> {
-  return {
-    local: breakers.local.inspect(),
-    openrouter: breakers.openrouter.inspect(),
-  };
-}
-
-export function pickExtract(): ExtractInstance {
-  const name = pickProviderName();
-  const p: LLMProvider = PROVIDERS[name];
-  return {
-    name,
-    limits: p.extractLimits,
-    model: p.extractModel,
-    extractObservations: reportingCall(name, p.extractObservations),
-  };
+  return { openrouter: breaker.inspect() };
 }
 
 export function pickDream(): DreamInstance {
-  const name = pickProviderName();
-  const p: LLMProvider = PROVIDERS[name];
   const base: DreamInstance = {
-    name,
-    limits: p.dreamLimits,
-    model: p.dreamModel,
-    distillCluster: reportingCall(name, p.distillCluster),
+    name: "openrouter",
+    limits: provider.dreamLimits,
+    model: provider.dreamModel,
   };
-  if (p.findSupersedes) {
-    base.findSupersedes = reportingCall(name, p.findSupersedes);
+  // Hide the judgments when OpenRouter is unavailable. Digest's check is
+  // `if (!dr.judgeClusterMerge || !dr.findSupersedes) skip`, so this is
+  // the gate that turns the whole worker off when the cloud path can't
+  // serve the call.
+  const available = env.HAS_OPENROUTER && !breaker.gate().open;
+  if (available && provider.findSupersedes) {
+    base.findSupersedes = reportingCall(provider.findSupersedes);
   }
-  if (p.judgeClusterMerge) {
-    base.judgeClusterMerge = reportingCall(name, p.judgeClusterMerge);
+  if (available && provider.judgeClusterMerge) {
+    base.judgeClusterMerge = reportingCall(provider.judgeClusterMerge);
   }
   return base;
 }
 
 Logger.info("llm.pick: configured", {
-  force: FORCE ?? "(auto)",
   hasOpenrouter: env.HAS_OPENROUTER,
-  defaultPick: pickProviderName(),
 });
