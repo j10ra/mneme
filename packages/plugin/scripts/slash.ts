@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// Slash command dispatcher: /memory, /pin, /unpin.
-// /recall and /summarise are agent-driven (use mneme.sql via MCP), no
+// Slash command dispatcher: /memory, /pin, /unpin, /handoff, etc.
+// /recall and /resume are agent-driven (use mneme.sql via MCP), no
 // shell-out needed for those.
 
 import {
@@ -114,6 +114,50 @@ async function memory(): Promise<void> {
     content: text,
   });
   console.log(`✓ memory captured (id ${r.id}${r.deduped ? ", deduped" : ""})`);
+}
+
+/** Slug rules:
+ *  - kebab-case, lowercase ASCII letters + digits + hyphens
+ *  - 2-6 segments, 4-60 chars total
+ *  - no leading/trailing hyphen, no double hyphen
+ *  Used by /handoff and the compact auto-capture path. The receiver
+ *  (/resume <slug>) does an exact match on meta.handoff_slug. */
+const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+){1,5}$/;
+const MAX_SLUG_LEN = 60;
+
+function validateSlug(slug: string): string {
+  const cleaned = slug.trim().toLowerCase();
+  if (cleaned.length === 0) throw new Error("handoff slug required");
+  if (cleaned.length > MAX_SLUG_LEN) {
+    throw new Error(`handoff slug too long (${cleaned.length} > ${MAX_SLUG_LEN})`);
+  }
+  if (!SLUG_RE.test(cleaned)) {
+    throw new Error(
+      `invalid handoff slug "${cleaned}". Use kebab-case, 2-6 lowercase segments (e.g. "dream-streaming", "config-audit-2026-05-23").`,
+    );
+  }
+  return cleaned;
+}
+
+/** Handoff: synthesise side. Agent supplies the slug as arg, the prose
+ *  on stdin. Writes a kind=summary memory with meta.handoff_slug so the
+ *  receiver (/resume <slug>) can pick it up across machines. */
+async function handoff(slugArg: string): Promise<void> {
+  const slug = validateSlug(slugArg);
+  const text = await readStdin();
+  if (!text) throw new Error("no handoff text on stdin");
+  const cfg = loadConfig();
+  const r = await postMemory(cfg, {
+    ...baseScope(cfg),
+    content: text,
+    kind: "summary",
+    importance: 0.7,
+    handoff_slug: slug,
+  });
+  const shortId = r.id.slice(0, 8);
+  console.log(
+    `✓ ${r.created ? "handoff saved" : "handoff updated"} as \`${slug}\` (id ${shortId})`,
+  );
 }
 
 /** Pin: two paths.
@@ -772,6 +816,9 @@ async function main(): Promise<void> {
     case "memory":
       await memory();
       return;
+    case "handoff":
+      await handoff(process.argv[3] ?? "");
+      return;
     case "pin":
       await pin(process.argv[3] ?? "");
       return;
@@ -811,7 +858,7 @@ async function main(): Promise<void> {
     default:
       console.error(`unknown subcommand: ${cmd}`);
       console.error(
-        "usage: slash.ts <setup|memory|pin|unpin|archive|unarchive|supersede|unsupersede|machines|status|help|dashboard|revoke|rename> [args]",
+        "usage: slash.ts <setup|memory|handoff|pin|unpin|archive|unarchive|supersede|unsupersede|machines|status|help|dashboard|revoke|rename> [args]",
       );
       process.exit(1);
   }

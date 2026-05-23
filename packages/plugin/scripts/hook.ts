@@ -6,7 +6,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -179,6 +179,94 @@ function redactInPlace(obj: Record<string, unknown>, redact: (s: string) => stri
       );
     }
   }
+}
+
+/** Fire-and-forget: POST a direct-write memory to the server's /api/memory
+ *  with a handoff_slug. Used by the compact auto-capture path to land the
+ *  summary Claude itself generated during /compact as a resumable kind=summary
+ *  memory. Bypasses the daemon's /capture queue + extract pipeline so the
+ *  whole compact summary lands as one memory, not split into observations.
+ *  Returns silently on failure; the surface response shouldn't block on this. */
+async function postHandoffMemory(cfg: MnemeConfig, body: Record<string, unknown>): Promise<void> {
+  const cleaned = scrubData(body) as Record<string, unknown>;
+  const redact = buildLocalRedactor(cfg);
+  redactInPlace(cleaned, redact);
+  try {
+    const resp = await fetch(serverUrl(cfg, "/api/memory"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${cfg.auth.key}`,
+        "X-Mneme-Source": "hook:compact",
+      },
+      body: JSON.stringify(cleaned),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) {
+      process.stderr.write(
+        `mneme-hook[compact-capture]: /api/memory ${resp.status}: ${(await resp.text()).slice(0, 200)}\n`,
+      );
+    }
+  } catch (e) {
+    process.stderr.write(
+      `mneme-hook[compact-capture]: ${e instanceof Error ? e.message : String(e)}\n`,
+    );
+  }
+}
+
+/** Walk the transcript looking for the entry with `isCompactSummary: true`.
+ *  Claude Code writes the compact summary as a user-role entry with that
+ *  flag set and `message.content` containing the full summary text. Returns
+ *  the content string, or null if not found. */
+function extractCompactSummary(transcriptPath: string): string | null {
+  try {
+    const raw = readFileSync(transcriptPath, "utf8");
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (entry.isCompactSummary !== true) continue;
+      const message = entry.message as Record<string, unknown> | undefined;
+      if (!message) continue;
+      const content = message.content;
+      if (typeof content === "string" && content.trim().length > 0) {
+        return content;
+      }
+      if (Array.isArray(content)) {
+        const text = content
+          .filter(
+            (b): b is { type: string; text: string } =>
+              !!b &&
+              typeof b === "object" &&
+              (b as { type?: unknown }).type === "text" &&
+              typeof (b as { text?: unknown }).text === "string",
+          )
+          .map((b) => b.text)
+          .join("\n\n")
+          .trim();
+        if (text.length > 0) return text;
+      }
+    }
+  } catch {
+    /* unreadable transcript -- nothing to capture */
+  }
+  return null;
+}
+
+/** Generate a date-stamped slug for compact auto-captures. Format:
+ *  `compact-YYYYMMDD-HHMM`. Sortable, unambiguous, and rarely collides
+ *  (would need two compacts in the same minute on the same machine).
+ *  The agent-driven /handoff path uses topic-based slugs instead. */
+function compactSlug(now = new Date()): string {
+  const pad = (n: number): string => n.toString().padStart(2, "0");
+  return (
+    `compact-${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}` +
+    `-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}`
+  );
 }
 
 async function postCapture(cfg: MnemeConfig, body: Record<string, unknown>): Promise<boolean> {
@@ -560,6 +648,29 @@ async function main(): Promise<void> {
       // worktrees). Falls back to whatever canonicalRepo resolved at the top.
       const discovered = sessionCwd ? discoverRepos(sessionCwd) : [];
       const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
+
+      // Compact auto-capture: when source=compact, Claude has just generated
+      // a summary of the prior conversation. Scoop it up as a resumable
+      // kind=summary memory with a date-stamped handoff_slug so other
+      // machines can /mneme:resume it. Fire-and-forget so the surface
+      // response is never blocked on this write.
+      const source = typeof payload.source === "string" ? payload.source : "startup";
+      const transcriptPath =
+        typeof payload.transcript_path === "string" ? payload.transcript_path : null;
+      if (source === "compact" && transcriptPath) {
+        const summaryText = extractCompactSummary(transcriptPath);
+        if (summaryText) {
+          const slug = compactSlug();
+          void postHandoffMemory(cfg, {
+            ...baseScope,
+            content: summaryText,
+            kind: "summary",
+            importance: 0.6,
+            handoff_slug: slug,
+          });
+        }
+      }
+
       const surface = await fetchSurface(cfg, payload, repos);
       if (surface) {
         // Two channels, two purposes — not duplicated content:
@@ -573,7 +684,6 @@ async function main(): Promise<void> {
         const fullForLlm = prefixSurfaceForLLM(surface, formatSurfaceForTerminal(surface));
         const injectedBytes = Buffer.byteLength(fullForLlm, "utf8");
         const summaryForUser = summariseSurfaceForUser(surface, injectedBytes);
-        const source = typeof payload.source === "string" ? payload.source : "startup";
         const envelope: Record<string, unknown> = {
           hookSpecificOutput: {
             hookEventName: "SessionStart",

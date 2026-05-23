@@ -106,6 +106,11 @@ type MemoryBody = {
   session_id?: string | null;
   topics?: string[];
   private?: boolean;
+  /** Short kebab-case slug for cross-machine handoff. When present, the
+   *  memory's meta gets meta.handoff_slug = <slug> and the memory is
+   *  resumable via /mneme:resume <slug>. Used by /mneme:handoff and the
+   *  compact auto-capture path. */
+  handoff_slug?: string;
 };
 
 export function mountIngestRoutes(app: Hono): void {
@@ -232,7 +237,12 @@ export function mountIngestRoutes(app: Hono): void {
 
     const contentHash = await sha256Hex(cleaned);
     const chunkId = await sha256Hex(`${contentHash}:${EMBEDDER_MODEL}`);
-    const meta = { pinned, source_slash: true };
+    const handoffSlug =
+      typeof body.handoff_slug === "string" && body.handoff_slug.trim()
+        ? scrub(body.handoff_slug).trim()
+        : null;
+    const meta: Record<string, unknown> = { pinned, source_slash: true };
+    if (handoffSlug) meta.handoff_slug = handoffSlug;
 
     const result = await sql.begin(async (tx) => {
       // Synthetic capture for provenance. Distinguishable from hook-driven

@@ -179,8 +179,17 @@ Hooks fire automatically — most memories get captured without a slash command.
 | Crystallize a synthesised finding the auto-capture would miss | `/mneme:memory <text>` slash | agent or user |
 | Mark a memory superseded by a newer one | `/mneme:supersede <old_uuid> <new_uuid>` slash | agent (auto) or user |
 | Archive a memory (user contradicted it this session, or it's genuinely wrong) | `/mneme:archive <uuid>` slash | agent (auto) or user |
-| Wrap up the current session | `/mneme:summarise` slash | agent or user |
+| Save a session checkpoint for cross-machine handoff | `/mneme:handoff [slug-hint]` slash | agent or user |
+| Resume from a handoff on another machine | `/mneme:resume [slug]` slash | agent or user |
 | Pin a one-liner so it surfaces every session | `/mneme:pin <text>` slash | **user only** |
 | Pin / unpin an existing memory by id | `/mneme:pin <uuid>` / `/mneme:unpin <uuid>` | **user only** |
 
 `/mneme:pin` is reserved for the user — pinning is a deliberate "always surface this" decision that belongs to the human, not the agent. Everything else is agent-callable when the signal is clear.
+
+### Handoff & resume
+
+`/mneme:handoff` synthesises the current session into a 4-8 sentence checkpoint and persists it as a `kind=summary` memory with a short kebab-case slug in `meta.handoff_slug` (e.g. `dream-streaming-refactor`). It returns the slug.
+
+`/mneme:resume` pulls handoff memories by slug, or lists the top 10 most recent for the current repo when called without an arg. Load the full content as session context — don't re-summarise.
+
+Compact auto-capture: when the user runs `/compact`, Claude's own compaction summary is auto-saved with slug `compact-YYYYMMDD-HHMM`, so every compact produces a resumable anchor without explicit action. Topic-named `/handoff` checkpoints are for deliberate switching-machines moments.
