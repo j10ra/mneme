@@ -211,10 +211,15 @@ export const RECALL_RANKING_COEF = env.RECALL_RANKING_COEF;
 // reconcile contradicting facts across cluster boundaries.
 
 /** Cosine-distance ceiling for treating two cluster summaries as
- *  candidate "same topic". Tighter than DREAM_CLUSTER_DISTANCE because
- *  the input is already-distilled cluster summaries — near-duplicates
- *  merit the LLM call; loose adjacency does not. */
-export const DIGEST_MERGE_DISTANCE = 0.1;
+ *  candidate "same topic". 0.10 was too strict in practice — many
+ *  obvious merges (same PR, same bug, same subsystem with different
+ *  wording) landed at 0.12–0.20 and never reached the LLM. Cluster
+ *  summaries are already distilled prose so they're more abstract than
+ *  raw observations; 0.15 between two summaries is functionally "same
+ *  topic" most of the time. Asymmetric tuning: raw clustering stays
+ *  tight at DREAM_CLUSTER_DISTANCE=0.10, summary-level merge is the
+ *  permissive layer that gathers adjacent topics back together. */
+export const DIGEST_MERGE_DISTANCE = 0.15;
 
 /** Max merge candidate pairs per digest cycle. Bounds Sonnet call
  *  count. At ~50 clusters steady state and a tight cosine ceiling,
