@@ -15,11 +15,11 @@ const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_NAME = "mneme";
 const SERVER_VERSION = "1.0.0";
 
-// Match server-side substituteEmbeds. The proxy now does the same
-// substitution locally by calling the daemon's /embed endpoint, so the
-// server's /mcp becomes a pure SQL executor for daemon-equipped
-// machines. Server-side embed() handling remains as a fallback for
-// machines without a running daemon (transition period).
+// The proxy substitutes embed('text') → '[v1,v2,...]'::vector locally
+// by calling the daemon's /embed endpoint (bge-small subprocess) before
+// the SQL is forwarded to the server's /mcp. The server has no
+// embedder; if the proxy can't substitute, the call fails locally with
+// a clear error rather than forwarding doomed SQL.
 const EMBED_RE = /\bembed\(\s*'((?:[^'\\]|\\.)*)'\s*\)/gi;
 
 function plog(msg: string): void {
@@ -27,14 +27,25 @@ function plog(msg: string): void {
   process.stderr.write(`mneme-mcp: ${msg}\n`);
 }
 
-async function substituteEmbedsViaDaemon(cfg: MnemeConfig, sql: string): Promise<string | null> {
-  if (!cfg.daemon) {
-    plog("substituteEmbeds: no cfg.daemon, forwarding to server");
-    return null;
-  }
+type SubstitutionResult =
+  | { kind: "noop"; sql: string } // no embed() macro present, forward sql as-is
+  | { kind: "ok"; sql: string } // embed() macros replaced with vector literals
+  | { kind: "error"; message: string }; // embed() present but couldn't substitute
+
+async function substituteEmbedsViaDaemon(
+  cfg: MnemeConfig,
+  sql: string,
+): Promise<SubstitutionResult> {
   const matches = Array.from(sql.matchAll(EMBED_RE));
-  if (matches.length === 0) {
-    return sql; // no embed() in this SQL; nothing to do, but signal "ok, use this sql as-is"
+  if (matches.length === 0) return { kind: "noop", sql };
+
+  if (!cfg.daemon) {
+    return {
+      kind: "error",
+      message:
+        "embed() requires the per-machine mneme daemon to substitute it before SQL is sent. " +
+        "No daemon block in ~/.mneme/config.json — run /mneme:setup to register this machine.",
+    };
   }
 
   const rawTexts = Array.from(new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))));
@@ -50,32 +61,36 @@ async function substituteEmbedsViaDaemon(cfg: MnemeConfig, sql: string): Promise
       signal: AbortSignal.timeout(15_000),
     });
     if (!resp.ok) {
-      plog(`substituteEmbeds: daemon returned ${resp.status}, falling back to server`);
-      return null;
+      const detail = (await resp.text().catch(() => "")).slice(0, 200);
+      return {
+        kind: "error",
+        message: `embed() substitution failed: daemon /embed returned ${resp.status}${detail ? `: ${detail}` : ""}. Check /mneme:status.`,
+      };
     }
     const body = (await resp.json()) as { vectors?: number[][] };
     if (!Array.isArray(body.vectors) || body.vectors.length !== cleanedTexts.length) {
-      plog(
-        `substituteEmbeds: daemon returned ${body.vectors?.length ?? "no"} vectors for ${cleanedTexts.length} texts, falling back`,
-      );
-      return null;
+      return {
+        kind: "error",
+        message: `embed() substitution failed: daemon returned ${body.vectors?.length ?? "no"} vectors for ${cleanedTexts.length} text(s).`,
+      };
     }
     vectors = body.vectors;
     plog(`substituteEmbeds: daemon returned ${vectors.length} vector(s), substituting`);
-  } catch (err) {
-    plog(
-      `substituteEmbeds: daemon unreachable (${err instanceof Error ? err.message : String(err)}), falling back to server`,
-    );
-    return null;
+  } catch (e) {
+    return {
+      kind: "error",
+      message: `embed() substitution failed: daemon unreachable (${e instanceof Error ? e.message : String(e)}). Is the daemon running? /mneme:status.`,
+    };
   }
 
   const embedMap = new Map(rawTexts.map((t, i) => [t, vectors[i]!]));
-  return sql.replace(EMBED_RE, (_match, raw: string) => {
+  const rewritten = sql.replace(EMBED_RE, (_match, raw: string) => {
     const text = raw.replace(/\\'/g, "'");
     const vec = embedMap.get(text);
     if (!vec) return _match;
     return `'[${vec.join(",")}]'::vector`;
   });
+  return { kind: "ok", sql: rewritten };
 }
 
 const TOOL_DEF = {
@@ -174,16 +189,13 @@ for await (const rawLine of rl) {
     continue;
   }
 
-  // For mneme.sql tool calls, attempt local embed substitution via the
-  // daemon. On success, send the rewritten SQL with vector literals
-  // already substituted; the server's /mcp becomes a pure SQL executor.
-  // On any failure (no daemon block, daemon unreachable, embed error),
-  // fall through to forwarding the original request — the server's
-  // mcp.ts still has its own embed() substitution as backup.
+  // For mneme.sql tool calls, substitute embed('text') macros locally
+  // via the daemon's bge-small subprocess before forwarding. Server has
+  // no embedder, so on substitution failure we return a JSON-RPC error
+  // to the agent locally rather than forwarding SQL the server will
+  // reject anyway.
   let bodyToForward = line;
   if (
-    cfg &&
-    cfg.daemon &&
     typeof (req as { method?: unknown }).method === "string" &&
     (req as { method: string }).method === "tools/call"
   ) {
@@ -195,25 +207,29 @@ for await (const rawLine of rl) {
         ? (params.arguments.query as string)
         : null;
     if (sql) {
-      const hadEmbed = /\bembed\(/i.test(sql);
-      plog(`tools/call: mneme.sql ${hadEmbed ? "(has embed())" : "(no embed())"}`);
-      const rewritten = await substituteEmbedsViaDaemon(cfg, sql);
-      if (rewritten !== null && rewritten !== sql && params) {
+      const result = await substituteEmbedsViaDaemon(cfg, sql);
+      if (result.kind === "error") {
+        plog(`tools/call: ${result.message}`);
+        if (req.id !== undefined) {
+          process.stdout.write(err(req.id, -32603, result.message) + "\n");
+        }
+        continue;
+      }
+      if (result.kind === "ok" && params) {
         const rewrittenReq = {
           ...(req as Record<string, unknown>),
           params: {
             ...((req as { params?: Record<string, unknown> }).params ?? {}),
             arguments: {
               ...((params.arguments as Record<string, unknown>) ?? {}),
-              query: rewritten,
+              query: result.sql,
             },
           },
         };
         bodyToForward = JSON.stringify(rewrittenReq);
         plog("tools/call: forwarding sanitized SQL with vector literals");
-      } else if (hadEmbed) {
-        plog("tools/call: embed() present but not substituted, server will handle");
       }
+      // result.kind === "noop": no embed() macro, forward original line
     }
   }
 
