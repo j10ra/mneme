@@ -4,7 +4,10 @@
 // agents/. Lookup order:
 //   1. CLAUDE_EXECUTABLE_PATH env var (operator override; baked into
 //      the systemd unit / launchd plist by daemon-install.ts at
-//      `/mneme:setup` time).
+//      `/mneme:setup` time). Treated as a fast-path cache: if the path
+//      no longer points at a real file (claude reinstalled to a
+//      different location, env var went stale), fall through to the
+//      live lookups rather than handing the SDK a dead path.
 //   2. `which claude` in the daemon's PATH (typically empty on systemd-
 //      user; populated on launchd via the plist's EnvironmentVariables).
 //   3. Well-known install locations (homebrew, .local, .bun).
@@ -17,8 +20,14 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
 export function findClaudeExecutable(): string {
-  if (process.env.CLAUDE_EXECUTABLE_PATH) {
-    return process.env.CLAUDE_EXECUTABLE_PATH;
+  // Stale-env-var self-heal: existsSync guard so a baked-in path that
+  // pointed at a now-deleted binary (e.g. claude reinstalled npm → native)
+  // falls through to the live lookups below instead of throwing the SDK
+  // into 5x retry → outbox/capture/failed. See ticket #39 for the qube-
+  // laptop incident that motivated this guard.
+  const fromEnv = process.env.CLAUDE_EXECUTABLE_PATH;
+  if (fromEnv && existsSync(fromEnv)) {
+    return fromEnv;
   }
   const which = spawnSync("which", ["claude"], { encoding: "utf8" });
   const fromPath = which.stdout?.trim();

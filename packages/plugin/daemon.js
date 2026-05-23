@@ -486,8 +486,9 @@ import { existsSync as existsSync2, readdirSync } from "fs";
 import { spawnSync } from "child_process";
 import { homedir as homedir2 } from "os";
 function findClaudeExecutable() {
-  if (process.env.CLAUDE_EXECUTABLE_PATH) {
-    return process.env.CLAUDE_EXECUTABLE_PATH;
+  const fromEnv = process.env.CLAUDE_EXECUTABLE_PATH;
+  if (fromEnv && existsSync2(fromEnv)) {
+    return fromEnv;
   }
   const which = spawnSync("which", ["claude"], { encoding: "utf8" });
   const fromPath = which.stdout?.trim();
