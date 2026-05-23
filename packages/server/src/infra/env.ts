@@ -60,7 +60,7 @@ const Schema = z.object({
   RECALL_LTP_FULL: z.coerce.number().default(1.0),
   RECALL_LTP_PARTIAL: z.coerce.number().default(0.4),
   RECALL_LTP_PARTIAL_ROW_CAP: z.coerce.number().int().positive().default(10),
-  RECALL_LTD_DECAY: z.coerce.number().min(0).max(1).default(0.9),
+  RECALL_LTD_DECAY: z.coerce.number().min(0).max(1).default(0.933),
   RECALL_RANKING_COEF: z.coerce.number().default(0.1),
 
   // ── Embedder (server-side TEI fallback for non-daemon callers) ────

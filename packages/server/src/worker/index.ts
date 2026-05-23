@@ -5,11 +5,10 @@
 //   - nap       (every 4h): decay importance, shadow-mark exact dupes,
 //                link semantically related memories. Paginated via
 //                meta.last_napped_at round-robin (cap NAP_PER_CYCLE_CAP).
-//                Note: 6 cycles/day shortens importance decay τ from
-//                30 → 20 days and recall_weight half-life from ~42h →
-//                ~28h relative to the prior 6h cadence; recalibrate
-//                NAP_DECAY_PER_CYCLE / RECALL_LTD_DECAY if forgetting
-//                ends up too aggressive in practice.
+//                NAP_DECAY_PER_CYCLE (e^(-1/180)) and RECALL_LTD_DECAY
+//                (0.933) are calibrated for 6 cycles/day, preserving
+//                importance τ=30 days and recall_weight half-life ~42h
+//                regardless of the cadence move from 6h → 4h.
 //   - digest    (every 24h, gated by MNEME_DIGEST_ENABLED): global
 //                cross-cluster operations the per-machine daemon dream
 //                can't do — merge duplicate clusters, run cross-cluster

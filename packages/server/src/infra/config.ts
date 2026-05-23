@@ -41,9 +41,11 @@ export const PICKER_COOLDOWN_MS = 5 * 60_000;
 
 // ── Nap (decay + relations) ───────────────────────────────────────────
 
-/** Per-cycle decay factor. e^(-1/120) ≈ 0.9917 — at 4 naps/day this
- *  yields τ=30 days for unpinned memories. */
-export const NAP_DECAY_PER_CYCLE = Math.exp(-1 / 120);
+/** Per-cycle decay factor. e^(-1/180) ≈ 0.9945 — at 6 naps/day (4h
+ *  cadence) this yields τ=30 days for unpinned memories. Recalibrated
+ *  from e^(-1/120) when nap moved from 6h → 4h cadence so the τ stays
+ *  at 30 days regardless of cycle frequency. */
+export const NAP_DECAY_PER_CYCLE = Math.exp(-1 / 180);
 
 /** Per-cycle seed cap for nap's relate-pass + supersede-rule pass.
  *  Round-robin gating happens via `meta.last_napped_at`: the cycle
@@ -178,9 +180,11 @@ export const RECALL_LTP_PARTIAL = env.RECALL_LTP_PARTIAL;
  *  reinforces nothing. */
 export const RECALL_LTP_PARTIAL_ROW_CAP = env.RECALL_LTP_PARTIAL_ROW_CAP;
 
-/** Per-nap-cycle multiplier on recall_weight. 0.9 ≈ 7-nap half-life
- *  from a single hit. Long enough to feel persistent, short enough to
- *  fade if truly unused. */
+/** Per-nap-cycle multiplier on recall_weight. 0.933 ≈ 10-nap half-life
+ *  from a single hit, which at the current 4h nap cadence is ~42 hours.
+ *  Was 0.9 (7-nap half-life) under the prior 6h nap cadence; recalibrated
+ *  when nap moved 6h → 4h so the wall-clock half-life stays consistent.
+ *  Long enough to feel persistent, short enough to fade if truly unused. */
 export const RECALL_LTD_DECAY = env.RECALL_LTD_DECAY;
 
 /** Coefficient on the `ln(1 + recall_weight)` term added to surface
