@@ -2,10 +2,33 @@
 set -euo pipefail
 
 staged=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(ts|tsx|js|jsx|mjs|cjs|json|jsonc|css)$' || true)
-[ -z "$staged" ] && exit 0
 
-# Format staged files in place; Biome's --staged restricts to indexed regions.
-bunx --bun biome check --staged --write --no-errors-on-unmatched
+if [ -n "$staged" ]; then
+  # Format staged files in place; Biome's --staged restricts to indexed regions.
+  bunx --bun biome check --staged --write --no-errors-on-unmatched
 
-# Re-stage any files Biome rewrote so the commit captures the formatted output.
-echo "$staged" | xargs -r git add --
+  # Re-stage any files Biome rewrote so the commit captures the formatted output.
+  echo "$staged" | xargs -r git add --
+fi
+
+# Version-pill consistency: when plugin version is bumped, the dashboard bundle
+# must contain that version (it's baked in at build time via __APP_VERSION__).
+# Forgetting to rebuild ships a dashboard that shows the previous version.
+if git diff --cached --name-only --diff-filter=ACMR | grep -qE '^packages/plugin/(package\.json|\.claude-plugin/plugin\.json)$'; then
+  plugin_ver=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' packages/plugin/package.json | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+  bundle=packages/plugin/dashboard/dist/bundle.js
+  if [ -z "$plugin_ver" ]; then
+    echo "pre-commit: could not parse plugin version from packages/plugin/package.json" >&2
+    exit 1
+  fi
+  if [ ! -f "$bundle" ] || ! grep -q "\"$plugin_ver\"" "$bundle"; then
+    echo "" >&2
+    echo "pre-commit: dashboard bundle does not contain plugin version \"$plugin_ver\"." >&2
+    echo "            the version pill will be stale on every machine that updates." >&2
+    echo "" >&2
+    echo "  fix:      cd packages/plugin/dashboard && bun run build" >&2
+    echo "            git add packages/plugin/dashboard/dist" >&2
+    echo "" >&2
+    exit 1
+  fi
+fi
