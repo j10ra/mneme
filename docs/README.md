@@ -35,9 +35,9 @@ Three pieces:
 ```
 hook → daemon /capture → outbox → /api/bundle → memories
                                                   │
-                                                  ├─ 6h ─▶ nap     (server, SQL)
+                                                  ├─ 4h ─▶ nap     (server, SQL)
                                                   ├─ 8h ─▶ dream   (daemon, Sonnet)
-                                                  └─ 48h ─▶ digest (server, opt-in)
+                                                  └─ 24h ─▶ digest (server, opt-in)
 
 _ops.{spans,traces,logs} ── 24h ─▶ prune (server, telemetry retention)
 ```

@@ -44,9 +44,9 @@ flowchart LR
     C --> O[(outbox)]
     O --> B["server · /api/bundle"]
     B --> M[(memories)]
-    M --> N["nap<br/><sub>6h · SQL</sub>"]
+    M --> N["nap<br/><sub>4h · SQL</sub>"]
     M --> D["dream<br/><sub>8h · Sonnet</sub>"]
-    M --> G["digest<br/><sub>48h · opt-in</sub>"]
+    M --> G["digest<br/><sub>24h · opt-in</sub>"]
     T[("_ops<br/>telemetry")] --> P["prune<br/><sub>24h</sub>"]
 ```
 
@@ -58,19 +58,19 @@ For the long version — capture pipeline, the three brain workers (nap / dream 
 
 Most "agent memory" tools are a write-only log: capture → embed → retrieve. That works for a week. Then the recall surface fills with stale duplicates, contradicting facts both rank, and there's no higher-level view of what you've been working on. Mneme keeps the corpus alive with three background workers — the brain trio — each solving a different decay problem.
 
-### 💤 Nap — every 6h, on the server *(SQL, no LLM in the loop)*
+### 💤 Nap — every 4h, on the server *(SQL, no LLM in the loop)*
 
-**The maintenance pass.** *Without it: importance never decays, exact duplicates pile up, related memories never link, replaced facts keep ranking.*
+**The maintenance pass.** *Without it: importance never decays, fully-stale rows pile up, related memories never link, replaced facts keep ranking.*
 
-Each cycle: importance decays with a ~30-day timescale, exact-text duplicates get shadowed onto a canonical row, every memory gets `meta.related_to` edges to cosine-near neighbours in the same repo, and rule-based supersede fires when a newer row clearly replaces an older one (tight cosine + keyword overlap + 12h gap). Pure SQL in one transaction, round-robin paginated via `meta.last_napped_at` so it scales with the corpus.
+Each cycle, four independent phases: importance decay with a ~30-day timescale, `recall_weight` decay (LTP fading) with a ~42h half-life, auto-archive of fully-decayed orphans (importance ≤ 0.1, never recalled, 30+ days old, not pinned/clustered/superseded), and a seed-paginated pass that adds `meta.related_to` edges to cosine-near neighbours in the same repo plus a rule-based supersede when a newer row clearly replaces an older one (tight cosine + keyword overlap + 12h gap). Pure SQL, round-robin paginated via `meta.last_napped_at` so it scales with the corpus.
 
 ### 💭 Dream — every 8h, on the daemon *(Sonnet via your `claude` login — no extra cost)*
 
 **The synthesis pass.** *Without it: agents see only atomic captures — never "what's going on with repo X this week" as a theme.*
 
-Each cycle finds tight cosine groups of memories in the same repo, calls Sonnet to write a one-paragraph title + summary per cluster, and persists each summary as a queryable `kind='cluster'` row that outranks its members for broad recall queries. **Cross-machine by design:** a memory captured on your laptop and one on your desktop, both about the same repo and close in embedding space, cluster together. Distributed-leader via Postgres advisory lock — exactly one of your daemons wins the window.
+Each cycle finds tight cosine groups of memories in the same repo, calls Sonnet to write a one-paragraph title + summary per cluster, and persists each summary as a queryable `kind='cluster'` row that outranks its members for broad recall queries. **Cross-machine by design:** a memory captured on your laptop and one on your desktop, both about the same repo and close in embedding space, cluster together. Distributed-leader via a durable lock row in `_ops.dream_runs` (INSERT ON CONFLICT, keyed on the window slot) — exactly one of your daemons wins the window. Candidates stream over NDJSON so dense corpus slices don't trip the gateway timeout.
 
-### 🔮 Digest — every 48h, on the server *(opt-in, Sonnet via OpenRouter)*
+### 🔮 Digest — every 24h, on the server *(opt-in, Sonnet via OpenRouter)*
 
 **The cross-cluster consolidator.** *Without it: two machines independently capture "we use X" then "we use Y" in different dream windows, form two unrelated clusters, never reconcile.*
 
@@ -151,7 +151,7 @@ bun run dev                # local dev; for prod, deploy to any Bun-capable host
 <details>
 <summary><b>Provider configuration</b> — what to put in <code>.env</code></summary>
 
-Most LLM and embedder work happens **on the user's machine inside the daemon**, not on the server. The daemon uses the Claude Agent SDK (inheriting your existing `claude` OAuth) for extract + dream, and runs `BAAI/bge-small-en-v1.5` in an isolated subprocess for embeddings — neither needs a server-side env var. The server only needs LLM/embedder env vars if you opt into the **digest** worker (every-48h cross-cluster pass), in which case the picker uses OpenRouter or any OpenAI-compatible fallback.
+Most LLM and embedder work happens **on the user's machine inside the daemon**, not on the server. The daemon uses the Claude Agent SDK (inheriting your existing `claude` OAuth) for extract + dream, and runs `BAAI/bge-small-en-v1.5` in an isolated subprocess for embeddings — neither needs a server-side env var. The server only needs LLM/embedder env vars if you opt into the **digest** worker (every-24h cross-cluster pass), in which case the picker uses OpenRouter or any OpenAI-compatible fallback.
 
 ```env
 # Database (required)
@@ -215,7 +215,8 @@ The plugin's SessionStart hook detects the new version and self-heals the servic
 | `/mneme:unpin <text-or-id>` | Stop a memory from surfacing. (It still exists; recall can still find it.) |
 | `/mneme:pinned [scope]` | List what's currently pinned. |
 | `/mneme:recall <query>` | Hybrid (semantic + keyword + recency) search via the bundled skill. |
-| `/mneme:summarise [scope]` | Wrap up the recent thread as a session summary. |
+| `/mneme:handoff [slug-hint]` | Save a session checkpoint to Mneme so another machine can resume it. Returns a kebab-case slug. |
+| `/mneme:resume [slug]` | Pick up where you left off on this machine — pulls a handoff by slug or lists the top 10 recent. |
 | `/mneme:status` | Workers + daemons + dream history + breakers in one snapshot. |
 | `/mneme:dashboard` | Open the local browser dashboard (Activity + Memories tabs). |
 | `/mneme:machines` | List your registered machines. |
@@ -243,6 +244,6 @@ Hooks fire on their own. You shouldn't have to think about them.
 
 ## 🚦 Status
 
-Mneme is a personal tool. One user, several machines. **Phases 0–9 shipped:** capture, extract, embed, surface, nap (decay + shadow + relate + supersede), dream (cluster + distil + supersede, distributed-leader), distributed daemon (extract + embed + dream moved to per-machine), dashboard + ops surface, digest (opt-in cross-cluster pass). Multi-harness rollout (Codex / Cursor / OpenCode) tracked at [#6](https://github.com/j10ra/mneme/issues/6).
+Mneme is a personal tool. One user, several machines. **Phases 0–9 shipped:** capture, extract, embed, surface, nap (decay + auto-archive + relate + rule-based supersede), dream (cluster + distil + supersede, distributed-leader, NDJSON-streamed candidates), distributed daemon (extract + embed + dream moved to per-machine), dashboard + ops surface, digest (opt-in cross-cluster merge + supersede). Multi-harness rollout (Codex / Cursor / OpenCode) tracked at [#6](https://github.com/j10ra/mneme/issues/6).
 
 > Not multi-tenant. Not team memory. Not a search engine. One human, multiple machines, one continuous memory.
