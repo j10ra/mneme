@@ -19,7 +19,7 @@
 import { Hono } from "hono";
 import { mnemeRoute, requireAuth } from "@mneme/core";
 import { sql } from "../infra/db.ts";
-import { embedText } from "../embedder/index.ts";
+import { EMBEDDER_DIM } from "../infra/config.ts";
 import { inspectBreakers } from "../llm/pick.ts";
 
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
@@ -278,7 +278,10 @@ export function mountOpsRoutes(app: Hono): void {
   //   machine_id      comma-sep (text, joins to _ops.api_keys for name)
   //   kind            comma-sep (memories.kind taxonomy)
   //   cluster_status  in_cluster | orphaned | superseded | shadow
-  //   q               hybrid search query (semantic + ts_rank)
+  //   qvec            comma-separated EMBEDDER_DIM floats, pre-embedded
+  //                   by the caller (the per-machine daemon's bge-small
+  //                   subprocess for the dashboard search path)
+  //   qkw             keyword text for ts_rank, sent alongside qvec
   //   limit, offset   default 50, max 200
   // -------------------------------------------------------------------
   app.get("/api/_ops/memories", mnemeRoute("api._ops.memories"), requireAuth("read"), async (c) => {
@@ -289,9 +292,29 @@ export function mountOpsRoutes(app: Hono): void {
     const machineIds = csv(u.searchParams.get("machine_id"));
     const kinds = csv(u.searchParams.get("kind"));
     const clusterStatus = csv(u.searchParams.get("cluster_status"));
-    const q = (u.searchParams.get("q") ?? "").trim();
+    const qvecRaw = (u.searchParams.get("qvec") ?? "").trim();
+    const qkw = (u.searchParams.get("qkw") ?? "").trim();
     const limit = clamp(Number(u.searchParams.get("limit") ?? 50), 1, 200, 50);
     const offset = clamp(Number(u.searchParams.get("offset") ?? 0), 0, 100_000, 0);
+
+    // Parse qvec (caller pre-embedded the search text). Reject early on
+    // malformed input rather than passing a bad literal to Postgres.
+    let vecLit: string | null = null;
+    if (qvecRaw) {
+      const parts = qvecRaw.split(",");
+      if (parts.length !== EMBEDDER_DIM) {
+        return c.json(
+          { error: `qvec must be ${EMBEDDER_DIM} comma-separated floats, got ${parts.length}` },
+          400,
+        );
+      }
+      for (const p of parts) {
+        if (!Number.isFinite(Number(p))) {
+          return c.json({ error: "qvec contains non-numeric values" }, 400);
+        }
+      }
+      vecLit = `[${parts.join(",")}]`;
+    }
 
     // Build filter clauses lazily so we can splice them either into
     // the plain-filter query or the hybrid-scoring query.
@@ -305,12 +328,10 @@ export function mountOpsRoutes(app: Hono): void {
       `;
 
     let rows: MemoryRow[];
-    if (q) {
-      const vec = await embedText(q);
-      const vecLit = `[${vec.join(",")}]`;
+    if (vecLit) {
       rows = (await sql<MemoryRow[]>`
           WITH q_vec AS (SELECT ${vecLit}::vector AS v),
-               q_kw  AS (SELECT websearch_to_tsquery('simple', ${q}) AS q)
+               q_kw  AS (SELECT websearch_to_tsquery('simple', ${qkw || ""}) AS q)
           SELECT
             m.id::text                 AS id,
             m.content,

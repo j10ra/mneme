@@ -1,73 +1,32 @@
-import { describe, expect, mock, test } from "bun:test";
-import { EMBEDDER_DIM } from "../src/embedder/local.ts";
-
-// Mock the embedder before importing the SUT. substituteEmbeds calls
-// embedBatch synchronously inside the module — capture every call so we
-// can assert what reached the embedder.
-//
-// IMPORTANT: bun's mock.module persists across test files in the same
-// process. The mock MUST re-export every name the real module exports
-// (or files importing via extract.ts crash with "Export named X not
-// found"), AND with faithful values. bundle.test.ts imports EMBEDDER_DIM
-// from this module and sizes real vector(384) DB inserts by it, so a
-// fabricated dimension leaks process-wide and breaks those inserts.
-// EMBEDDER_DIM is taken from the un-mocked local.ts so it tracks the
-// real schema; the mock vectors are sized to match.
-const calls: string[][] = [];
-mock.module("../src/embedder/index.ts", () => ({
-  embedBatch: async (texts: string[]) => {
-    calls.push(texts);
-    return texts.map(() => Array.from({ length: EMBEDDER_DIM }, () => 0));
-  },
-  embedText: async (_t: string) => Array.from({ length: EMBEDDER_DIM }, () => 0),
-  EMBEDDER_MODEL: "mock-embedder",
-  EMBEDDER_DIM,
-}));
+import { describe, expect, test } from "bun:test";
 
 const {
-  substituteEmbeds,
+  rejectUnsubstitutedEmbeds,
   hasRecallMarker,
   extractUuidsFromSql,
   extractRowIds,
   chooseReinforcement,
 } = await import("../src/services/mcp.ts");
 
-describe("substituteEmbeds — secrets scrubbed before embedding", () => {
-  test("redacts a JWT in embed()", async () => {
-    calls.length = 0;
-    await substituteEmbeds(
-      "SELECT * FROM memories WHERE embedding <=> embed('Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyMSJ9.signaturepartXXXXXXXXX') < 0.1",
-    );
-    expect(calls).toHaveLength(1);
-    const sentToEmbedder = calls[0]!.join(" ");
-    expect(sentToEmbedder).not.toContain("eyJhbGciOiJIUzI1NiJ9");
-    expect(sentToEmbedder).toContain("[REDACTED:jwt]");
+describe("rejectUnsubstitutedEmbeds — guard for missing daemon substitution", () => {
+  test("throws when SQL still contains embed('...')", () => {
+    expect(() =>
+      rejectUnsubstitutedEmbeds(
+        "SELECT * FROM memories WHERE embedding <=> embed('docker compose up') < 0.1",
+      ),
+    ).toThrow(/daemon/i);
   });
 
-  test("redacts an anthropic key in embed()", async () => {
-    calls.length = 0;
-    await substituteEmbeds(
-      "SELECT 1 FROM memories WHERE embedding <=> embed('see sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCd here') < 0.1",
-    );
-    expect(calls).toHaveLength(1);
-    const sentToEmbedder = calls[0]!.join(" ");
-    expect(sentToEmbedder).not.toContain("sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCd");
-    expect(sentToEmbedder).toContain("[REDACTED:anthropic_key]");
+  test("passes through plain SQL unchanged", () => {
+    expect(() => rejectUnsubstitutedEmbeds("SELECT 1")).not.toThrow();
   });
 
-  test("benign text passes through unchanged", async () => {
-    calls.length = 0;
-    await substituteEmbeds(
-      "SELECT 1 FROM memories WHERE embedding <=> embed('docker compose up') < 0.1",
-    );
-    expect(calls[0]).toEqual(["docker compose up"]);
-  });
-
-  test("no embed() macro = no embedder call", async () => {
-    calls.length = 0;
-    const out = await substituteEmbeds("SELECT 1");
-    expect(out).toBe("SELECT 1");
-    expect(calls).toHaveLength(0);
+  test("passes through SQL where embed() was already substituted to a vector literal", () => {
+    expect(() =>
+      rejectUnsubstitutedEmbeds(
+        "SELECT * FROM memories WHERE embedding <=> '[0.1,0.2,0.3]'::vector < 0.1",
+      ),
+    ).not.toThrow();
   });
 });
 

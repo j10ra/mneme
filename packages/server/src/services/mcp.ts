@@ -3,9 +3,7 @@
 // notifications/initialized, ping. No SDK dep, no streaming.
 
 import { Logger, errorMessageOf, mnemeFn } from "@mneme/core";
-import { scrub } from "@mneme/shared";
 import { readerSql, sql } from "../infra/db.ts";
-import { embedBatch } from "../embedder/index.ts";
 import {
   RECALL_LTP_FULL,
   RECALL_LTP_PARTIAL,
@@ -92,23 +90,20 @@ function effectiveLimit(sql: string): number {
   return m ? Number(m[1]) : DEFAULT_LIMIT;
 }
 
-// Exported for tests. Scrubs each embed argument before handing it to
-// the embedder: today's local embedder is trusted, but the moment any
-// remote embedder gets wired in, an agent could leak secrets by typing
-// `embed('Bearer eyJ…')` into a query.
-export async function substituteEmbeds(sql: string): Promise<string> {
-  const matches = Array.from(sql.matchAll(EMBED_RE));
-  if (matches.length === 0) return sql;
-  const rawTexts = Array.from(new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))));
-  const cleanedTexts = rawTexts.map(scrub);
-  const vectors = await embedBatch(cleanedTexts);
-  const embedMap = new Map(rawTexts.map((t, i) => [t, vectors[i]!]));
-  return sql.replace(EMBED_RE, (_match, raw: string) => {
-    const text = raw.replace(/\\'/g, "'");
-    const vec = embedMap.get(text);
-    if (!vec) throw new Error(`embed substitution failed for: ${text}`);
-    return `'[${vec.join(",")}]'::vector`;
-  });
+/** The server no longer embeds anything. The per-machine MCP proxy
+ *  (`packages/plugin/scripts/mcp-proxy.ts`) substitutes embed('text')
+ *  → '[v1,v2,...]'::vector locally via the daemon's bge-small subprocess
+ *  before the SQL hits this server. If we see an embed() macro here it
+ *  means either (a) the proxy is missing/old, or (b) someone is calling
+ *  /mcp directly. Reject with a clear message rather than passing
+ *  malformed SQL to Postgres. */
+export function rejectUnsubstitutedEmbeds(sql: string): void {
+  if (EMBED_RE.test(sql)) {
+    throw new Error(
+      "embed() macro requires the per-machine mneme daemon to substitute it before the SQL reaches the server. " +
+        "Ensure the daemon is running (`/mneme:status`) and the plugin's mcp-proxy is current.",
+    );
+  }
 }
 
 function capResult(rows: unknown[]): {
@@ -231,8 +226,8 @@ const runSql = mnemeFn(
       throw new Error(`forbidden keyword: ${m[1]}`);
     }
 
-    const withEmbeds = await substituteEmbeds(single);
-    const withLimit = injectLimit(withEmbeds);
+    rejectUnsubstitutedEmbeds(single);
+    const withLimit = injectLimit(single);
     const limit = effectiveLimit(single);
 
     // Privacy enforcement is at the role level: mneme_reader has an RLS

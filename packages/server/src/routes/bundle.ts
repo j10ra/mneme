@@ -19,7 +19,7 @@ import { Hono } from "hono";
 import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql } from "../infra/db.ts";
 import { actuateRawMeta } from "../lib/actuate.ts";
-import { EMBEDDER_DIM } from "../embedder/index.ts";
+import { EMBEDDER_DIM } from "../infra/config.ts";
 
 type CaptureBody = {
   content: string;

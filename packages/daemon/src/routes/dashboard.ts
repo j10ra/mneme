@@ -24,6 +24,7 @@ import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { Logger, mnemeRoute } from "@mneme/core";
 import type { DreamCycleResult } from "../dream.ts";
+import { embedBatch } from "../embed.ts";
 
 /** Absolute path to `<plugin-root>/dashboard/dist/`.
  *  Resolution order:
@@ -197,10 +198,14 @@ export function mountDashboardRoutes(app: Hono, forceDream: () => Promise<DreamC
   );
 
   // ── Memories panel proxies (read-scoped on the server side) ──────
+  // The list endpoint pre-embeds any ?q=<text> locally via the daemon's
+  // bge-small subprocess and forwards as ?qvec=v1,v2,...&qkw=text — the
+  // server no longer embeds anything itself. Other shapes (filters
+  // only, no text search) pass through unchanged.
   app.get(
     "/dashboard/api/memories",
     mnemeRoute("daemon.dashboard.memories"),
-    forwardQuery("/api/_ops/memories", "dashboard.memories"),
+    forwardMemoriesWithLocalEmbed(),
   );
   app.get(
     "/dashboard/api/memories/:id/related",
@@ -278,6 +283,45 @@ function proxyHandler(upstreamPath: string, traceTag: string) {
       });
     } catch (err) {
       Logger.warn(`${traceTag}: upstream fetch failed`, err);
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  };
+}
+
+/** Memories list proxy with local query embedding. Replaces the plain
+ *  forwardQuery for this one endpoint because the server no longer
+ *  embeds — q=text from the dashboard SPA gets converted to
+ *  qvec=...&qkw=text by calling the local bge-small subprocess before
+ *  forwarding upstream. Other params pass through. */
+function forwardMemoriesWithLocalEmbed() {
+  return async (c: Context) => {
+    const cfg = await readDaemonConfig();
+    if (!cfg) return c.json({ error: "config not loaded" }, 503);
+    const url = new URL(c.req.url);
+    const q = (url.searchParams.get("q") ?? "").trim();
+    if (q) {
+      try {
+        const [vec] = await embedBatch([q]);
+        if (vec && vec.length > 0) {
+          url.searchParams.delete("q");
+          url.searchParams.set("qvec", vec.join(","));
+          url.searchParams.set("qkw", q);
+        }
+      } catch (err) {
+        Logger.warn("dashboard.memories: local embed failed, dropping semantic search", err);
+        url.searchParams.delete("q");
+      }
+    }
+    try {
+      const resp = await fetch(`${cfg.serverUrl}/api/_ops/memories${url.search}`, {
+        headers: { Authorization: `Bearer ${cfg.token}` },
+      });
+      const body = await resp.text();
+      return c.body(body, resp.status as 200, {
+        "content-type": resp.headers.get("content-type") ?? "application/json",
+      });
+    } catch (err) {
+      Logger.warn("dashboard.memories: upstream fetch failed", err);
       return c.json({ error: "upstream unavailable" }, 502);
     }
   };

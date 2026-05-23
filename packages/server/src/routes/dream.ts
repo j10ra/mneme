@@ -29,7 +29,7 @@ import {
 } from "../infra/config.ts";
 import { validateSupersedePairs } from "../lib/supersede.ts";
 import { sha256Hex, sql } from "../infra/db.ts";
-import { EMBEDDER_DIM } from "../embedder/index.ts";
+import { EMBEDDER_DIM } from "../infra/config.ts";
 
 // All dream tuning knobs (cycle cap, neighbor cap, stream batch sizes)
 // live in ../infra/config.ts -- imported at the top of this file.

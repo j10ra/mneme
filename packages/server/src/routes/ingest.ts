@@ -38,7 +38,7 @@ const silentTrace: MiddlewareHandler = async (c, next) => {
 };
 import { sql, sha256Hex } from "../infra/db.ts";
 import { actuateRawMeta } from "../lib/actuate.ts";
-import { EMBEDDER_MODEL } from "../embedder/index.ts";
+import { EMBEDDER_MODEL } from "../infra/config.ts";
 import { KINDS, type Kind } from "../llm/index.ts";
 
 // Cap a single forwarded batch so a runaway daemon can't OOM the

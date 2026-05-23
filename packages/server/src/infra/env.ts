@@ -63,16 +63,15 @@ const Schema = z.object({
   RECALL_LTD_DECAY: z.coerce.number().min(0).max(1).default(0.933),
   RECALL_RANKING_COEF: z.coerce.number().default(0.1),
 
-  // ── Embedder (server-side TEI fallback for non-daemon callers) ────
-  // Canonical embedder runs in each per-machine daemon (bge-small via
-  // packages/daemon/src/embed-worker.ts). The server-side TEI path
-  // below is only exercised when a client bypasses the daemon's MCP
-  // proxy. Defaults match what the daemon emits so chunk_id hashing
-  // stays consistent.
-  EMBEDDER_URL: z.string().url().optional(),
-  EMBEDDER_BEARER: z.string().optional(),
+  // ── Embedder ──────────────────────────────────────────────────────
+  // The server doesn't embed anything itself. All embedding happens in
+  // the per-machine daemon's bge-small subprocess: the MCP proxy
+  // substitutes embed() macros locally before SQL reaches /mcp, and
+  // the dashboard memories endpoint accepts pre-embedded qvec from the
+  // daemon. Only EMBEDDER_MODEL remains as a server-side constant —
+  // it's part of the chunk_id hash, so the server validates incoming
+  // bundles' embedding_model against it.
   EMBEDDER_MODEL: z.string().default("BAAI/bge-small-en-v1.5"),
-  EMBEDDER_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 });
 
 const parsed = (() => {
@@ -89,27 +88,18 @@ const parsed = (() => {
 })();
 
 // Resolve fallback chains once so callers don't have to repeat them.
-// LLM_BEARER falls back to AUTH_BEARER; embedder URL/bearer fall back
-// to LLM equivalents (the homelab and inference VMs share the same
-// Caddy and bearer in practice).
+// LLM_BEARER falls back to AUTH_BEARER (still used by the picker for
+// the local LLM provider, if configured).
 const LLM_BEARER_RESOLVED = parsed.LLM_BEARER ?? parsed.AUTH_BEARER ?? "";
-const EMBEDDER_URL_RESOLVED = parsed.EMBEDDER_URL ?? parsed.LLM_URL;
-const EMBEDDER_BEARER_RESOLVED =
-  parsed.EMBEDDER_BEARER ?? parsed.AUTH_BEARER ?? parsed.LLM_BEARER ?? "";
 
 if (!LLM_BEARER_RESOLVED) {
   throw new Error("env: LLM_BEARER (or AUTH_BEARER) must be set");
-}
-if (!EMBEDDER_BEARER_RESOLVED) {
-  throw new Error("env: EMBEDDER_BEARER (or AUTH_BEARER, or LLM_BEARER) must be set");
 }
 
 export const env = {
   ...parsed,
   // Resolved fallbacks (overrides the optional-typed originals)
   LLM_BEARER: LLM_BEARER_RESOLVED,
-  EMBEDDER_URL: EMBEDDER_URL_RESOLVED,
-  EMBEDDER_BEARER: EMBEDDER_BEARER_RESOLVED,
   // Derived flags for the picker
   HAS_OPENROUTER: !!parsed.OPENROUTER_API_KEY,
   IS_PRODUCTION: parsed.NODE_ENV === "production",

@@ -1953,7 +1953,7 @@ function mountDashboardRoutes(app, forceDream) {
     }
   });
   app.get("/dashboard/api/server-logs", mnemeRoute("daemon.dashboard.server_logs"), forwardQuery("/api/_ops/logs", "dashboard.server_logs"));
-  app.get("/dashboard/api/memories", mnemeRoute("daemon.dashboard.memories"), forwardQuery("/api/_ops/memories", "dashboard.memories"));
+  app.get("/dashboard/api/memories", mnemeRoute("daemon.dashboard.memories"), forwardMemoriesWithLocalEmbed());
   app.get("/dashboard/api/memories/:id/related", mnemeRoute("daemon.dashboard.memories.related"), async (c) => {
     const id = c.req.param("id");
     return forwardPath(`/api/_ops/memories/${id}/related`, "dashboard.memories.related")(c);
@@ -1995,6 +1995,40 @@ function proxyHandler(upstreamPath, traceTag) {
       });
     } catch (err) {
       Logger.warn(`${traceTag}: upstream fetch failed`, err);
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  };
+}
+function forwardMemoriesWithLocalEmbed() {
+  return async (c) => {
+    const cfg = await readDaemonConfig();
+    if (!cfg)
+      return c.json({ error: "config not loaded" }, 503);
+    const url = new URL(c.req.url);
+    const q = (url.searchParams.get("q") ?? "").trim();
+    if (q) {
+      try {
+        const [vec] = await embedBatch([q]);
+        if (vec && vec.length > 0) {
+          url.searchParams.delete("q");
+          url.searchParams.set("qvec", vec.join(","));
+          url.searchParams.set("qkw", q);
+        }
+      } catch (err) {
+        Logger.warn("dashboard.memories: local embed failed, dropping semantic search", err);
+        url.searchParams.delete("q");
+      }
+    }
+    try {
+      const resp = await fetch(`${cfg.serverUrl}/api/_ops/memories${url.search}`, {
+        headers: { Authorization: `Bearer ${cfg.token}` }
+      });
+      const body = await resp.text();
+      return c.body(body, resp.status, {
+        "content-type": resp.headers.get("content-type") ?? "application/json"
+      });
+    } catch (err) {
+      Logger.warn("dashboard.memories: upstream fetch failed", err);
       return c.json({ error: "upstream unavailable" }, 502);
     }
   };

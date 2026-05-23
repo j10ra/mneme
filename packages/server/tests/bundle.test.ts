@@ -7,7 +7,7 @@
 // production logs.
 
 import { describe, expect, test } from "bun:test";
-import { EMBEDDER_DIM } from "../src/embedder/index.ts";
+import { EMBEDDER_DIM } from "../src/infra/config.ts";
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 
