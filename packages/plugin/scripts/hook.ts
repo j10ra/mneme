@@ -398,9 +398,15 @@ function prefixSurfaceForLLM(surface: string, strippedSurface: string): string {
     `Glyph legend (the symbol after each [id]):\n${KIND_LEGEND}\n\n` +
     `Memory split: Mneme = cross-machine project knowledge (decisions, fixes, ` +
     "references, postmortems). Local auto-memory at `~/.claude/projects/.../memory/` " +
-    `= per-machine behavioral preferences (tone, response style, harness quirks). ` +
-    `Captures happen automatically via hooks; slash commands like \`/mneme:memory\` ` +
-    `and \`/mneme:pin\` are user-triggered, not for agent use.\n\n`;
+    `= per-machine behavioral preferences (tone, response style, harness quirks).\n\n` +
+    `Writing memories: hooks auto-capture conversation + tool use, so most ` +
+    `memories land without intervention. Beyond that, use agent discretion to ` +
+    "invoke `/mneme:memory <text>` (crystallize a synthesised finding the auto- " +
+    "capture would miss), `/mneme:supersede <old> <new>` (a newer fact replaces " +
+    "an old one), and `/mneme:archive <uuid>` (the user contradicts a memory " +
+    "this session). `/mneme:pin` is reserved for the user — never invoke it. " +
+    `Act on clear signal; ask the user first only when which memory to ` +
+    `supersede/archive is genuinely ambiguous.\n\n`;
   return reminder + strippedSurface;
 }
 

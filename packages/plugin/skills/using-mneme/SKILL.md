@@ -172,11 +172,15 @@ The connection runs as `mneme_reader` which physically lacks write privileges.
 
 ## Writing memories (don't use mneme_sql)
 
-| Goal | Tool |
-|---|---|
-| Save a fact in the user's words | `/mneme:memory <text>` slash |
-| Pin a one-liner so it surfaces every session | `/mneme:pin <text>` slash |
-| Pin / unpin an existing memory by id | `/mneme:pin <uuid>` / `/mneme:unpin <uuid>` |
-| Wrap up the current session | `/mneme:summarise` slash |
+Hooks fire automatically — most memories get captured without a slash command. Beyond that, use agent discretion to invoke the writes below when you have clear signal. Ask the user first only when which memory to supersede/archive is genuinely ambiguous.
 
-Hooks fire automatically — most memories get captured without a slash command.
+| Goal | Tool | Who invokes |
+|---|---|---|
+| Crystallize a synthesised finding the auto-capture would miss | `/mneme:memory <text>` slash | agent or user |
+| Mark a memory superseded by a newer one | `/mneme:supersede <old_uuid> <new_uuid>` slash | agent (auto) or user |
+| Archive a memory (user contradicted it this session, or it's genuinely wrong) | `/mneme:archive <uuid>` slash | agent (auto) or user |
+| Wrap up the current session | `/mneme:summarise` slash | agent or user |
+| Pin a one-liner so it surfaces every session | `/mneme:pin <text>` slash | **user only** |
+| Pin / unpin an existing memory by id | `/mneme:pin <uuid>` / `/mneme:unpin <uuid>` | **user only** |
+
+`/mneme:pin` is reserved for the user — pinning is a deliberate "always surface this" decision that belongs to the human, not the agent. Everything else is agent-callable when the signal is clear.
