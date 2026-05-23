@@ -1,6 +1,6 @@
-# Nap — every 6 hours, on the server (pure SQL)
+# Nap — every 4 hours, on the server (pure SQL)
 
-The **maintenance pass**. No LLM, no embedder, no per-row HTTP calls — all SQL, in one transaction per cycle. Runs server-side because the only thing it needs is fast access to Postgres.
+The **maintenance pass**. No LLM, no embedder, no per-row HTTP calls — all SQL, four independent phases per cycle. Runs server-side because the only thing it needs is fast access to Postgres.
 
 > Reads for context: [`../concepts.md`](../concepts.md), [`../data-model.md`](../data-model.md).
 > Sibling workers: [`dream.md`](./dream.md), [`digest.md`](./digest.md).
@@ -10,43 +10,66 @@ The **maintenance pass**. No LLM, no embedder, no per-row HTTP calls — all SQL
 
 ## What nap does, top to bottom
 
-1. **Decay.** Every non-archived memory's `importance` shrinks by age — exponential decay with τ = 30 days. Per-cycle factor is `exp(-1/120) ≈ 0.9917` (4 naps/day × 30 days = 120). Pinned memories decay too, just with a higher floor.
+Four phases, each its own SQL call (not one transaction — a slow phase fails in isolation instead of rolling back the rest):
 
-2. **Asymmetric floors.** `NAP_PIN_FLOOR = 0.5` for `meta.pinned = true`, `NAP_FLOOR = 0.05` for everything else. This is what gives "pin" its meaning: pinned content stays in recall's high zone forever, while a fresh pin (1.0) still outranks a stale one (0.5) so newer pins surface first without disappearing the older ones.
+1. **Importance decay.** Every non-archived unpinned memory's `importance` shrinks by age — exponential decay with τ = 30 days. Per-cycle factor is `NAP_DECAY_PER_CYCLE = exp(-1/180) ≈ 0.9945` (6 naps/day × 30 days = 180). Pinned memories decay too, just with a higher floor. Keyset-paginated so a full-table pass never trips the Postgres `statement_timeout = 2 min`.
 
-3. **Exact-text shadows.** Group by `content_hash`; keep the highest-importance row, mark the rest with `meta.shadow_of = <kept_id>` and hard-decay (`× 0.1`, `NAP_SHADOW_DECAY`) on the same cycle. Default queries filter shadows out via `(meta->>'shadow_of') IS NULL`.
+2. **Recall-weight decay (LTP).** Multiplies `recall_weight` by `RECALL_LTD_DECAY = 0.933` per cycle so use-driven reinforcement fades when unused. With 6 cycles/day this preserves a ~42 hour half-life from a single recall hit. Same keyset pagination as importance decay.
 
-4. **Semantic relations.** For each "seed" memory (recent — last 7 days — OR never napped), find up to 5 nearest same-repo neighbours at cosine `< 0.15` (`NAP_RELATE_DISTANCE`) via a `LATERAL JOIN` over the HNSW index. Write each into the other's `meta.related_to` (mutual, idempotent — `DISTINCT` merge with the existing array).
+3. **Auto-archive orphans.** `napArchiveOrphans` sets `archived_at = now()` on memories matching ALL of:
+   - `importance ≤ NAP_ARCHIVE_IMPORTANCE_MAX` (0.1) — fully decayed
+   - `recall_weight = 0` — never accessed since extraction (or fully LTD-decayed)
+   - `created_at` older than `NAP_ARCHIVE_MIN_AGE_DAYS` (30 days) — fair shot at being useful
+   - NOT pinned, NOT in_cluster, NOT superseded, NOT `kind='cluster'`
 
-5. **Rule-based supersede (conservative).** Find pairs `(older, newer)` where:
-   - cosine `< 0.05` (`SUPERSEDE_RULE_COSINE_MAX` — very tight rephrasing distance),
-   - newer is at least 12 hours newer (`SUPERSEDE_RULE_AGE_GAP`),
+   Capped at `NAP_ARCHIVE_PER_CYCLE_CAP = 200` so a one-time eligibility bloom doesn't dump thousands at once. Archived rows stay in the table and are still queryable via `mneme_sql` — they just stop appearing on the SessionStart surface. `/mneme:unarchive <uuid>` restores.
+
+4. **Asymmetric importance floors.** `NAP_PIN_FLOOR = 0.5` for `meta.pinned = true`, `NAP_FLOOR = 0.05` for everything else. This is what gives "pin" its meaning: pinned content stays in recall's high zone forever, while a fresh pin (1.0) still outranks a stale one (0.5) so newer pins surface first without disappearing the older ones. Applied as a `GREATEST(...)` clamp inside the decay UPDATE.
+
+5. **Seed phase (relate + rule-based supersede + last_napped_at stamp).** One transaction over a `NAP_PER_CYCLE_CAP = 500` slice of least-recently-napped rows:
+
+   a. **Semantic relations.** For each seed, find up to `NAP_RELATE_MAX_NEIGHBORS = 5` nearest same-repo neighbours at cosine `< NAP_RELATE_DISTANCE = 0.15` via a `LATERAL JOIN` over the HNSW index. Write each into the other's `meta.related_to` (mutual, idempotent — `DISTINCT` merge with the existing array).
+
+   b. **Rule-based supersede (conservative).** Find pairs `(older, newer)` where:
+   - cosine `< SUPERSEDE_RULE_COSINE_MAX = 0.05` (very tight rephrasing distance),
+   - newer is at least `SUPERSEDE_RULE_AGE_GAP = '12 hours'` newer,
    - newer's content matches a supersede-keyword regex: `instead of`, `no longer`, `replaced`, `now uses`, `previously`, `updated to`, `deprecated`, `swapped`,
    - neither is pinned or already superseded.
 
-   Set `older.meta.superseded_by = newer_id`. Per-cycle write cap (`SUPERSEDE_RULE_PER_CYCLE_CAP = 50`) keeps blast radius bounded. The obvious "we now use X" cases get caught for free; nuanced supersedes are dream's job.
+     Set `older.meta.superseded_by = newer_id` AND clear `meta.in_cluster` atomically (a superseded row should not keep claiming cluster membership). Per-cycle write cap (`SUPERSEDE_RULE_PER_CYCLE_CAP = 50`) keeps blast radius bounded. The obvious "we now use X" cases get caught for free; nuanced supersedes are dream's job.
+
+   c. **Stamp `meta.last_napped_at = now()`** on every seed in the slice, whether or not relate or supersede found anything. This is the round-robin gate.
 
 ```mermaid
 flowchart LR
-    A[server scheduler · 6h] --> B[Decay<br/>importance *= 0.9917<br/>pinned floors at 0.5]
-    A --> C[Shadows<br/>group by content_hash<br/>keep max, others → meta.shadow_of]
-    A --> D[Seed set<br/>last 7 days OR<br/>last_napped_at IS NULL<br/>cap 500]
-    D --> E[For each seed:<br/>HNSW LATERAL JOIN<br/>same repo, cosine < 0.15]
-    E --> F[meta.related_to mutual append]
-    A --> G[Rule-based supersede<br/>cosine < 0.05 + keyword + 12h gap]
-    G --> H[meta.superseded_by]
-    A --> I[stamp meta.last_napped_at = now]
+    A[server scheduler · 4h] --> B[1. Importance decay<br/>importance *= 0.9945<br/>floor 0.05 unpinned / 0.5 pinned]
+    A --> C[2. Recall-weight decay<br/>recall_weight *= 0.933<br/>~42h half-life]
+    A --> D[3. Auto-archive orphans<br/>importance ≤ 0.1<br/>recall_weight = 0<br/>age > 30 days<br/>not pinned/clustered/superseded<br/>cap 200/cycle]
+    A --> E[4. Seed phase · cap 500<br/>least-recently-napped first]
+    E --> F[a. Relate · HNSW LATERAL<br/>same repo, cosine < 0.15<br/>meta.related_to mutual]
+    E --> G[b. Rule supersede<br/>cosine < 0.05 + keyword + 12h gap<br/>meta.superseded_by + clear in_cluster<br/>cap 50/cycle]
+    E --> H[c. Stamp last_napped_at = now]
 ```
 
 ---
 
 ## Pagination via `meta.last_napped_at`
 
-Postgres on Railway has a `statement_timeout = 2 min` ceiling. With ~7k memories and growing, a one-shot pass eventually trips the timeout.
+Postgres on Railway has a `statement_timeout = 2 min` ceiling. With ~15k memories and growing, a one-shot pass would trip the timeout.
 
-Nap solves this with **round-robin pagination**: each cycle picks `NAP_PER_CYCLE_CAP = 500` rows ordered by `meta.last_napped_at NULLS FIRST, created_at`, processes them, and stamps `meta.last_napped_at = now()` as part of the same transaction. Stamped rows naturally drop to the back of the queue. Over a few cycles, every row gets touched once; under steady-state arrival the queue stabilises at the cap.
+Nap solves this with **round-robin pagination**: the seed phase picks `NAP_PER_CYCLE_CAP = 500` rows ordered by `meta.last_napped_at NULLS FIRST, created_at`, processes them, and stamps `meta.last_napped_at = now()` as part of the same transaction. Stamped rows naturally drop to the back of the queue. Over a few cycles, every row gets touched once; under steady-state arrival the queue stabilises at the cap. Indexed via the partial functional index from migration 0027.
+
+The decay phases (importance + recall_weight) also paginate via keyset on `id` so the full-table pass stays bounded.
 
 The inner `LATERAL JOIN` for relate-pass still scans the full memories table for HNSW lookups, so a seed in this cycle can still link to non-seed neighbours — pagination only limits which rows we examine **as seeds**.
+
+---
+
+## Why no longer shadowing?
+
+Older versions of nap had an `napShadowDuplicates` phase that grouped by `content_hash` and marked duplicates with `meta.shadow_of`. That phase was deleted in 1.1.53: the `memories.chunk_id UNIQUE` constraint (where `chunk_id = sha256(content_hash + ":" + embedder_model)`) prevents identical-content rows from being created in the first place. The shadow phase ran every cycle and found zero rows, by construction.
+
+The `meta.shadow_of` filter still lives in recall paths as defensive code — if a row ever gets shadowed via some manual flow, recall will respect it. But nap no longer produces shadows.
 
 ---
 
@@ -56,8 +79,6 @@ Same reason any process loop lives in code:
 - Shares the same observability stream (logs and spans go to `_ops.*`).
 - Doesn't depend on a Postgres extension (keeps Mneme provider-portable across Railway / Neon / Supabase / self-host without needing `pg_cron` available).
 - The scheduler in `worker/scheduler.ts` persists `next_run_at` to `_ops.worker_runs` so a Railway redeploy mid-cycle doesn't skip the schedule.
-
-The per-cycle SQL runs in **one transaction** — atomic, no LLM in the loop, no external dependencies.
 
 The same reasoning applies to [`prune.md`](./prune.md) (telemetry retention), which used to run as a `pg_cron` job on Supabase and has since moved fully to app-level for the same portability win.
 
@@ -72,5 +93,5 @@ Retries live in the **daemon's outbox**, not in nap. A failed push leaves the fi
 ## See also
 
 - [`dream.md`](./dream.md) — clustering pass that runs every 8h on the daemon.
-- [`digest.md`](./digest.md) — 48h cross-cluster pass on the server (opt-in).
-- [`../recall.md`](../recall.md) — how nap's outputs (importance, shadow, related_to, superseded_by) interact at recall time.
+- [`digest.md`](./digest.md) — 24h cross-cluster pass on the server (opt-in).
+- [`../recall.md`](../recall.md) — how nap's outputs (importance, related_to, superseded_by, archived_at) interact at recall time.

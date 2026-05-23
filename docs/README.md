@@ -28,8 +28,8 @@
 
 Three pieces:
 
-- **Per-machine daemon** (`packages/daemon/`) — owns the hot path. Hooks post captures here; the daemon scrubs, dedups, runs Claude (Agent SDK on the user's `claude` login) for atomic observations, embeds with `bge-small-en-v1.5` (384-dim) in an isolated subprocess so the ONNX session can't fragment the daemon's address space, and pushes pre-built bundles to the server. The same daemon runs **dream** every 8 hours — one daemon wins a Postgres advisory lock per window and clusters memories into themes.
-- **Server** (`packages/server/`) — pure data plane. One Bun + Hono process. Receives bundles via `/api/bundle`, runs **nap** (6h, decay + shadow + relate + supersede) and the opt-in **digest** worker (every 48h, cross-cluster), exposes `/mcp` so any AI agent on any harness can read.
+- **Per-machine daemon** (`packages/daemon/`) — owns the hot path. Hooks post captures here; the daemon scrubs, dedups, runs Claude (Agent SDK on the user's `claude` login) for atomic observations, embeds with `bge-small-en-v1.5` (384-dim) in an isolated subprocess so the ONNX session can't fragment the daemon's address space, and pushes pre-built bundles to the server. The same daemon runs **dream** every 8 hours — one daemon wins a durable lock row in `_ops.dream_runs` per window (INSERT ON CONFLICT, not pg_advisory_lock) and clusters memories into themes. Candidates stream over NDJSON to dodge Railway's gateway timeout on dense slices.
+- **Server** (`packages/server/`) — pure data plane. One Bun + Hono process. Receives bundles via `/api/bundle`, runs **nap** (4h, decay + auto-archive + relate + rule-based supersede) and the opt-in **digest** worker (every 24h, cross-cluster merge + supersede), exposes `/mcp` so any AI agent on any harness can read.
 - **Postgres** — the single source of truth. Two data tables (`captures`, `memories`) plus an `_ops` schema for traces / spans / logs / api_keys.
 
 ```

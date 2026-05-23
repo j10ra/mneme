@@ -67,9 +67,12 @@ erDiagram
 | Bitemporal supersede | `meta.superseded_by: "<id>"` on the older memory |
 | Pinned by user | `meta.pinned: true` |
 | Source coalescing window | `meta.coalesced_from: ["<capture_id>", ...]` |
-| Exact-text shadow | `meta.shadow_of: "<kept_id>"` |
+| Exact-text shadow (legacy) | `meta.shadow_of: "<kept_id>"` — no longer produced (chunk_id UNIQUE constraint makes dupes impossible); filter stays in recall as defensive code |
+| Cross-machine handoff slug | `meta.handoff_slug: "<kebab-case>"` — set by `/mneme:handoff` and the compact auto-capture path; consumed by `/mneme:resume <slug>` |
 | Provenance | `meta.extractor_provider`, `meta.extractor_model`, `meta.distiller_provider`, `meta.distiller_model` |
 | Nap pagination | `meta.last_napped_at: timestamptz` |
+| Dream pagination | `meta.last_dreamed_at: timestamptz` (watermark for round-robin seed selection) |
+| Digest pagination | `meta.last_digested_at: timestamptz` (watermark for Op1 cluster window + Op2 candidates) |
 
 Add typed columns or a fourth table only when a reader needs them. Current candidates that *could* graduate (relations graph, supersede chains, cluster membership) all still index fine via GIN-on-JSONB.
 
@@ -142,11 +145,12 @@ Captures are immutable. Dedup is additive: nothing is ever deleted; rows get fla
 
 Three layers, in order of strictness:
 
-1. **Ingest dedup (hard).** `UNIQUE (content_sha256, machine_id)` on captures. Posting the same content twice from one machine produces one row. Same content from two machines produces two (correctly — they happened in two contexts). Composite `chunk_id` on memories rejects exact re-chunks under the same embedding model.
-2. **Nap dedup (additive, soft).** Every 6h: exact-text shadows + semantic relations. See [`workers/nap.md`](./workers/nap.md).
+1. **Ingest dedup (hard).** `UNIQUE (content_sha256, machine_id)` on captures. Posting the same content twice from one machine produces one row. Same content from two machines produces two (correctly — they happened in two contexts). `memories.chunk_id UNIQUE` (where `chunk_id = sha256(content_hash + ":" + embedder_model)`) rejects exact re-chunks under the same embedding model — by construction memories cannot have identical content under the same embedder.
+2. **Nap maintenance (additive, soft).** Every 4h: importance + recall_weight decay, semantic relations, rule-based supersede, auto-archive of fully decayed orphans. See [`workers/nap.md`](./workers/nap.md). The legacy shadow phase is gone (the chunk_id UNIQUE constraint made it dead code).
 3. **Dream dedup (additive, semantic).** Every 8h: clustering produces `kind='cluster'` summaries. Member memories aren't deleted; their importance fades relative to the summary. See [`workers/dream.md`](./workers/dream.md).
+4. **Digest consolidation (cross-cluster).** Every 24h, opt-in. Merges near-duplicate cluster summaries (cosine < 0.15) into one canonical cluster + cross-cluster member supersede. See [`workers/digest.md`](./workers/digest.md).
 
-Net effect at recall time: the default hybrid query in the skill includes `WHERE archived_at IS NULL AND (meta->>'shadow_of') IS NULL`, and applies a `× 0.3` rank penalty for `meta.superseded_by IS NOT NULL`. Shadows are invisible by default; superseded entries are visible but rank-penalised; both are recoverable by an explicit query.
+Net effect at recall time: the default hybrid query in the skill includes `WHERE archived_at IS NULL AND (meta->>'shadow_of') IS NULL`, and applies a `× 0.3` rank penalty for `meta.superseded_by IS NOT NULL`. Archived entries are invisible by default; superseded entries are visible but rank-penalised; both are recoverable by an explicit query.
 
 **Why never DELETE:**
 - Every dedup decision is a guess. Hard delete forecloses on revisiting it.
