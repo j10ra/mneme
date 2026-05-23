@@ -1,7 +1,7 @@
 // Status panel — workers, breakers, last dream cycle. Polls
 // /dashboard/api/status every 30s. shadcn primitives + Base UI.
 
-import { CircleAlert, Moon, Activity } from "lucide-react";
+import { CircleAlert, Activity } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ApiError, apiGet, apiPost } from "../lib/api.ts";
 import { cn } from "../lib/cn.ts";
@@ -311,10 +311,7 @@ function DreamRowItem({
     <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
       <div className="flex min-w-0 items-center gap-3">
         <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-success" />
-        <span className="font-medium truncate flex items-center gap-1.5">
-          <Moon className="h-3.5 w-3.5 text-muted-foreground" />
-          dream
-        </span>
+        <span className="font-medium truncate">dream</span>
         <span className="text-xs text-muted-foreground whitespace-nowrap">
           last {lastAge ? `${lastAge} ago` : "never"}
         </span>
