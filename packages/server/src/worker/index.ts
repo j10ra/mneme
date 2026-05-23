@@ -2,10 +2,15 @@
 // loop too, but as of #22 the per-machine daemon owns extract+embed
 // (and dream coordination via Postgres advisory lock). Server now runs
 // the four scheduler-driven jobs:
-//   - nap       (every 6h): decay importance, shadow-mark exact dupes,
+//   - nap       (every 4h): decay importance, shadow-mark exact dupes,
 //                link semantically related memories. Paginated via
 //                meta.last_napped_at round-robin (cap NAP_PER_CYCLE_CAP).
-//   - digest    (every 48h, gated by MNEME_DIGEST_ENABLED): global
+//                Note: 6 cycles/day shortens importance decay τ from
+//                30 → 20 days and recall_weight half-life from ~42h →
+//                ~28h relative to the prior 6h cadence; recalibrate
+//                NAP_DECAY_PER_CYCLE / RECALL_LTD_DECAY if forgetting
+//                ends up too aggressive in practice.
+//   - digest    (every 24h, gated by MNEME_DIGEST_ENABLED): global
 //                cross-cluster operations the per-machine daemon dream
 //                can't do — merge duplicate clusters, run cross-cluster
 //                supersede. Sonnet-grade via openrouter, conservative
@@ -32,12 +37,12 @@ export function startWorker(): void {
   if (env.DIGEST_ENABLED) jobs.splice(1, 0, "digest");
   Logger.info(`worker: starting scheduler-driven jobs (${jobs.join(", ")})`);
 
-  register({ name: "nap", scheduleMs: 6 * 60 * 60 * 1000, run: runNapOnce });
+  register({ name: "nap", scheduleMs: 4 * 60 * 60 * 1000, run: runNapOnce });
 
   if (env.DIGEST_ENABLED) {
     register({
       name: "digest",
-      scheduleMs: 48 * 60 * 60 * 1000,
+      scheduleMs: 24 * 60 * 60 * 1000,
       run: runDigestOnce,
     });
   } else {
