@@ -87,6 +87,12 @@ export const NAP_ARCHIVE_IMPORTANCE_MAX = 0.1;
  *  every memory a fair shot at being recalled before we declare it dead. */
 export const NAP_ARCHIVE_MIN_AGE_DAYS = 30;
 
+/** Cluster summaries get longer grace before nap reaps them. A cluster
+ *  represents condensed signal from N atoms and one Sonnet call; we
+ *  want recall and importance to stay dead for longer before we
+ *  conclude the whole synthesis is irrelevant. */
+export const NAP_CLUSTER_ARCHIVE_MIN_AGE_DAYS = 60;
+
 /** Per-cycle cap on auto-archives so a one-time eligibility bloom doesn't
  *  archive thousands in a single nap tick. 200 × 6 cycles/day = 1200/day
  *  max, well above expected inflow of dead memories under normal use. */
@@ -122,8 +128,11 @@ export const DREAM_MAX_NEIGHBORS_PER_MEMORY = 80;
  *  least-recently-dreamed N rows and stamps meta.last_dreamed_at, so
  *  successive cycles round-robin the whole corpus rather than re-scanning
  *  the newest rows. A full sweep spans ceil(corpus / cap) cycles. Bumped
- *  500 → 1000 so a ~14k corpus drains in 14 cycles instead of 28. */
-export const DREAM_MAX_CANDIDATES_PER_CYCLE = 1000;
+ *  500 → 1000 → 3000 to drain the ~15k unclustered-atom backlog in ~1.7
+ *  days (3 cycles/day × 3000) instead of ~5 days. Scales LATERAL HNSW
+ *  work linearly with DREAM_MAX_NEIGHBORS_PER_MEMORY; watch Railway
+ *  gateway timeouts on the first cycles after bumping. */
+export const DREAM_MAX_CANDIDATES_PER_CYCLE = 3000;
 
 /** Per-batch seed count for the NDJSON streaming candidates endpoint.
  *  Each batch runs ≤ DREAM_STREAM_SEED_BATCH × DREAM_MAX_NEIGHBORS_PER_MEMORY
@@ -221,15 +230,14 @@ export const RECALL_RANKING_COEF = env.RECALL_RANKING_COEF;
 // reconcile contradicting facts across cluster boundaries.
 
 /** Cosine-distance ceiling for treating two cluster summaries as
- *  candidate "same topic". 0.10 was too strict in practice — many
- *  obvious merges (same PR, same bug, same subsystem with different
- *  wording) landed at 0.12–0.20 and never reached the LLM. Cluster
+ *  candidate "same topic". 0.10 → 0.15 → 0.20 as we kept finding
+ *  obvious merges landing just outside the threshold. Cluster
  *  summaries are already distilled prose so they're more abstract than
- *  raw observations; 0.15 between two summaries is functionally "same
- *  topic" most of the time. Asymmetric tuning: raw clustering stays
- *  tight at DREAM_CLUSTER_DISTANCE=0.10, summary-level merge is the
- *  permissive layer that gathers adjacent topics back together. */
-export const DIGEST_MERGE_DISTANCE = 0.15;
+ *  raw observations; 0.20 between two summaries is still "same topic"
+ *  most of the time. Asymmetric tuning: raw clustering stays tight at
+ *  DREAM_CLUSTER_DISTANCE=0.10, summary-level merge is the permissive
+ *  layer that gathers adjacent topics back together. */
+export const DIGEST_MERGE_DISTANCE = 0.2;
 
 /** Max merge candidate pairs per digest cycle. Bounds Sonnet call
  *  count. At ~50 clusters steady state and a tight cosine ceiling,
