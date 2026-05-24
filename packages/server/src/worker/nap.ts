@@ -314,19 +314,25 @@ async function napSeedPhase(): Promise<{ related: number; superseded: number }> 
   });
 }
 
-/** Run one nap cycle as four independent phases. No phase holds locks
+/** Run one nap cycle as six independent phases. No phase holds locks
  *  for the whole cycle, and a slow phase fails in isolation instead of
- *  rolling back the rest. */
+ *  rolling back the rest. Order matters between the cluster and member
+ *  archive phases: clusters die first so the transitive member pass in
+ *  the same cycle catches their atoms, instead of waiting another 4h. */
 export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult> => {
   const decayed = await napDecayImportance();
   const ltpDecayed = await napDecayRecallWeight();
   const archived = await napArchiveOrphans();
+  const clusterArchived = await napArchiveDeadClusters();
+  const memberArchived = await napArchiveOrphanedMembers();
   const seed = await napSeedPhase();
 
   const result: NapResult = {
     decayed,
     ltp_decayed: ltpDecayed,
     archived,
+    cluster_archived: clusterArchived,
+    member_archived: memberArchived,
     related: seed.related,
     superseded: seed.superseded,
   };
