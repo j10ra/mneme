@@ -192,10 +192,18 @@ export function chooseReinforcement(args: {
 
 export async function reinforce(r: Reinforcement): Promise<void> {
   // Two-step bump: first the rows that were hit, then any cluster they
-  // belong to (via meta.in_cluster). The Set-dedupe + IN-clause keep a
-  // query that hits N atoms inside the same cluster from bumping that
-  // cluster N times -- "one query = one signal" for the cluster,
-  // regardless of how many of its members the result surfaced.
+  // belong to via meta.in_cluster. One real BEGIN/COMMIT so concurrent
+  // readers see neither bump or both, never just the atom bump.
+  //
+  // Dedup policy: "one query = one signal" for the cluster, regardless
+  // of how many members the result surfaced. ln(1 + recall_weight) in
+  // the ranker already compresses tall counts, so the marginal value
+  // of bumping N-times-per-query is in the noise; flat is cleaner. If
+  // we ever want per-member-hit weighting, drop the Set.
+  //
+  // Direct-hit exclusion: if the cluster row itself was in r.ids it
+  // already got bumped in step 1; don't bump it again via propagation
+  // when one of its members is in the same result set.
   await sql.begin(async (tx) => {
     const bumped = await tx<{ cluster_id: string | null }[]>`
       UPDATE memories
@@ -204,14 +212,20 @@ export async function reinforce(r: Reinforcement): Promise<void> {
         AND archived_at IS NULL
       RETURNING meta->>'in_cluster' AS cluster_id
     `;
+    const directIds = new Set(r.ids);
     const clusterIds = [
-      ...new Set(bumped.map((b) => b.cluster_id).filter((v): v is string => v !== null)),
+      ...new Set(
+        bumped.map((b) => b.cluster_id).filter((v): v is string => v !== null && !directIds.has(v)),
+      ),
     ];
     if (clusterIds.length === 0) return;
+    // Cast the array, not the column: keeps the PK index usable, and
+    // turns a bad UUID string in meta.in_cluster into an exception at
+    // the cast boundary instead of a silent text-compare no-op.
     await tx`
       UPDATE memories
       SET recall_weight = recall_weight + ${r.strength}::real
-      WHERE id::text = ANY(${clusterIds})
+      WHERE id = ANY(${clusterIds}::uuid[])
         AND kind = 'cluster'
         AND archived_at IS NULL
     `;

@@ -396,5 +396,26 @@ describe.skipIf(!HAS_DB)(
         await cleanup();
       }
     });
+
+    test("cluster directly in the result set plus one of its atoms: cluster bumps once, not twice", async () => {
+      const { sql } = await import("../src/infra/db.ts");
+      try {
+        await cleanup();
+        await seed();
+        const { reinforce } = await import("../src/services/mcp.ts");
+        // atomA is in `cluster`; the result set also includes `cluster` itself.
+        await reinforce({ strength: 1, ids: [ids.atomA, ids.cluster] });
+
+        const [clusterRow] = await sql<{ rw: number }[]>`
+        SELECT recall_weight AS rw FROM memories WHERE id = ${ids.cluster}::uuid
+      `;
+        // Cluster gets +1 from the direct hit; propagation skips it because
+        // direct-hit exclusion in reinforce filters its id out of the
+        // propagation set.
+        expect(clusterRow?.rw).toBeCloseTo(1, 5);
+      } finally {
+        await cleanup();
+      }
+    });
   },
 );
