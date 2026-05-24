@@ -191,12 +191,31 @@ export function chooseReinforcement(args: {
 }
 
 export async function reinforce(r: Reinforcement): Promise<void> {
-  await sql`
-    UPDATE memories
-    SET recall_weight = recall_weight + ${r.strength}::real
-    WHERE id = ANY(${r.ids})
-      AND archived_at IS NULL
-  `;
+  // Two-step bump: first the rows that were hit, then any cluster they
+  // belong to (via meta.in_cluster). The Set-dedupe + IN-clause keep a
+  // query that hits N atoms inside the same cluster from bumping that
+  // cluster N times -- "one query = one signal" for the cluster,
+  // regardless of how many of its members the result surfaced.
+  await sql.begin(async (tx) => {
+    const bumped = await tx<{ cluster_id: string | null }[]>`
+      UPDATE memories
+      SET recall_weight = recall_weight + ${r.strength}::real
+      WHERE id = ANY(${r.ids})
+        AND archived_at IS NULL
+      RETURNING meta->>'in_cluster' AS cluster_id
+    `;
+    const clusterIds = [
+      ...new Set(bumped.map((b) => b.cluster_id).filter((v): v is string => v !== null)),
+    ];
+    if (clusterIds.length === 0) return;
+    await tx`
+      UPDATE memories
+      SET recall_weight = recall_weight + ${r.strength}::real
+      WHERE id::text = ANY(${clusterIds})
+        AND kind = 'cluster'
+        AND archived_at IS NULL
+    `;
+  });
 }
 
 const runSql = mnemeFn(
