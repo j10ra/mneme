@@ -3,6 +3,7 @@ import {
   NAP_ARCHIVE_IMPORTANCE_MAX,
   NAP_ARCHIVE_MIN_AGE_DAYS,
   NAP_ARCHIVE_PER_CYCLE_CAP,
+  NAP_CLUSTER_ARCHIVE_MIN_AGE_DAYS,
   NAP_DECAY_PER_CYCLE,
   NAP_FLOOR,
   NAP_PER_CYCLE_CAP,
@@ -49,6 +50,8 @@ export type NapResult = {
   decayed: number;
   ltp_decayed: number;
   archived: number;
+  cluster_archived: number;
+  member_archived: number;
   related: number;
   superseded: number;
 };
@@ -125,6 +128,71 @@ async function napArchiveOrphans(): Promise<number> {
         AND (meta->>'in_cluster') IS NULL
         AND (meta->>'superseded_by') IS NULL
       ORDER BY importance ASC, created_at ASC
+      LIMIT ${NAP_ARCHIVE_PER_CYCLE_CAP}
+    )
+    UPDATE memories
+    SET archived_at = now()
+    WHERE id IN (SELECT id FROM targets)
+  `;
+  return archived.count;
+}
+
+/** Phase 2b: archive cluster summaries that are either superseded or
+ *  have decayed to irrelevance. Mirrors napArchiveOrphans criteria but
+ *  with the cluster-age knob, plus the superseded clause as an early
+ *  exit (a superseded cluster is dead by definition once digest has
+ *  re-pointed its members). Atoms that point at one of these clusters
+ *  via meta.in_cluster get cleaned up in the next phase
+ *  (napArchiveOrphanedMembers) by transitive archive, so we do not
+ *  detach members here.
+ *
+ *  Note: the OR-clause + ORDER BY created_at ASC + LIMIT could in
+ *  principle starve one branch if the other floods. At current rates
+ *  (≤10 supersedes/digest cycle, decay-eligible bloom ≤30/quarter)
+ *  the 200 cap drains both. Revisit if either rate climbs. */
+export async function napArchiveDeadClusters(): Promise<number> {
+  const archived = await sql`
+    WITH targets AS (
+      SELECT id FROM memories
+      WHERE archived_at IS NULL
+        AND kind = 'cluster'
+        AND (
+          (meta->>'superseded_by') IS NOT NULL
+          OR (
+            importance <= ${NAP_ARCHIVE_IMPORTANCE_MAX}::real
+            AND COALESCE(recall_weight, 0) = 0
+            AND created_at < now() - (${NAP_CLUSTER_ARCHIVE_MIN_AGE_DAYS}::int || ' days')::interval
+          )
+        )
+        AND NOT COALESCE((meta->>'pinned')::boolean, false)
+      ORDER BY created_at ASC
+      LIMIT ${NAP_ARCHIVE_PER_CYCLE_CAP}
+    )
+    UPDATE memories
+    SET archived_at = now()
+    WHERE id IN (SELECT id FROM targets)
+  `;
+  return archived.count;
+}
+
+/** Phase 2c: transitive archive. After Phase 2b archives dead clusters,
+ *  any atom whose meta.in_cluster still points at an archived cluster
+ *  is by-membership dead. Archive these in the same nap pass instead of
+ *  detaching them, which would just feed them back to dream and form a
+ *  near-identical cluster next window. Capped at the same per-cycle cap
+ *  so a one-time bloom of cluster archives doesn't dump thousands of
+ *  members at once. */
+export async function napArchiveOrphanedMembers(): Promise<number> {
+  const archived = await sql`
+    WITH targets AS (
+      SELECT m.id FROM memories m
+      JOIN memories c ON c.id::text = m.meta->>'in_cluster'
+      WHERE m.archived_at IS NULL
+        AND m.kind <> 'cluster'
+        AND c.archived_at IS NOT NULL
+        AND c.kind = 'cluster'
+        AND NOT COALESCE((m.meta->>'pinned')::boolean, false)
+      ORDER BY m.created_at ASC
       LIMIT ${NAP_ARCHIVE_PER_CYCLE_CAP}
     )
     UPDATE memories
@@ -251,19 +319,25 @@ async function napSeedPhase(): Promise<{ related: number; superseded: number }> 
   });
 }
 
-/** Run one nap cycle as four independent phases. No phase holds locks
+/** Run one nap cycle as six independent phases. No phase holds locks
  *  for the whole cycle, and a slow phase fails in isolation instead of
- *  rolling back the rest. */
+ *  rolling back the rest. Order matters between the cluster and member
+ *  archive phases: clusters die first so the transitive member pass in
+ *  the same cycle catches their atoms, instead of waiting another 4h. */
 export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult> => {
   const decayed = await napDecayImportance();
   const ltpDecayed = await napDecayRecallWeight();
   const archived = await napArchiveOrphans();
+  const clusterArchived = await napArchiveDeadClusters();
+  const memberArchived = await napArchiveOrphanedMembers();
   const seed = await napSeedPhase();
 
   const result: NapResult = {
     decayed,
     ltp_decayed: ltpDecayed,
     archived,
+    cluster_archived: clusterArchived,
+    member_archived: memberArchived,
     related: seed.related,
     superseded: seed.superseded,
   };
