@@ -271,3 +271,130 @@ describe("chooseReinforcement", () => {
     expect(r).toBeNull();
   });
 });
+
+const ZERO_VEC = `[${Array(384).fill(0).join(",")}]`;
+
+describe.skipIf(!HAS_DB)(
+  "reinforce propagates atom bumps up to cluster (requires DATABASE_URL)",
+  () => {
+    const MACHINE = "00000000-0000-0000-0000-00000000ead1";
+    const CAPTURE_ID = "00000000-0000-0000-0000-00000000ead1";
+    const ids = {
+      cluster: "00000000-0000-0000-0000-0000000c1d01",
+      atomA: "00000000-0000-0000-0000-0000000a1d01",
+      atomB: "00000000-0000-0000-0000-0000000a1d02",
+      archivedCluster: "00000000-0000-0000-0000-0000000c1d02",
+      atomC: "00000000-0000-0000-0000-0000000a1d03",
+    };
+
+    async function seed(): Promise<void> {
+      const { sql } = await import("../src/infra/db.ts");
+      await sql`
+      INSERT INTO captures (id, content, content_sha256, source, machine_id, hostname, harness)
+      VALUES (${CAPTURE_ID}, 'seed', ${`sha-${CAPTURE_ID}`}, 'test', ${MACHINE}, 'testhost', 'test')
+    `;
+      await sql`
+      INSERT INTO memories
+        (id, capture_id, content, content_hash, chunk_id, embedding, embedding_model,
+         kind, importance, machine_id, harness, meta, recall_weight, created_at)
+      VALUES
+        (${ids.cluster}::uuid, ${CAPTURE_ID}, 'cluster', 'h-cl', 'h-cl:bge',
+         ${ZERO_VEC}::vector, 'BAAI/bge-small-en-v1.5', 'cluster', 0.8, ${MACHINE}, 'test',
+         '{}'::jsonb, 0, now() - interval '5 days')
+    `;
+      await sql`
+      INSERT INTO memories
+        (id, capture_id, content, content_hash, chunk_id, embedding, embedding_model,
+         kind, importance, machine_id, harness, meta, recall_weight, created_at, archived_at)
+      VALUES
+        (${ids.archivedCluster}::uuid, ${CAPTURE_ID}, 'archived-cluster', 'h-ac', 'h-ac:bge',
+         ${ZERO_VEC}::vector, 'BAAI/bge-small-en-v1.5', 'cluster', 0.05, ${MACHINE}, 'test',
+         '{}'::jsonb, 0, now() - interval '90 days', now() - interval '1 hour')
+    `;
+      await sql`
+      INSERT INTO memories
+        (id, capture_id, content, content_hash, chunk_id, embedding, embedding_model,
+         kind, importance, machine_id, harness, meta, recall_weight, created_at)
+      VALUES
+        (${ids.atomA}::uuid, ${CAPTURE_ID}, 'atomA', 'h-aa', 'h-aa:bge',
+         ${ZERO_VEC}::vector, 'BAAI/bge-small-en-v1.5', 'discovery', 0.5, ${MACHINE}, 'test',
+         ${sql.json({ in_cluster: ids.cluster })}, 0, now() - interval '5 days')
+    `;
+      await sql`
+      INSERT INTO memories
+        (id, capture_id, content, content_hash, chunk_id, embedding, embedding_model,
+         kind, importance, machine_id, harness, meta, recall_weight, created_at)
+      VALUES
+        (${ids.atomB}::uuid, ${CAPTURE_ID}, 'atomB', 'h-ab', 'h-ab:bge',
+         ${ZERO_VEC}::vector, 'BAAI/bge-small-en-v1.5', 'discovery', 0.5, ${MACHINE}, 'test',
+         '{}'::jsonb, 0, now() - interval '5 days')
+    `;
+      await sql`
+      INSERT INTO memories
+        (id, capture_id, content, content_hash, chunk_id, embedding, embedding_model,
+         kind, importance, machine_id, harness, meta, recall_weight, created_at)
+      VALUES
+        (${ids.atomC}::uuid, ${CAPTURE_ID}, 'atomC', 'h-ac2', 'h-ac2:bge',
+         ${ZERO_VEC}::vector, 'BAAI/bge-small-en-v1.5', 'discovery', 0.5, ${MACHINE}, 'test',
+         ${sql.json({ in_cluster: ids.archivedCluster })}, 0, now() - interval '5 days')
+    `;
+    }
+
+    async function cleanup(): Promise<void> {
+      const { sql } = await import("../src/infra/db.ts");
+      await sql`DELETE FROM memories WHERE capture_id = ${CAPTURE_ID}`;
+      await sql`DELETE FROM captures WHERE id = ${CAPTURE_ID}`;
+    }
+
+    test("bumping atoms propagates to their cluster; unclustered atom and archived-cluster member are isolated", async () => {
+      const { sql } = await import("../src/infra/db.ts");
+      try {
+        await cleanup();
+        await seed();
+        const { reinforce } = await import("../src/services/mcp.ts");
+        await reinforce({ strength: 1, ids: [ids.atomA, ids.atomB, ids.atomC] });
+
+        const rows = await sql<{ id: string; rw: number }[]>`
+        SELECT id::text AS id, recall_weight AS rw
+        FROM memories
+        WHERE id::text = ANY(${Object.values(ids)}::text[])
+        ORDER BY id
+      `;
+        const byId = new Map(rows.map((r) => [r.id, r.rw]));
+        expect(byId.get(ids.atomA)).toBeCloseTo(1, 5);
+        expect(byId.get(ids.atomB)).toBeCloseTo(1, 5);
+        expect(byId.get(ids.atomC)).toBeCloseTo(1, 5);
+        // The cluster got bumped ONCE because atomA's in_cluster points at it.
+        expect(byId.get(ids.cluster)).toBeCloseTo(1, 5);
+        // The archived cluster stays at 0: archived rows are filtered.
+        expect(byId.get(ids.archivedCluster)).toBeCloseTo(0, 5);
+      } finally {
+        await cleanup();
+      }
+    });
+
+    test("multiple atoms in the same cluster bump the cluster once per query, not once per atom", async () => {
+      const { sql } = await import("../src/infra/db.ts");
+      try {
+        await cleanup();
+        await seed();
+        // Move atomB into the same cluster as atomA.
+        await sql`
+        UPDATE memories
+        SET meta = meta || ${sql.json({ in_cluster: ids.cluster })}
+        WHERE id = ${ids.atomB}::uuid
+      `;
+        const { reinforce } = await import("../src/services/mcp.ts");
+        await reinforce({ strength: 1, ids: [ids.atomA, ids.atomB] });
+
+        const [clusterRow] = await sql<{ rw: number }[]>`
+        SELECT recall_weight AS rw FROM memories WHERE id = ${ids.cluster}::uuid
+      `;
+        // Cluster bumped ONCE (not 2x), because IN-clause dedupes.
+        expect(clusterRow?.rw).toBeCloseTo(1, 5);
+      } finally {
+        await cleanup();
+      }
+    });
+  },
+);

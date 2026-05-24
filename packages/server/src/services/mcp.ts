@@ -190,7 +190,7 @@ export function chooseReinforcement(args: {
   return null;
 }
 
-async function reinforce(r: Reinforcement): Promise<void> {
+export async function reinforce(r: Reinforcement): Promise<void> {
   await sql`
     UPDATE memories
     SET recall_weight = recall_weight + ${r.strength}::real
