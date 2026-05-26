@@ -299,3 +299,93 @@ describe("assembleRepos", () => {
     expect(n1.content).toBe("neighbor one");
   });
 });
+
+describe.skipIf(!HAS_DB)("per-batch stamping survives mid-stream failure", () => {
+  const MACHINE = "00000000-0000-0000-0000-00000000d501";
+  const CAPTURE_ID = "00000000-0000-0000-0000-00000000d501";
+  const ZERO_VEC = `[${Array(384).fill(0).join(",")}]`;
+  const atomCount = 150; // > DREAM_STREAM_SEED_BATCH (50), so 3 batches.
+
+  async function seed(): Promise<void> {
+    const { sql } = await import("../src/infra/db.ts");
+    await sql`
+      INSERT INTO captures (id, content, content_sha256, source, machine_id, hostname, harness)
+      VALUES (${CAPTURE_ID}, 'seed', ${`sha-${CAPTURE_ID}`}, 'test', ${MACHINE}, 'testhost', 'test')
+    `;
+    // Batch insert (one round-trip) -- per-row inserts blow the test
+    // timeout at 150 rows.
+    const rows = Array.from({ length: atomCount }, (_, i) => ({
+      id: `00000000-0000-0000-0000-${i.toString(16).padStart(12, "d")}`,
+      capture_id: CAPTURE_ID,
+      content: `atom-${i}`,
+      content_hash: `h-d5-${i}`,
+      chunk_id: `h-d5-${i}:bge`,
+      embedding_model: "BAAI/bge-small-en-v1.5",
+      kind: "discovery",
+      importance: 0.5,
+      machine_id: MACHINE,
+      harness: "test",
+    }));
+    await sql`
+      INSERT INTO memories ${sql(rows, "id", "capture_id", "content", "content_hash", "chunk_id", "embedding_model", "kind", "importance", "machine_id", "harness")}
+    `;
+    await sql`
+      UPDATE memories
+      SET embedding = ${ZERO_VEC}::vector,
+          meta = '{}'::jsonb,
+          recall_weight = 0,
+          created_at = now() - interval '5 days'
+      WHERE capture_id = ${CAPTURE_ID}
+    `;
+  }
+
+  async function cleanup(): Promise<void> {
+    const { sql } = await import("../src/infra/db.ts");
+    await sql`DELETE FROM memories WHERE capture_id = ${CAPTURE_ID}`;
+    await sql`DELETE FROM captures WHERE id = ${CAPTURE_ID}`;
+  }
+
+  test("stampDreamedSeeds called per-batch advances watermark only for streamed batches", async () => {
+    const { sql } = await import("../src/infra/db.ts");
+    const { stampDreamedSeeds } = await import("../src/routes/dream.ts");
+    try {
+      await cleanup();
+      await seed();
+
+      // Take our 150 fixture ids in deterministic order; production
+      // round-robin via last_dreamed_at NULLS FIRST + created_at ASC will
+      // pull them in this same order since they share created_at and are
+      // all unstamped.
+      const ours: string[] = [];
+      for (let i = 0; i < atomCount; i++) {
+        ours.push(`00000000-0000-0000-0000-${i.toString(16).padStart(12, "d")}`);
+      }
+
+      // Simulate the streaming endpoint: batch 1 + 2 succeed and stamp,
+      // batch 3 is "interrupted" — never stamped, mimicking a timeout
+      // mid-cycle.
+      const BATCH = 50;
+      const batch1 = ours.slice(0, BATCH);
+      const batch2 = ours.slice(BATCH, BATCH * 2);
+      const batch3 = ours.slice(BATCH * 2, BATCH * 3);
+
+      await stampDreamedSeeds(batch1);
+      await stampDreamedSeeds(batch2);
+      // batch3 NOT stamped.
+
+      const stamped = await sql<{ id: string; ts: string | null }[]>`
+        SELECT id::text AS id, meta->>'last_dreamed_at' AS ts
+        FROM memories
+        WHERE id = ANY(${[...batch1, ...batch2, ...batch3]})
+        ORDER BY id
+      `;
+      const byId = new Map(stamped.map((r) => [r.id, r.ts]));
+
+      for (const id of batch1) expect(byId.get(id)).not.toBeNull();
+      for (const id of batch2) expect(byId.get(id)).not.toBeNull();
+      for (const id of batch3) expect(byId.get(id)).toBeNull();
+    } finally {
+      await cleanup();
+    }
+  });
+});
