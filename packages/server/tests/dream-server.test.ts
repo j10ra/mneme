@@ -165,7 +165,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
             meta, archived_at
           ) VALUES (
             ${id}, ${captureId}, ${`chunk-${id}`}, ${`c ${id}`}, ${`hash-${id}`},
-            ${`[${Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)).join(",")}]`}::vector,
+            ${`[${Array.from({ length: 384 }, (_, i) => (i === 0 ? 1 : 0)).join(",")}]`}::vector,
             'test', 'note', ${machineId}, 'test',
             ${sql.json((opts.meta ?? {}) as never)}, ${opts.archived ? sql`now()` : null}
           )
