@@ -640,6 +640,14 @@ export function mountDreamRoutes(app: Hono): void {
             await s.writeln(JSON.stringify({ t: "meta", window_key: windowKey }));
 
             const seedIds = await fetchDreamSeedIds(machineId);
+            // Stamp last_dreamed_at PER BATCH. Each batch's seeds advance
+            // the watermark as soon as their edges flush to the stream.
+            // If a later batch's SQL throws or the client disconnects,
+            // the completed batches' stamps survive -- next cycle
+            // resumes from the unstamped tail instead of replaying the
+            // whole slice. With DREAM_MAX_CANDIDATES_PER_CYCLE=3000 and
+            // DREAM_STREAM_SEED_BATCH=50, a timeout 30 batches in costs
+            // ~600 unstamped seeds, not 3000.
             for (let i = 0; i < seedIds.length; i += DREAM_STREAM_SEED_BATCH) {
               if (s.aborted) return;
               const batch = seedIds.slice(i, i + DREAM_STREAM_SEED_BATCH);
@@ -659,6 +667,7 @@ export function mountDreamRoutes(app: Hono): void {
                   }),
                 );
               }
+              await stampDreamedSeeds(batch);
             }
 
             const unseenNeighborIds = [...neighborIds].filter((id) => !seenSeeds.has(id));
@@ -680,12 +689,7 @@ export function mountDreamRoutes(app: Hono): void {
               }
             }
 
-            // Stamp only after the whole stream succeeded -- if the
-            // daemon disconnected mid-flight, leave the slice intact so
-            // the next cycle re-attempts the same rows.
-            if (!s.aborted && seenSeeds.size > 0) {
-              await stampDreamedSeeds([...seenSeeds]);
-            }
+            // Stamping happens per-batch above; nothing to flush here.
             if (!s.aborted) {
               await s.writeln(
                 JSON.stringify({
