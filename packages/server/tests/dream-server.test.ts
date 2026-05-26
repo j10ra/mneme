@@ -165,7 +165,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
             meta, archived_at
           ) VALUES (
             ${id}, ${captureId}, ${`chunk-${id}`}, ${`c ${id}`}, ${`hash-${id}`},
-            ${`[${Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)).join(",")}]`}::vector,
+            ${`[${Array.from({ length: 384 }, (_, i) => (i === 0 ? 1 : 0)).join(",")}]`}::vector,
             'test', 'note', ${machineId}, 'test',
             ${sql.json((opts.meta ?? {}) as never)}, ${opts.archived ? sql`now()` : null}
           )
@@ -297,5 +297,127 @@ describe("assembleRepos", () => {
     expect(repos.r!.edges).toContainEqual(["s1", "n1"]);
     const n1 = repos.r!.seeds.find((s) => s.id === "n1")!;
     expect(n1.content).toBe("neighbor one");
+  });
+});
+
+describe("streamSeedBatches — abort safety", () => {
+  type FakeStream = {
+    aborted: boolean;
+    writelnCount: number;
+    abortAtCount: number;
+    writeln(text: string): Promise<unknown>;
+  };
+
+  function makeStream(abortAtCount: number): FakeStream {
+    const s: FakeStream = {
+      aborted: false,
+      writelnCount: 0,
+      abortAtCount,
+      async writeln(_text: string) {
+        s.writelnCount++;
+        if (s.writelnCount >= s.abortAtCount) {
+          // Hono's StreamingApi swallows write-after-abort silently --
+          // model that by flipping the flag and returning normally even
+          // though the caller didn't actually receive the bytes.
+          s.aborted = true;
+        }
+        return;
+      },
+    };
+    return s;
+  }
+
+  function makeSeedIds(n: number): string[] {
+    return Array.from(
+      { length: n },
+      (_, i) => `00000000-0000-0000-0000-${i.toString(16).padStart(12, "a")}`,
+    );
+  }
+
+  async function fakeFetchEdges(batch: string[], _machineId: string) {
+    // One edge row per seed, no neighbor (keeps the test focused on
+    // seed stamping, not neighbor batching).
+    return batch.map((id) => ({
+      id,
+      repo: "r",
+      content: `c-${id}`,
+      kind: "discovery",
+      created_at: new Date("2026-05-26T00:00:00Z"),
+      neighbor_id: null,
+    }));
+  }
+
+  test("clean full run stamps every batch", async () => {
+    const { streamSeedBatches } = await import("../src/routes/dream.ts");
+    const seedIds = makeSeedIds(150);
+    const stamped: string[][] = [];
+    const stream = makeStream(Number.POSITIVE_INFINITY); // never abort
+    const { seenSeeds } = await streamSeedBatches({
+      stream,
+      seedIds,
+      machineId: "m",
+      batchSize: 50,
+      fetchEdges: fakeFetchEdges,
+      stamp: async (ids) => {
+        stamped.push([...ids]);
+      },
+    });
+    expect(stamped).toHaveLength(3);
+    expect(stamped[0]).toEqual(seedIds.slice(0, 50));
+    expect(stamped[1]).toEqual(seedIds.slice(50, 100));
+    expect(stamped[2]).toEqual(seedIds.slice(100, 150));
+    expect(seenSeeds.size).toBe(150);
+  });
+
+  test("abort mid-batch does NOT stamp that batch; preceding batches stamped", async () => {
+    const { streamSeedBatches } = await import("../src/routes/dream.ts");
+    const seedIds = makeSeedIds(150);
+    const stamped: string[][] = [];
+    // Abort fires on writeln #60 -- batch 1 (writelns 1-50) clean,
+    // batch 2 (writelns 51-100) interrupted at row 10.
+    const stream = makeStream(60);
+    const { seenSeeds } = await streamSeedBatches({
+      stream,
+      seedIds,
+      machineId: "m",
+      batchSize: 50,
+      fetchEdges: fakeFetchEdges,
+      stamp: async (ids) => {
+        stamped.push([...ids]);
+      },
+    });
+    // Only batch 1 got stamped; batch 2 abort means no stamp; batch 3
+    // never started.
+    expect(stamped).toHaveLength(1);
+    expect(stamped[0]).toEqual(seedIds.slice(0, 50));
+    // seenSeeds = 50 from batch 1 + 9 successfully-written rows from
+    // batch 2 BEFORE the writeln that flipped abort. The 10th writeln
+    // itself flipped the flag; the after-writeln check skips its
+    // seenSeeds.add. Anything after that is short-circuited.
+    expect(seenSeeds.size).toBe(59);
+  });
+
+  test("abort exactly at batch boundary does not stamp the unstarted next batch", async () => {
+    const { streamSeedBatches } = await import("../src/routes/dream.ts");
+    const seedIds = makeSeedIds(150);
+    const stamped: string[][] = [];
+    // Abort on writeln #50 -- the LAST row of batch 1. Batch 1's stamp
+    // call comes after that abort flips, so batch 1 should NOT be
+    // stamped either (we can't trust the daemon got the last row).
+    const stream = makeStream(50);
+    await streamSeedBatches({
+      stream,
+      seedIds,
+      machineId: "m",
+      batchSize: 50,
+      fetchEdges: fakeFetchEdges,
+      stamp: async (ids) => {
+        stamped.push([...ids]);
+      },
+    });
+    // The pre-stamp abort check prevents batch 1 from being marked.
+    // Stricter behavior than "best-effort," but it matches the invariant:
+    // a batch is stamped only if every row reached the daemon.
+    expect(stamped).toHaveLength(0);
   });
 });
