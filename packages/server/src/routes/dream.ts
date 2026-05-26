@@ -108,7 +108,7 @@ export async function releaseDreamLock(
   `;
 }
 
-type EdgeRow = {
+export type EdgeRow = {
   id: string;
   repo: string | null;
   neighbor_id: string | null;
@@ -340,6 +340,64 @@ export async function stampDreamedSeeds(ids: string[]): Promise<void> {
                          '{last_dreamed_at}', to_jsonb(now()::text))
     WHERE id = ANY(${ids})
   `;
+}
+
+/** Minimal contract on the Hono stream object the seed-batch loop needs.
+ *  Lets the loop be tested with a fake stream — Hono's `StreamingApi.write`
+ *  silently swallows write-after-abort, so a hand-rolled fake captures the
+ *  abort-during-writeln race the production code has to defend against. */
+export type SeedStream = {
+  aborted: boolean;
+  writeln(text: string): Promise<unknown>;
+};
+
+/** Drive one dream cycle's seed-batch loop. Extracted so the abort-safety
+ *  invariants (don't stamp a batch the daemon didn't see, don't bump
+ *  seenSeeds for silently-swallowed writes) can be unit-tested with a
+ *  fake stream that flips `aborted` mid-flight. Three abort checks:
+ *    1. before fetching/writing a new batch (cheapest exit)
+ *    2. after each writeln (the swallow point — don't count the row we
+ *       didn't actually deliver)
+ *    3. before stamping (don't claim a batch the daemon truncated). */
+export async function streamSeedBatches(args: {
+  stream: SeedStream;
+  seedIds: string[];
+  machineId: string;
+  batchSize: number;
+  fetchEdges: (ids: string[], machineId: string) => Promise<EdgeRow[]>;
+  stamp: (ids: string[]) => Promise<void>;
+}): Promise<{ seenSeeds: Set<string>; neighborIds: Set<string> }> {
+  const seenSeeds = new Set<string>();
+  const neighborIds = new Set<string>();
+  for (let i = 0; i < args.seedIds.length; i += args.batchSize) {
+    if (args.stream.aborted) return { seenSeeds, neighborIds };
+    const batch = args.seedIds.slice(i, i + args.batchSize);
+    const edgeRows = await args.fetchEdges(batch, args.machineId);
+    for (const row of edgeRows) {
+      if (args.stream.aborted) return { seenSeeds, neighborIds };
+      await args.stream.writeln(
+        JSON.stringify({
+          t: "edge",
+          id: row.id,
+          repo: row.repo,
+          content: row.content,
+          kind: row.kind,
+          created_at: row.created_at.toISOString(),
+          neighbor_id: row.neighbor_id,
+        }),
+      );
+      // After-writeln check: writeln silently swallows on abort, so we
+      // can't trust that the row reached the daemon. Don't bump
+      // seenSeeds (else `t: "done"` overcounts) and skip the stamp (else
+      // we'd mark seeds the daemon never saw as visited).
+      if (args.stream.aborted) return { seenSeeds, neighborIds };
+      seenSeeds.add(row.id);
+      if (row.neighbor_id) neighborIds.add(row.neighbor_id);
+    }
+    if (args.stream.aborted) return { seenSeeds, neighborIds };
+    await args.stamp(batch);
+  }
+  return { seenSeeds, neighborIds };
 }
 
 type ClusterSubmission = {
@@ -640,35 +698,20 @@ export function mountDreamRoutes(app: Hono): void {
             await s.writeln(JSON.stringify({ t: "meta", window_key: windowKey }));
 
             const seedIds = await fetchDreamSeedIds(machineId);
-            // Stamp last_dreamed_at PER BATCH. Each batch's seeds advance
-            // the watermark as soon as their edges flush to the stream.
-            // If a later batch's SQL throws or the client disconnects,
-            // the completed batches' stamps survive -- next cycle
-            // resumes from the unstamped tail instead of replaying the
-            // whole slice. With DREAM_MAX_CANDIDATES_PER_CYCLE=3000 and
-            // DREAM_STREAM_SEED_BATCH=50, a timeout 30 batches in costs
-            // ~600 unstamped seeds, not 3000.
-            for (let i = 0; i < seedIds.length; i += DREAM_STREAM_SEED_BATCH) {
-              if (s.aborted) return;
-              const batch = seedIds.slice(i, i + DREAM_STREAM_SEED_BATCH);
-              const edgeRows = await fetchDreamEdgeBatch(batch, machineId);
-              for (const row of edgeRows) {
-                seenSeeds.add(row.id);
-                if (row.neighbor_id) neighborIds.add(row.neighbor_id);
-                await s.writeln(
-                  JSON.stringify({
-                    t: "edge",
-                    id: row.id,
-                    repo: row.repo,
-                    content: row.content,
-                    kind: row.kind,
-                    created_at: row.created_at.toISOString(),
-                    neighbor_id: row.neighbor_id,
-                  }),
-                );
-              }
-              await stampDreamedSeeds(batch);
-            }
+            // Per-batch stamping with abort safety lives in
+            // streamSeedBatches -- extracted for unit-testability of the
+            // abort-during-writeln race that Hono swallows silently.
+            const { seenSeeds: batchSeenSeeds, neighborIds: batchNeighborIds } =
+              await streamSeedBatches({
+                stream: s,
+                seedIds,
+                machineId,
+                batchSize: DREAM_STREAM_SEED_BATCH,
+                fetchEdges: fetchDreamEdgeBatch,
+                stamp: stampDreamedSeeds,
+              });
+            for (const id of batchSeenSeeds) seenSeeds.add(id);
+            for (const id of batchNeighborIds) neighborIds.add(id);
 
             const unseenNeighborIds = [...neighborIds].filter((id) => !seenSeeds.has(id));
             for (let i = 0; i < unseenNeighborIds.length; i += DREAM_STREAM_NEIGHBOR_BATCH) {

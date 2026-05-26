@@ -300,92 +300,124 @@ describe("assembleRepos", () => {
   });
 });
 
-describe.skipIf(!HAS_DB)("per-batch stamping survives mid-stream failure", () => {
-  const MACHINE = "00000000-0000-0000-0000-00000000d501";
-  const CAPTURE_ID = "00000000-0000-0000-0000-00000000d501";
-  const ZERO_VEC = `[${Array(384).fill(0).join(",")}]`;
-  const atomCount = 150; // > DREAM_STREAM_SEED_BATCH (50), so 3 batches.
+describe("streamSeedBatches — abort safety", () => {
+  type FakeStream = {
+    aborted: boolean;
+    writelnCount: number;
+    abortAtCount: number;
+    writeln(text: string): Promise<unknown>;
+  };
 
-  async function seed(): Promise<void> {
-    const { sql } = await import("../src/infra/db.ts");
-    await sql`
-      INSERT INTO captures (id, content, content_sha256, source, machine_id, hostname, harness)
-      VALUES (${CAPTURE_ID}, 'seed', ${`sha-${CAPTURE_ID}`}, 'test', ${MACHINE}, 'testhost', 'test')
-    `;
-    // Batch insert (one round-trip) -- per-row inserts blow the test
-    // timeout at 150 rows.
-    const rows = Array.from({ length: atomCount }, (_, i) => ({
-      id: `00000000-0000-0000-0000-${i.toString(16).padStart(12, "d")}`,
-      capture_id: CAPTURE_ID,
-      content: `atom-${i}`,
-      content_hash: `h-d5-${i}`,
-      chunk_id: `h-d5-${i}:bge`,
-      embedding_model: "BAAI/bge-small-en-v1.5",
+  function makeStream(abortAtCount: number): FakeStream {
+    const s: FakeStream = {
+      aborted: false,
+      writelnCount: 0,
+      abortAtCount,
+      async writeln(_text: string) {
+        s.writelnCount++;
+        if (s.writelnCount >= s.abortAtCount) {
+          // Hono's StreamingApi swallows write-after-abort silently --
+          // model that by flipping the flag and returning normally even
+          // though the caller didn't actually receive the bytes.
+          s.aborted = true;
+        }
+        return;
+      },
+    };
+    return s;
+  }
+
+  function makeSeedIds(n: number): string[] {
+    return Array.from(
+      { length: n },
+      (_, i) => `00000000-0000-0000-0000-${i.toString(16).padStart(12, "a")}`,
+    );
+  }
+
+  async function fakeFetchEdges(batch: string[], _machineId: string) {
+    // One edge row per seed, no neighbor (keeps the test focused on
+    // seed stamping, not neighbor batching).
+    return batch.map((id) => ({
+      id,
+      repo: "r",
+      content: `c-${id}`,
       kind: "discovery",
-      importance: 0.5,
-      machine_id: MACHINE,
-      harness: "test",
+      created_at: new Date("2026-05-26T00:00:00Z"),
+      neighbor_id: null,
     }));
-    await sql`
-      INSERT INTO memories ${sql(rows, "id", "capture_id", "content", "content_hash", "chunk_id", "embedding_model", "kind", "importance", "machine_id", "harness")}
-    `;
-    await sql`
-      UPDATE memories
-      SET embedding = ${ZERO_VEC}::vector,
-          meta = '{}'::jsonb,
-          recall_weight = 0,
-          created_at = now() - interval '5 days'
-      WHERE capture_id = ${CAPTURE_ID}
-    `;
   }
 
-  async function cleanup(): Promise<void> {
-    const { sql } = await import("../src/infra/db.ts");
-    await sql`DELETE FROM memories WHERE capture_id = ${CAPTURE_ID}`;
-    await sql`DELETE FROM captures WHERE id = ${CAPTURE_ID}`;
-  }
+  test("clean full run stamps every batch", async () => {
+    const { streamSeedBatches } = await import("../src/routes/dream.ts");
+    const seedIds = makeSeedIds(150);
+    const stamped: string[][] = [];
+    const stream = makeStream(Number.POSITIVE_INFINITY); // never abort
+    const { seenSeeds } = await streamSeedBatches({
+      stream,
+      seedIds,
+      machineId: "m",
+      batchSize: 50,
+      fetchEdges: fakeFetchEdges,
+      stamp: async (ids) => {
+        stamped.push([...ids]);
+      },
+    });
+    expect(stamped).toHaveLength(3);
+    expect(stamped[0]).toEqual(seedIds.slice(0, 50));
+    expect(stamped[1]).toEqual(seedIds.slice(50, 100));
+    expect(stamped[2]).toEqual(seedIds.slice(100, 150));
+    expect(seenSeeds.size).toBe(150);
+  });
 
-  test("stampDreamedSeeds called per-batch advances watermark only for streamed batches", async () => {
-    const { sql } = await import("../src/infra/db.ts");
-    const { stampDreamedSeeds } = await import("../src/routes/dream.ts");
-    try {
-      await cleanup();
-      await seed();
+  test("abort mid-batch does NOT stamp that batch; preceding batches stamped", async () => {
+    const { streamSeedBatches } = await import("../src/routes/dream.ts");
+    const seedIds = makeSeedIds(150);
+    const stamped: string[][] = [];
+    // Abort fires on writeln #60 -- batch 1 (writelns 1-50) clean,
+    // batch 2 (writelns 51-100) interrupted at row 10.
+    const stream = makeStream(60);
+    const { seenSeeds } = await streamSeedBatches({
+      stream,
+      seedIds,
+      machineId: "m",
+      batchSize: 50,
+      fetchEdges: fakeFetchEdges,
+      stamp: async (ids) => {
+        stamped.push([...ids]);
+      },
+    });
+    // Only batch 1 got stamped; batch 2 abort means no stamp; batch 3
+    // never started.
+    expect(stamped).toHaveLength(1);
+    expect(stamped[0]).toEqual(seedIds.slice(0, 50));
+    // seenSeeds = 50 from batch 1 + 9 successfully-written rows from
+    // batch 2 BEFORE the writeln that flipped abort. The 10th writeln
+    // itself flipped the flag; the after-writeln check skips its
+    // seenSeeds.add. Anything after that is short-circuited.
+    expect(seenSeeds.size).toBe(59);
+  });
 
-      // Take our 150 fixture ids in deterministic order; production
-      // round-robin via last_dreamed_at NULLS FIRST + created_at ASC will
-      // pull them in this same order since they share created_at and are
-      // all unstamped.
-      const ours: string[] = [];
-      for (let i = 0; i < atomCount; i++) {
-        ours.push(`00000000-0000-0000-0000-${i.toString(16).padStart(12, "d")}`);
-      }
-
-      // Simulate the streaming endpoint: batch 1 + 2 succeed and stamp,
-      // batch 3 is "interrupted" — never stamped, mimicking a timeout
-      // mid-cycle.
-      const BATCH = 50;
-      const batch1 = ours.slice(0, BATCH);
-      const batch2 = ours.slice(BATCH, BATCH * 2);
-      const batch3 = ours.slice(BATCH * 2, BATCH * 3);
-
-      await stampDreamedSeeds(batch1);
-      await stampDreamedSeeds(batch2);
-      // batch3 NOT stamped.
-
-      const stamped = await sql<{ id: string; ts: string | null }[]>`
-        SELECT id::text AS id, meta->>'last_dreamed_at' AS ts
-        FROM memories
-        WHERE id = ANY(${[...batch1, ...batch2, ...batch3]})
-        ORDER BY id
-      `;
-      const byId = new Map(stamped.map((r) => [r.id, r.ts]));
-
-      for (const id of batch1) expect(byId.get(id)).not.toBeNull();
-      for (const id of batch2) expect(byId.get(id)).not.toBeNull();
-      for (const id of batch3) expect(byId.get(id)).toBeNull();
-    } finally {
-      await cleanup();
-    }
+  test("abort exactly at batch boundary does not stamp the unstarted next batch", async () => {
+    const { streamSeedBatches } = await import("../src/routes/dream.ts");
+    const seedIds = makeSeedIds(150);
+    const stamped: string[][] = [];
+    // Abort on writeln #50 -- the LAST row of batch 1. Batch 1's stamp
+    // call comes after that abort flips, so batch 1 should NOT be
+    // stamped either (we can't trust the daemon got the last row).
+    const stream = makeStream(50);
+    await streamSeedBatches({
+      stream,
+      seedIds,
+      machineId: "m",
+      batchSize: 50,
+      fetchEdges: fakeFetchEdges,
+      stamp: async (ids) => {
+        stamped.push([...ids]);
+      },
+    });
+    // The pre-stamp abort check prevents batch 1 from being marked.
+    // Stricter behavior than "best-effort," but it matches the invariant:
+    // a batch is stamped only if every row reached the daemon.
+    expect(stamped).toHaveLength(0);
   });
 });
