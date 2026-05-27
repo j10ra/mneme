@@ -97,7 +97,7 @@ export function mountOpsRoutes(app: Hono): void {
     // Read scope (not admin): the status snapshot is operational
     // health, not a privileged action. Per-machine tokens can read it
     // so the dashboard + slash commands work without holding admin.
-    requireAuth("read"),
+    requireAuth("admin"),
     async (c) => {
       const now = Date.now();
 
@@ -224,7 +224,7 @@ export function mountOpsRoutes(app: Hono): void {
   // Returns rows in DESC ts order so the dashboard can render newest-
   // first and (when polling) prepend new entries.
   // -------------------------------------------------------------------
-  app.get("/api/_ops/logs", mnemeRoute("api._ops.logs"), requireAuth("read"), async (c) => {
+  app.get("/api/_ops/logs", mnemeRoute("api._ops.logs"), requireAuth("admin"), async (c) => {
     const url = new URL(c.req.url);
     const sinceParam = url.searchParams.get("since");
     const sinceParsed = sinceParam ? new Date(sinceParam) : null;
@@ -305,41 +305,45 @@ export function mountOpsRoutes(app: Hono): void {
   //   qkw             keyword text for ts_rank, sent alongside qvec
   //   limit, offset   default 50, max 200
   // -------------------------------------------------------------------
-  app.get("/api/_ops/memories", mnemeRoute("api._ops.memories"), requireAuth("read"), async (c) => {
-    const u = new URL(c.req.url);
-    const since = parseTs(u.searchParams.get("since"), new Date(Date.now() - 7 * 86_400_000));
-    const until = parseTs(u.searchParams.get("until"), new Date());
-    const repos = csv(u.searchParams.get("repo"));
-    const machineIds = csv(u.searchParams.get("machine_id"));
-    const kinds = csv(u.searchParams.get("kind"));
-    const clusterStatus = csv(u.searchParams.get("cluster_status"));
-    const qvecRaw = (u.searchParams.get("qvec") ?? "").trim();
-    const qkw = (u.searchParams.get("qkw") ?? "").trim();
-    const limit = clamp(Number(u.searchParams.get("limit") ?? 50), 1, 200, 50);
-    const offset = clamp(Number(u.searchParams.get("offset") ?? 0), 0, 100_000, 0);
+  app.get(
+    "/api/_ops/memories",
+    mnemeRoute("api._ops.memories"),
+    requireAuth("admin"),
+    async (c) => {
+      const u = new URL(c.req.url);
+      const since = parseTs(u.searchParams.get("since"), new Date(Date.now() - 7 * 86_400_000));
+      const until = parseTs(u.searchParams.get("until"), new Date());
+      const repos = csv(u.searchParams.get("repo"));
+      const machineIds = csv(u.searchParams.get("machine_id"));
+      const kinds = csv(u.searchParams.get("kind"));
+      const clusterStatus = csv(u.searchParams.get("cluster_status"));
+      const qvecRaw = (u.searchParams.get("qvec") ?? "").trim();
+      const qkw = (u.searchParams.get("qkw") ?? "").trim();
+      const limit = clamp(Number(u.searchParams.get("limit") ?? 50), 1, 200, 50);
+      const offset = clamp(Number(u.searchParams.get("offset") ?? 0), 0, 100_000, 0);
 
-    // Parse qvec (caller pre-embedded the search text). Reject early on
-    // malformed input rather than passing a bad literal to Postgres.
-    let vecLit: string | null = null;
-    if (qvecRaw) {
-      const parts = qvecRaw.split(",");
-      if (parts.length !== EMBEDDER_DIM) {
-        return c.json(
-          { error: `qvec must be ${EMBEDDER_DIM} comma-separated floats, got ${parts.length}` },
-          400,
-        );
-      }
-      for (const p of parts) {
-        if (!Number.isFinite(Number(p))) {
-          return c.json({ error: "qvec contains non-numeric values" }, 400);
+      // Parse qvec (caller pre-embedded the search text). Reject early on
+      // malformed input rather than passing a bad literal to Postgres.
+      let vecLit: string | null = null;
+      if (qvecRaw) {
+        const parts = qvecRaw.split(",");
+        if (parts.length !== EMBEDDER_DIM) {
+          return c.json(
+            { error: `qvec must be ${EMBEDDER_DIM} comma-separated floats, got ${parts.length}` },
+            400,
+          );
         }
+        for (const p of parts) {
+          if (!Number.isFinite(Number(p))) {
+            return c.json({ error: "qvec contains non-numeric values" }, 400);
+          }
+        }
+        vecLit = `[${parts.join(",")}]`;
       }
-      vecLit = `[${parts.join(",")}]`;
-    }
 
-    // Build filter clauses lazily so we can splice them either into
-    // the plain-filter query or the hybrid-scoring query.
-    const filters = sql`
+      // Build filter clauses lazily so we can splice them either into
+      // the plain-filter query or the hybrid-scoring query.
+      const filters = sql`
         m.created_at >= ${since}
         AND m.created_at < ${until}
         ${repos.length > 0 ? sql`AND m.repo = ANY(${repos})` : sql``}
@@ -348,9 +352,9 @@ export function mountOpsRoutes(app: Hono): void {
         ${clusterStatusClause(clusterStatus)}
       `;
 
-    let rows: MemoryRow[];
-    if (vecLit) {
-      rows = (await sql<MemoryRow[]>`
+      let rows: MemoryRow[];
+      if (vecLit) {
+        rows = (await sql<MemoryRow[]>`
           WITH q_vec AS (SELECT ${vecLit}::vector AS v),
                q_kw  AS (SELECT websearch_to_tsquery('simple', ${qkw || ""}) AS q)
           SELECT
@@ -378,8 +382,8 @@ export function mountOpsRoutes(app: Hono): void {
           ORDER BY score DESC, m.created_at DESC
           LIMIT ${limit} OFFSET ${offset}
         `) as unknown as MemoryRow[];
-    } else {
-      rows = (await sql<MemoryRow[]>`
+      } else {
+        rows = (await sql<MemoryRow[]>`
           SELECT
             m.id::text                 AS id,
             m.content,
@@ -404,10 +408,11 @@ export function mountOpsRoutes(app: Hono): void {
           ORDER BY m.created_at DESC
           LIMIT ${limit} OFFSET ${offset}
         `) as unknown as MemoryRow[];
-    }
+      }
 
-    return c.json({ memories: rows });
-  });
+      return c.json({ memories: rows });
+    },
+  );
 
   // -------------------------------------------------------------------
   // GET /api/_ops/memories/:id/related — top-k vector neighbors of a
@@ -416,7 +421,7 @@ export function mountOpsRoutes(app: Hono): void {
   app.get(
     "/api/_ops/memories/:id/related",
     mnemeRoute("api._ops.memories.related"),
-    requireAuth("read"),
+    requireAuth("admin"),
     async (c) => {
       const id = c.req.param("id");
       const k = clamp(Number(c.req.query("k") ?? 6), 1, 20, 6);
@@ -469,7 +474,7 @@ export function mountOpsRoutes(app: Hono): void {
   app.get(
     "/api/_ops/memories/:id/supersede-chain",
     mnemeRoute("api._ops.memories.supersede_chain"),
-    requireAuth("read"),
+    requireAuth("admin"),
     async (c) => {
       const id = c.req.param("id");
       const MAX_DEPTH = 8;
@@ -530,7 +535,7 @@ export function mountOpsRoutes(app: Hono): void {
   app.get(
     "/api/_ops/memories/:id/capture",
     mnemeRoute("api._ops.memories.capture"),
-    requireAuth("read"),
+    requireAuth("admin"),
     async (c) => {
       const id = c.req.param("id");
       const rows = (await sql<
@@ -573,20 +578,24 @@ export function mountOpsRoutes(app: Hono): void {
   // cluster_id IS itself a memory id (the "theme" memory acting as
   // centroid), so we self-join to get its content as the summary.
   // -------------------------------------------------------------------
-  app.get("/api/_ops/clusters", mnemeRoute("api._ops.clusters"), requireAuth("read"), async (c) => {
-    const u = new URL(c.req.url);
-    const since = parseTs(u.searchParams.get("since"), new Date(Date.now() - 30 * 86_400_000));
-    const until = parseTs(u.searchParams.get("until"), new Date());
-    const limit = clamp(Number(u.searchParams.get("limit") ?? 50), 1, 200, 50);
-    const rows = (await sql<
-      {
-        id: string;
-        summary: string | null;
-        member_count: number;
-        last_at: Date | string;
-        sample_machine_ids: string[];
-      }[]
-    >`
+  app.get(
+    "/api/_ops/clusters",
+    mnemeRoute("api._ops.clusters"),
+    requireAuth("admin"),
+    async (c) => {
+      const u = new URL(c.req.url);
+      const since = parseTs(u.searchParams.get("since"), new Date(Date.now() - 30 * 86_400_000));
+      const until = parseTs(u.searchParams.get("until"), new Date());
+      const limit = clamp(Number(u.searchParams.get("limit") ?? 50), 1, 200, 50);
+      const rows = (await sql<
+        {
+          id: string;
+          summary: string | null;
+          member_count: number;
+          last_at: Date | string;
+          sample_machine_ids: string[];
+        }[]
+      >`
         WITH grouped AS (
           SELECT
             (meta->>'in_cluster')::uuid AS cluster_id,
@@ -611,14 +620,15 @@ export function mountOpsRoutes(app: Hono): void {
         ORDER BY g.last_at DESC
         LIMIT ${limit}
       `) as unknown as Array<{
-      id: string;
-      summary: string | null;
-      member_count: number;
-      last_at: Date | string;
-      sample_machine_ids: string[];
-    }>;
-    return c.json({ clusters: rows });
-  });
+        id: string;
+        summary: string | null;
+        member_count: number;
+        last_at: Date | string;
+        sample_machine_ids: string[];
+      }>;
+      return c.json({ clusters: rows });
+    },
+  );
 
   // -------------------------------------------------------------------
   // GET /api/_ops/graph — top-N most-connected memories + their edges
@@ -633,7 +643,7 @@ export function mountOpsRoutes(app: Hono): void {
   // Edges are filtered to only those whose endpoints both made the
   // top-N cut, so the graph stays self-contained.
   // -------------------------------------------------------------------
-  app.get("/api/_ops/graph", mnemeRoute("api._ops.graph"), requireAuth("read"), async (c) => {
+  app.get("/api/_ops/graph", mnemeRoute("api._ops.graph"), requireAuth("admin"), async (c) => {
     const u = new URL(c.req.url);
     const since = parseTs(u.searchParams.get("since"), new Date(Date.now() - 30 * 86_400_000));
     const until = parseTs(u.searchParams.get("until"), new Date());

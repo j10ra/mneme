@@ -1920,12 +1920,10 @@ function mountDashboardRoutes(app, forceDream) {
       const cfg = await readDaemonConfig();
       if (!cfg)
         return c.json({ error: "config not loaded" }, 503);
-      const adminPw = decryptAdminPassword(cfg.adminSecret);
-      const bearer = adminPw ?? cfg.token;
       try {
         const resp = await fetch(`${cfg.serverUrl}/api/_ops/worker/${name}/run`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${bearer}` }
+          headers: { Authorization: `Bearer ${bearerFor(cfg, "admin")}` }
         });
         const body = await resp.text();
         return c.body(body, resp.status, {
@@ -1938,7 +1936,7 @@ function mountDashboardRoutes(app, forceDream) {
     }
     return c.json({ error: "unknown worker" }, 400);
   });
-  app.get("/dashboard/api/machines", mnemeRoute("daemon.dashboard.machines"), proxyHandler("/api/auth/machines", "dashboard.machines"));
+  app.get("/dashboard/api/machines", mnemeRoute("daemon.dashboard.machines"), proxyHandler("/api/auth/machines", "dashboard.machines", "machine"));
   app.get("/dashboard/api/daemon-schedule", mnemeRoute("daemon.dashboard.daemon_schedule"), async (c) => {
     try {
       const { readFile: readFile3 } = await import("fs/promises");
@@ -1977,7 +1975,12 @@ function mountDashboardRoutes(app, forceDream) {
     return streamSSE(c, async (stream) => streamLogs(stream, rangeMs));
   });
 }
-function proxyHandler(upstreamPath, traceTag) {
+function bearerFor(cfg, scope) {
+  if (scope === "admin")
+    return decryptAdminPassword(cfg.adminSecret) ?? cfg.token;
+  return cfg.token;
+}
+function proxyHandler(upstreamPath, traceTag, scope = "admin") {
   return async (c) => {
     const cfg = await readDaemonConfig();
     if (!cfg) {
@@ -1985,7 +1988,7 @@ function proxyHandler(upstreamPath, traceTag) {
     }
     try {
       const resp = await fetch(`${cfg.serverUrl}${upstreamPath}`, {
-        headers: { Authorization: `Bearer ${cfg.token}` }
+        headers: { Authorization: `Bearer ${bearerFor(cfg, scope)}` }
       });
       const body = await resp.text();
       return c.body(body, resp.status, {
@@ -2023,7 +2026,7 @@ function forwardMemoriesWithLocalEmbed() {
     }
     try {
       const resp = await fetch(`${cfg.serverUrl}/api/_ops/memories${url.search}`, {
-        headers: { Authorization: `Bearer ${cfg.token}` }
+        headers: { Authorization: `Bearer ${bearerFor(cfg, "admin")}` }
       });
       const body = await resp.text();
       return c.body(body, resp.status, {
@@ -2035,7 +2038,7 @@ function forwardMemoriesWithLocalEmbed() {
     }
   };
 }
-function forwardQuery(upstreamPath, traceTag) {
+function forwardQuery(upstreamPath, traceTag, scope = "admin") {
   return async (c) => {
     const cfg = await readDaemonConfig();
     if (!cfg)
@@ -2043,7 +2046,7 @@ function forwardQuery(upstreamPath, traceTag) {
     const qs = new URL(c.req.url).search;
     try {
       const resp = await fetch(`${cfg.serverUrl}${upstreamPath}${qs}`, {
-        headers: { Authorization: `Bearer ${cfg.token}` }
+        headers: { Authorization: `Bearer ${bearerFor(cfg, scope)}` }
       });
       const body = await resp.text();
       return c.body(body, resp.status, {
@@ -2055,7 +2058,7 @@ function forwardQuery(upstreamPath, traceTag) {
     }
   };
 }
-function forwardPath(upstreamPath, traceTag) {
+function forwardPath(upstreamPath, traceTag, scope = "admin") {
   return async (c) => {
     const cfg = await readDaemonConfig();
     if (!cfg)
@@ -2063,7 +2066,7 @@ function forwardPath(upstreamPath, traceTag) {
     const qs = new URL(c.req.url).search;
     try {
       const resp = await fetch(`${cfg.serverUrl}${upstreamPath}${qs}`, {
-        headers: { Authorization: `Bearer ${cfg.token}` }
+        headers: { Authorization: `Bearer ${bearerFor(cfg, scope)}` }
       });
       const body = await resp.text();
       return c.body(body, resp.status, {

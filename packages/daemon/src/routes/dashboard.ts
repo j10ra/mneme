@@ -142,19 +142,10 @@ export function mountDashboardRoutes(app: Hono, forceDream: () => Promise<DreamC
       if (name === "nap" || name === "digest") {
         const cfg = await readDaemonConfig();
         if (!cfg) return c.json({ error: "config not loaded" }, 503);
-        // /api/_ops/worker/:name/run requires admin scope (AppSec H-2).
-        // The dashboard runs locally so it has read access to the same
-        // encrypted admin block the slash commands use; decrypt with the
-        // machine-fingerprint-derived key and use that as the bearer.
-        // Falls back to per-machine token if the admin block isn't
-        // present — server will return 403 in that case, which the UI
-        // can surface as "admin password missing on this machine".
-        const adminPw = decryptAdminPassword(cfg.adminSecret);
-        const bearer = adminPw ?? cfg.token;
         try {
           const resp = await fetch(`${cfg.serverUrl}/api/_ops/worker/${name}/run`, {
             method: "POST",
-            headers: { Authorization: `Bearer ${bearer}` },
+            headers: { Authorization: `Bearer ${bearerFor(cfg, "admin")}` },
           });
           const body = await resp.text();
           return c.body(body, resp.status as 200, {
@@ -169,11 +160,14 @@ export function mountDashboardRoutes(app: Hono, forceDream: () => Promise<DreamC
     },
   );
 
-  // GET /dashboard/api/machines — proxies /api/auth/machines (read-scoped)
+  // GET /dashboard/api/machines — proxies /api/auth/machines (read-scoped).
+  // Explicit "machine" scope: /api/auth/machines is one of the few server
+  // routes that's still read-scoped — gating it to admin would force a
+  // password prompt just to list machines, which is over-strict.
   app.get(
     "/dashboard/api/machines",
     mnemeRoute("daemon.dashboard.machines"),
-    proxyHandler("/api/auth/machines", "dashboard.machines"),
+    proxyHandler("/api/auth/machines", "dashboard.machines", "machine"),
   );
 
   // GET /dashboard/api/daemon-schedule — local-only read of the
@@ -276,7 +270,20 @@ export function mountDashboardRoutes(app: Hono, forceDream: () => Promise<DreamC
 
 // ── proxy helper ────────────────────────────────────────────────────
 
-function proxyHandler(upstreamPath: string, traceTag: string) {
+// All /api/_ops/* routes are admin-scoped (AppSec #50). The dashboard
+// runs locally so it can decrypt the admin block from ~/.mneme/config.json
+// the same way slash commands do. Falls back to per-machine token only
+// when no admin block exists on this machine — the server will then
+// return 403 and the UI surfaces "admin password missing on this
+// machine". `/api/auth/machines` is the one read-scope exception and
+// uses "machine".
+type ProxyScope = "admin" | "machine";
+function bearerFor(cfg: DaemonProxyConfig, scope: ProxyScope): string {
+  if (scope === "admin") return decryptAdminPassword(cfg.adminSecret) ?? cfg.token;
+  return cfg.token;
+}
+
+function proxyHandler(upstreamPath: string, traceTag: string, scope: ProxyScope = "admin") {
   return async (c: Context) => {
     const cfg = await readDaemonConfig();
     if (!cfg) {
@@ -284,7 +291,7 @@ function proxyHandler(upstreamPath: string, traceTag: string) {
     }
     try {
       const resp = await fetch(`${cfg.serverUrl}${upstreamPath}`, {
-        headers: { Authorization: `Bearer ${cfg.token}` },
+        headers: { Authorization: `Bearer ${bearerFor(cfg, scope)}` },
       });
       const body = await resp.text();
       return c.body(body, resp.status as 200, {
@@ -327,7 +334,7 @@ function forwardMemoriesWithLocalEmbed() {
     }
     try {
       const resp = await fetch(`${cfg.serverUrl}/api/_ops/memories${url.search}`, {
-        headers: { Authorization: `Bearer ${cfg.token}` },
+        headers: { Authorization: `Bearer ${bearerFor(cfg, "admin")}` },
       });
       const body = await resp.text();
       return c.body(body, resp.status as 200, {
@@ -343,14 +350,14 @@ function forwardMemoriesWithLocalEmbed() {
 /** Forwards the incoming query string verbatim to a fixed upstream
  *  path. Used for the list-style endpoints (/memories, /clusters,
  *  /server-logs) where filters arrive as ?key=val. */
-function forwardQuery(upstreamPath: string, traceTag: string) {
+function forwardQuery(upstreamPath: string, traceTag: string, scope: ProxyScope = "admin") {
   return async (c: Context) => {
     const cfg = await readDaemonConfig();
     if (!cfg) return c.json({ error: "config not loaded" }, 503);
     const qs = new URL(c.req.url).search;
     try {
       const resp = await fetch(`${cfg.serverUrl}${upstreamPath}${qs}`, {
-        headers: { Authorization: `Bearer ${cfg.token}` },
+        headers: { Authorization: `Bearer ${bearerFor(cfg, scope)}` },
       });
       const body = await resp.text();
       return c.body(body, resp.status as 200, {
@@ -365,14 +372,14 @@ function forwardQuery(upstreamPath: string, traceTag: string) {
 
 /** Forwards to a parameterised upstream path (id baked in). Used for
  *  per-memory lookups (/related, /supersede-chain, /capture). */
-function forwardPath(upstreamPath: string, traceTag: string) {
+function forwardPath(upstreamPath: string, traceTag: string, scope: ProxyScope = "admin") {
   return async (c: Context) => {
     const cfg = await readDaemonConfig();
     if (!cfg) return c.json({ error: "config not loaded" }, 503);
     const qs = new URL(c.req.url).search;
     try {
       const resp = await fetch(`${cfg.serverUrl}${upstreamPath}${qs}`, {
-        headers: { Authorization: `Bearer ${cfg.token}` },
+        headers: { Authorization: `Bearer ${bearerFor(cfg, scope)}` },
       });
       const body = await resp.text();
       return c.body(body, resp.status as 200, {
