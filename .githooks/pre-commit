@@ -32,3 +32,50 @@ if git diff --cached --name-only --diff-filter=ACMR | grep -qE '^packages/plugin
     exit 1
   fi
 fi
+
+# Plugin-distribution consistency: any change to code that ships in the
+# plugin must come with a plugin version bump, otherwise /plugin update
+# on user machines won't pull the new code.
+#
+# Two flavours:
+#   - packages/(daemon|core|shared)/src/  → bundled into daemon.js;
+#     must also re-stage daemon.js
+#   - packages/plugin/scripts/            → ships as source; just need
+#     the version bump
+bundled_src=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/(daemon|core|shared)/src/' || true)
+plugin_src=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/plugin/scripts/' || true)
+
+if [ -n "$bundled_src" ] || [ -n "$plugin_src" ]; then
+  if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '^packages/plugin/(package\.json|\.claude-plugin/plugin\.json)$'; then
+    echo "" >&2
+    echo "pre-commit: plugin source changed but plugin version is not bumped." >&2
+    echo "            /plugin update will not pull the new code." >&2
+    echo "" >&2
+    echo "  files:    $(echo "$bundled_src $plugin_src" | tr ' ' '\n' | head -3 | tr '\n' ' ')" >&2
+    echo "" >&2
+    echo "  fix:      bump packages/plugin/{.claude-plugin/plugin.json,package.json}" >&2
+    if [ -n "$bundled_src" ]; then
+      echo "            bun scripts/build-plugin.ts" >&2
+    fi
+    echo "            cd packages/plugin/dashboard && bun run build" >&2
+    echo "            git add packages/plugin/{.claude-plugin/plugin.json,package.json,dashboard/dist}" >&2
+    if [ -n "$bundled_src" ]; then
+      echo "            git add packages/plugin/daemon.js packages/plugin/embed-worker.js" >&2
+    fi
+    echo "" >&2
+    exit 1
+  fi
+  # Bundled source changed AND version bumped — daemon.js must be staged too.
+  if [ -n "$bundled_src" ] && ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '^packages/plugin/daemon\.js$'; then
+    echo "" >&2
+    echo "pre-commit: bundled source changed and plugin version bumped, but daemon.js is not staged." >&2
+    echo "            the bundle on disk is stale; rebuild before committing." >&2
+    echo "" >&2
+    echo "  files:    $(echo "$bundled_src" | head -3 | tr '\n' ' ')" >&2
+    echo "" >&2
+    echo "  fix:      bun scripts/build-plugin.ts" >&2
+    echo "            git add packages/plugin/daemon.js packages/plugin/embed-worker.js" >&2
+    echo "" >&2
+    exit 1
+  fi
+fi

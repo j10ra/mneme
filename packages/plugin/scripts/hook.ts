@@ -6,9 +6,16 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type MnemeConfig,
@@ -53,15 +60,50 @@ async function readStdin(): Promise<Record<string, unknown>> {
 // SessionStart doesn't pay the 5-30s cost of `bun install --production`
 // on plugin update day. Cross-platform staleness predicate lives in
 // daemon-install.ts as `isDaemonConfigStale`.
+// Highest semver-shaped directory under the plugin cache. Returns null
+// if the cache root doesn't exist or has no valid version dirs. This is
+// what the daemon SHOULD be pinned to — not the version that happens to
+// be loaded by this hook, which may lag the cache after /plugin update.
+function latestCachedPluginRoot(): string | null {
+  const ownRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  // Walk up to the cache root: …/cache/j10ra-mneme/mneme/<version>/
+  const cacheRoot = dirname(ownRoot);
+  if (!existsSync(cacheRoot)) return ownRoot;
+  let best: { ver: string; tuple: [number, number, number] } | null = null;
+  for (const entry of readdirSync(cacheRoot)) {
+    const m = entry.match(/^(\d+)\.(\d+)\.(\d+)$/);
+    if (!m) continue;
+    const tuple: [number, number, number] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (!best || tuple > best.tuple) best = { ver: entry, tuple };
+  }
+  if (!best) return ownRoot;
+  return join(cacheRoot, best.ver);
+}
+
 function refreshDaemonIfStale(): void {
-  const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  if (!isDaemonConfigStale(pluginRoot)) return;
-  // Stale config. Spawn detached refresh; don't block SessionStart.
+  // Target the LATEST cached version, not the hook's own version.
+  // After /plugin update lands a new cache dir, the hook may still be
+  // loaded from the prior version until /reload-plugins fires; that's
+  // fine — the daemon refresh path is independent of the hook's own
+  // location, so we can still update the plist + daemon.
+  const targetRoot = latestCachedPluginRoot() ?? dirname(dirname(fileURLToPath(import.meta.url)));
+  if (!isDaemonConfigStale(targetRoot)) return;
+
+  const ownRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const ownVersion = basename(ownRoot);
+  const targetVersion = basename(targetRoot);
   process.stderr.write(
-    `mneme: service config points at stale plugin cache, refreshing daemon to ${pluginRoot}\n`,
+    `mneme: service config stale, refreshing daemon to ${targetVersion} (hook is on ${ownVersion})\n`,
   );
+  if (ownVersion !== targetVersion) {
+    process.stderr.write(
+      `mneme: this session is on plugin ${ownVersion}; run /reload-plugins to load ${targetVersion}\n`,
+    );
+  }
   try {
-    const refreshScript = join(pluginRoot, "scripts/refresh-daemon.ts");
+    // Run refresh-daemon from the TARGET version so the new daemon is
+    // what gets installed into the plist.
+    const refreshScript = join(targetRoot, "scripts/refresh-daemon.ts");
     if (!existsSync(refreshScript)) return;
     const child = spawn(process.execPath, [refreshScript], {
       detached: true,
