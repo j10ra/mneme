@@ -7,8 +7,8 @@ node_modules/
 .bun/
 .idea/
 .vscode/*
-!.vscode/settings.json
 !.vscode/extensions.json
 coverage/
 .superpowers/
+docs/superpowers/
 .pg.env
