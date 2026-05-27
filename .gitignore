@@ -6,8 +6,7 @@ node_modules/
 .DS_Store
 .bun/
 .idea/
-.vscode/*
-!.vscode/extensions.json
+.vscode/
 coverage/
 .superpowers/
 docs/superpowers/
