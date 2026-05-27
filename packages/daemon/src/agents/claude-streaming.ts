@@ -43,16 +43,11 @@ const DISALLOWED_TOOLS = [
   "TodoWrite",
 ];
 
-// Recycle every 30 min as a heuristic safeguard against subprocess
-// memory creep. Empirically Haiku subprocess RSS grows slowly on long
-// runs; flushing the process periodically is cheap insurance.
+// Periodic recycle as cheap insurance against subprocess RSS creep on
+// long runs.
 const RECYCLE_MS = 30 * 60 * 1000;
 
-// Per-turn timeout. If the SDK fails to emit a `result` message within
-// this window, we tear down the session and bubble up an error. Long
-// extracts on slow networks can take ~30s on the inference path; 90s
-// is a generous ceiling that catches genuine deadlocks without false
-// positives.
+// Catches genuine deadlocks; well above slow-network inference time.
 const TURN_TIMEOUT_MS = 90 * 1000;
 
 type SDKUserMessage = {

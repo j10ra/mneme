@@ -378,17 +378,13 @@ function forwardPath(upstreamPath: string, traceTag: string) {
 
 // ── log streaming ───────────────────────────────────────────────────
 //
-// Reads ~/.mneme/logs/daemon.log — a single unified file. A fixed
-// line cap on this stream reflects actual recency rather than the
-// sparse tail of a multi-file split.
+// Tails the unified ~/.mneme/logs/daemon.log; fixed line cap matches
+// actual recency.
 
 const LOG_POLL_MS = 1000;
 const LOG_PING_MS = 15_000;
-// Backfill caps. LOG_BACKFILL_MAX_LINES applies when no range is
-// requested (legacy "tail last N lines" behavior). When the dashboard
-// passes ?range=<ms>, we read up to LOG_BACKFILL_BYTES_RANGE bytes off
-// the tail and timestamp-filter — large enough to cover ~1 day of busy
-// logging at ~10 lines/sec without eating memory if the file is huge.
+// Backfill: bigger byte window when ?range=<ms> is set, plain tail-N
+// otherwise.
 const LOG_BACKFILL_BYTES = 256 * 1024;
 const LOG_BACKFILL_BYTES_RANGE = 16 * 1024 * 1024;
 const LOG_BACKFILL_MAX_LINES = 500;

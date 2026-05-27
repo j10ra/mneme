@@ -9,11 +9,6 @@
 // --production` at install time). Works on macOS, WSL, Linux, and
 // Windows because every platform path goes through the same launcher.
 //
-// (We had a pre-built standalone-binary path on a previous version but
-// `bun build --compile` doesn't ship native dylibs cleanly and the
-// embedder kept dlopen-failing inside the binary. Reverted to bun-run
-// since every CC plugin host already has bun installed.)
-//
 // All file generators are pure: given a config, they return a string.
 // The execute paths (install / uninstall / start) are isolated so tests
 // can cover the generators without touching the real service manager.

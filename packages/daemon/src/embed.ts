@@ -21,12 +21,10 @@ import { Logger } from "@mneme/core";
 export const EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5";
 export const EMBEDDER_DIM = 384;
 
-// Idle window after which `disposeIfIdle()` will kill the worker. Cold
-// start on the next embed is ~1-2s (model load).
+// Killing idle worker reclaims RSS; cold start on next embed is ~1-2s.
 const PIPELINE_IDLE_MS = 60 * 1000;
 
-// How long to wait after closing stdin before SIGTERM. The worker
-// should exit promptly on EOF; this is the safety net.
+// SIGTERM safety net after stdin close.
 const DISPOSE_GRACE_MS = 2000;
 
 type Pending = {

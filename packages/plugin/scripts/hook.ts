@@ -47,19 +47,12 @@ async function readStdin(): Promise<Record<string, unknown>> {
 // daemon keeps running stale code until something rewrites it.
 //
 // On every SessionStart, derive the current plugin root from this
-// script's own location (works because every CC instance loads hooks
-// from the active plugin cache version). If the platform's service
-// config (launchd plist on darwin / systemd unit on linux+WSL / Task
-// Scheduler XML on win32) points at a stale daemon.js, spawn a
+// script's own location. If the platform's service config (launchd /
+// systemd / Task Scheduler) points at a stale daemon.js, spawn a
 // detached refresh that re-runs the install scaffolding. Detached so
 // SessionStart doesn't pay the 5-30s cost of `bun install --production`
-// on plugin update day.
-//
-// Until 1.0.65 this short-circuited on `platform() !== "darwin"`, so
-// linux/WSL/win32 never auto-refreshed and users had to manually kill
-// the running daemon to migrate to a new plugin version. The cross-
-// platform staleness predicate now lives in daemon-install.ts as
-// `isDaemonConfigStale`.
+// on plugin update day. Cross-platform staleness predicate lives in
+// daemon-install.ts as `isDaemonConfigStale`.
 function refreshDaemonIfStale(): void {
   const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   if (!isDaemonConfigStale(pluginRoot)) return;

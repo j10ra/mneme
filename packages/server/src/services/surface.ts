@@ -121,8 +121,8 @@ export const buildSurface = mnemeFn(
       LIMIT 3
     `;
 
-    // Recent capped at 6 (was 8) to keep total surface ≤ 20 items
-    // after Themes joins the budget: 5+3+3+6+3 = 20.
+    // Capped to keep total surface ≤ 20 items after Themes joins the
+    // budget.
     const decisionsQ = sql<Row[]>`
       SELECT id, kind, importance, content, repo, machine_id, created_at,
              COUNT(*) OVER () AS total_count
@@ -287,9 +287,7 @@ const slugify = (s: string): string =>
     .replace(/[^a-z0-9-]/g, "-")
     .replace(/^-+|-+$/g, "");
 
-// Whitespace-collapse only — no length cap. The surface is the most
-// cache-friendly slot in the prompt; truncating with `…` saved nothing
-// real and cost the agent inline scan-ability.
+// No length cap — surface is the most cache-friendly prompt slot.
 const collapse = (s: string): string => s.replace(/\s+/g, " ").trim();
 
 // Emoji per kind. Drives the visual scan in the rendered surface and lets the
@@ -310,9 +308,7 @@ const KIND_GLYPH: Record<string, string> = {
 };
 const glyph = (kind: string | null): string => (kind && KIND_GLYPH[kind]) || "•";
 
-// Surface rows now carry full UUIDs. The agent reads them as-is and
-// queries `WHERE id = '<uuid>'` for exact match instead of the older
-// prefix-LIKE pattern. The skill (`using-mneme`) teaches this directly.
+// Surface carries full UUIDs; agent queries `WHERE id = '<uuid>'`.
 // Surface ingestion is LLM-side only — the user-visible status banner
 // summarises counts and never renders row IDs, so token cost is paid
 // where it adds value.

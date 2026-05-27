@@ -1,4 +1,4 @@
-// Dream coordination endpoints (issue #22).
+// Dream coordination endpoints.
 //
 // The daemon owns the LLM cost (one Claude call per cluster); the server
 // owns the lock + the candidate query + the cluster write. Three routes:
@@ -33,18 +33,12 @@ import {
 import { validateSupersedePairs } from "../lib/supersede.ts";
 import { sha256Hex, sql } from "../infra/db.ts";
 
-// All dream tuning knobs (cycle cap, neighbor cap, stream batch sizes)
-// live in ../infra/config.ts -- imported at the top of this file.
-
 export type DreamLockResult =
   | { acquired: true; window_key: number }
   | { acquired: false; window_key: number; heldBy: string };
 
-// Stale claims older than this are eligible for auto-reap inside the
-// lock-acquire path. Dream cycles in practice run in well under 5 min;
-// 30 min is generous enough that we don't reap a slow-but-live cycle,
-// and tight enough that a crashed daemon's lock self-heals instead of
-// blocking the window forever.
+// Generous enough we don't reap a live cycle; tight enough a crashed
+// daemon self-heals instead of blocking the window forever.
 const STALE_LOCK_AGE_MS = 30 * 60_000;
 
 export async function acquireDreamLock(
@@ -188,13 +182,11 @@ export async function fetchDreamCandidates(
   machineId: string,
 ): Promise<{ candidates: DreamCandidates; seedIds: string[] }> {
   // Inlined predicates (no CTE materialization) keep pgvector's HNSW
-  // index usable on the LATERAL's cosine ORDER BY -- see git history
-  // for why a materialized CTE times out at Railway's gateway.
+  // index usable on the LATERAL's cosine ORDER BY — a materialized CTE
+  // times out at Railway's gateway.
   //
-  // Seed selection is now a round-robin: least-recently-dreamed rows
-  // first (NULLS FIRST drains never-dreamed rows), so every memory is
-  // eventually a seed regardless of age. Backed by
-  // memories_last_dreamed_at_idx (migration 0027).
+  // Seed selection round-robins least-recently-dreamed first (NULLS
+  // FIRST drains never-dreamed), backed by memories_last_dreamed_at_idx.
   const edgeRows = await sql<EdgeRow[]>`
     WITH seeds AS (
       SELECT id, repo, embedding, content, kind, created_at

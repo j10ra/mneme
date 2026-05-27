@@ -45,8 +45,7 @@ const MAX_BODY_BYTES = 256 * 1024;
 
 // Bound the in-flight buffers so a runaway producer (or a trace whose root
 // span never ends, e.g. crash before pushTrace) can't grow memory unbounded.
-// When a bucket exceeds this, oldest entries are dropped with a stderr
-// warning. Realistic ceilings for a personal tool; raise if needed.
+// When a bucket exceeds this, oldest entries are dropped with a stderr warning.
 const MAX_PENDING_SPANS_PER_TRACE = 1000;
 const MAX_PENDING_TRACES = 200;
 
@@ -220,7 +219,6 @@ export class TraceStore {
   /** Record traceId as finalized; evict oldest if LRU full. Map insertion
    *  order is iteration order, so .keys().next() gives the oldest. */
   private markFinalized(traceId: string): void {
-    // Move-to-end on re-insert (defensive — pushTrace shouldn't fire twice).
     if (this.recentlyFinalized.has(traceId)) {
       this.recentlyFinalized.delete(traceId);
     }

@@ -83,16 +83,12 @@ export type DaemonDeps = {
 
 const REQUIRED_STRING_FIELDS = ["content", "source", "hostname", "harness"] as const;
 const COALESCE_WINDOW_MS = 5 * 60 * 1000;
-// Max captures per Haiku call. 20 keeps each extract focused enough
-// that observation quality stays high; sessions larger than this
-// chunk into multiple back-to-back calls (each ~10s).
+// Bound per-call so observation quality stays high; oversize sessions
+// chunk into back-to-back Haiku calls.
 const MAX_BATCH_SIZE = 20;
 
-// Defaults for the extract gating window. Production overrides these
-// from index.ts (currently batchFull=50, idleMs=2min, forceMs=5min).
-// The aggressive defaults exist purely for tests, which don't wire any
-// of these deps and need 1-capture-per-call shape to assert end-to-end
-// flow without faking time.
+// Aggressive defaults exist for tests (1-capture-per-call shape);
+// production overrides via index.ts.
 const DEFAULT_EXTRACT_BATCH_FULL = 1;
 const DEFAULT_EXTRACT_IDLE_MS = 0;
 const DEFAULT_EXTRACT_FORCE_MS = 0;
@@ -171,15 +167,11 @@ export function createRuntime(deps: DaemonDeps) {
     return { ok: true, id };
   }
 
-  // Maximum captures to push concurrently. Server is happy with parallel
-  // bundles (idempotent insert, separate transactions). 4 is conservative;
-  // can raise once we observe DB / network behavior under burst.
+  // Server is idempotent on bundle insert; this cap is just headroom.
   const PUSH_CONCURRENCY = 4;
 
-  // Cap on total memory texts handed to bge-small in a single call. The
-  // model accepts arbitrary-length batches in principle, but very large
-  // arrays risk OOM on quantized weights. 64 keeps memory bounded while
-  // still ~5x faster than per-file embed for typical drain bursts.
+  // Bound batch so quantized weights don't OOM; large enough to amortise
+  // vs. per-file embed.
   const EMBED_BATCH_CAP = 64;
 
   async function runBatchedEmbed(): Promise<void> {
@@ -462,12 +454,8 @@ export function createRuntime(deps: DaemonDeps) {
     const ids = await deps.outbox.list("captured");
     if (ids.length === 0) return;
 
-    // Gate. Only run extract when one of these holds:
-    //   - batch is "full enough" (count >= batchFull)
-    //   - captured/ has been quiet for idleMs (no new write since)
-    //   - oldest captured file is older than forceMs (latency floor)
-    // Production wiring sets batchFull=20, idleMs=30s, forceMs=5min so
-    // extract runs roughly every burst-of-activity instead of every tick.
+    // Gate: full enough OR quiet long enough OR oldest is old enough.
+    // Defaults are tuned in index.ts.
     const tickNow = now();
     const oldestTs = ids
       .map((id) => {
@@ -481,7 +469,6 @@ export function createRuntime(deps: DaemonDeps) {
     const isForced = forceMs > 0 && Number.isFinite(oldestTs) && tickNow - oldestTs >= forceMs;
 
     if (!isFull && !isIdle && !isForced) {
-      // Don't log on every tick to avoid noise. Sentinel return.
       return;
     }
 

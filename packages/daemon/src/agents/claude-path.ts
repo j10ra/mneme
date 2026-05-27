@@ -19,11 +19,8 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
 export function findClaudeExecutable(): string {
-  // Stale-env-var self-heal: existsSync guard so a baked-in path that
-  // pointed at a now-deleted binary (e.g. claude reinstalled npm → native)
-  // falls through to the live lookups below instead of throwing the SDK
-  // into 5x retry → outbox/capture/failed. See ticket #39 for the qube-
-  // laptop incident that motivated this guard.
+  // existsSync guard: a baked-in path that no longer exists must fall
+  // through to live lookups, not be handed to the SDK.
   const fromEnv = process.env.CLAUDE_EXECUTABLE_PATH;
   if (fromEnv && existsSync(fromEnv)) {
     return fromEnv;

@@ -33,11 +33,8 @@ export const TELEMETRY_RETENTION_DAYS = 3;
 
 // ── Worker scheduling ─────────────────────────────────────────────────
 
-/** Scheduler tick rate for time-driven workers (nap, dream, keepalive).
- *  Server's tight extract+embed polling loops were retired in #29 Phase B
- *  (the per-machine daemon owns those now); only scheduler-driven jobs
- *  remain here. EXTRACT_INTERVAL_MS / EMBED_INTERVAL_MS plus the per-
- *  cycle extract/embed knobs went with them. */
+/** Scheduler tick rate for time-driven workers. Extract/embed live on
+ *  the per-machine daemon. */
 export const SCHEDULER_TICK_MS = 60_000;
 
 // ── Picker (LLM provider breaker) ─────────────────────────────────────
@@ -56,17 +53,13 @@ export const PICKER_COOLDOWN_MS = 5 * 60_000;
 export const NAP_DECAY_PER_CYCLE = Math.exp(-1 / 180);
 
 /** Per-cycle seed cap for nap's relate-pass + supersede-rule pass.
- *  Round-robin gating happens via `meta.last_napped_at`: the cycle
- *  picks the N least-recently-napped memories, runs both passes on
- *  them, and stamps the timestamp at the end. With N=500 and 4 cycles
- *  a day, the full corpus refreshes every ~3.5 days at 7k memories,
- *  scaling linearly. The cap exists because Postgres' Railway-default
- *  `statement_timeout = 2min` was killing the relate-pass when the
- *  seed set was the entire 7-day window (effectively the whole table
- *  for fresh corpora). Inner LATERAL still scans the full memories
- *  table for HNSW lookups, so a seed in this cycle can still link
- *  to non-seed neighbours — pagination only limits which rows we
- *  examine *as* seeds. */
+ *  Round-robin gating via `meta.last_napped_at`: the cycle picks the
+ *  N least-recently-napped memories, runs both passes, stamps the
+ *  timestamp. The cap exists because Postgres `statement_timeout = 2min`
+ *  would otherwise kill the relate-pass on a fresh corpus. The inner
+ *  LATERAL still scans the full memories table for HNSW lookups, so
+ *  a seed can still link to non-seed neighbours — pagination only
+ *  limits which rows we examine *as* seeds. */
 export const NAP_PER_CYCLE_CAP = 500;
 
 /** Floor for unpinned memories' importance after decay. */
@@ -91,9 +84,8 @@ export const NAP_ARCHIVE_MIN_AGE_DAYS = 30;
  *  conclude the whole synthesis is irrelevant. */
 export const NAP_CLUSTER_ARCHIVE_MIN_AGE_DAYS = 60;
 
-/** Per-cycle cap on auto-archives so a one-time eligibility bloom doesn't
- *  archive thousands in a single nap tick. 200 × 6 cycles/day = 1200/day
- *  max, well above expected inflow of dead memories under normal use. */
+/** Cap protects against a one-time eligibility bloom dumping thousands
+ *  in a single nap tick. */
 export const NAP_ARCHIVE_PER_CYCLE_CAP = 200;
 
 /** Cosine-distance ceiling for adding to `meta.related_to`. */
@@ -205,9 +197,9 @@ export const RECALL_LTP_PARTIAL = env.RECALL_LTP_PARTIAL;
  *  reinforces nothing. */
 export const RECALL_LTP_PARTIAL_ROW_CAP = env.RECALL_LTP_PARTIAL_ROW_CAP;
 
-/** Per-nap-cycle multiplier on recall_weight. 0.933 ≈ 10-nap half-life
- *  from a single hit, which at the 4h nap cadence is ~42 hours — long
- *  enough to feel persistent, short enough to fade if truly unused. */
+/** Per-nap-cycle multiplier on recall_weight. Default gives ~42h
+ *  half-life on the 4h nap cadence — persistent enough to matter,
+ *  short enough to fade if unused. */
 export const RECALL_LTD_DECAY = env.RECALL_LTD_DECAY;
 
 /** Coefficient on the `ln(1 + recall_weight)` term added to surface
@@ -230,11 +222,8 @@ export const RECALL_RANKING_COEF = env.RECALL_RANKING_COEF;
  *  topics back together. */
 export const DIGEST_MERGE_DISTANCE = 0.2;
 
-/** Max merge candidate pairs per digest cycle. Bounds Sonnet call
- *  count. At ~50 clusters steady state and a tight cosine ceiling,
- *  real candidate pairs are rare (~5/week) — the cap is defensive,
- *  mostly relevant during the first few cycles after a data wipe when
- *  many fresh clusters cover overlapping topics. */
+/** Bound Sonnet call count per digest cycle; real candidate pairs are
+ *  rare after the first few cycles. */
 export const DIGEST_MAX_MERGE_PAIRS = 20;
 
 /** How many clusters one digest cycle pulls into its merge round-robin,

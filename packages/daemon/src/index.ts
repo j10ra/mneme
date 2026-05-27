@@ -50,25 +50,15 @@ type PluginShapedConfig = {
   daemon?: { port: number; agent_provider: string };
 };
 
-// Worker tick is queue-driven (polls outbox files), so it stays as a
-// plain setInterval rather than going through the scheduler.
 const WORKER_TICK_MS = 2_000;
 
-// Extract gating. Triggers in priority:
-//   1. /flush ping  - PreCompact, SessionEnd (natural session boundaries)
-//   2. group hits EXTRACT_BATCH_FULL - runaway protection on long sessions
-//      with no real pauses
-//   3. group idle EXTRACT_IDLE_MS - "user took a break" detector
-//   4. oldest pending older than EXTRACT_FORCE_MS - latency floor; ensures
-//      /recall freshness even on sessions that never pause and never
-//      reach the runaway cap (rare but worth covering)
-// Per-turn Stop events no longer flush, so captures from many turns
-// coalesce into one Haiku call with richer cross-turn context.
+// Extract gates, priority: flush-ping > batch-full > idle > age-floor.
+// Per-turn Stop events deliberately don't ping /flush so captures from
+// many turns coalesce into one Haiku call with cross-turn context.
 const EXTRACT_BATCH_FULL = 50;
 const EXTRACT_IDLE_MS = 2 * 60_000;
 const EXTRACT_FORCE_MS = 5 * 60_000;
 
-// Scheduler intervals for time-driven jobs.
 const DREAM_SCHEDULE_MS = 8 * 3600_000;
 const HEARTBEAT_SCHEDULE_MS = 60_000;
 const EMBEDDER_REAP_SCHEDULE_MS = 60_000;
@@ -306,8 +296,7 @@ export async function startDaemon(): Promise<void> {
     ]);
     let response: Response;
     try {
-      // Server's heartbeat API still uses the legacy field names so older
-      // server versions stay compatible. The mapping is just a rename.
+      // Legacy wire-shape field names; kept for older server compat.
       response = await fetch(`${config.server_url}/api/heartbeat`, {
         method: "POST",
         headers: {

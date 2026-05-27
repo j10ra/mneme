@@ -146,10 +146,9 @@ async function napArchiveOrphans(): Promise<number> {
  *  (napArchiveOrphanedMembers) by transitive archive, so we do not
  *  detach members here.
  *
- *  Note: the OR-clause + ORDER BY created_at ASC + LIMIT could in
- *  principle starve one branch if the other floods. At current rates
- *  (≤10 supersedes/digest cycle, decay-eligible bloom ≤30/quarter)
- *  the 200 cap drains both. Revisit if either rate climbs. */
+ *  Note: the OR-clause + ORDER BY created_at ASC + LIMIT could starve
+ *  one branch under flood. Current rates drain both; revisit if either
+ *  rate climbs. */
 export async function napArchiveDeadClusters(): Promise<number> {
   const archived = await sql`
     WITH targets AS (

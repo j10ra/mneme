@@ -699,7 +699,6 @@ export function mountOpsRoutes(app: Hono): void {
       });
     }
 
-    // Step 2: fetch the node payload for the selected ids.
     const nodes = (await sql<Array<GraphNode>>`
         SELECT
           m.id::text                  AS id,
@@ -758,7 +757,6 @@ export function mountOpsRoutes(app: Hono): void {
       }
     }
 
-    // Step 4: total in-window count (unfiltered by top-N) for stats.
     const totalRows = (await sql<Array<{ total: number }>>`
         SELECT count(*)::int AS total
         FROM memories m

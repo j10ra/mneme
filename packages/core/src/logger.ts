@@ -38,9 +38,8 @@ function emit(level: Level, message: string, error?: unknown, meta?: Meta): void
     store.pushLog({ traceId, spanId, level, message: fullMessage, ts });
   }
 
-  // INFO/DEBUG → stdout, WARN/ERROR → stderr. Lets Railway/Docker/k8s log
-  // viewers colorize by severity correctly. (Earlier this was all-stderr,
-  // which made every INFO line render red on Railway.)
+  // INFO/DEBUG → stdout, WARN/ERROR → stderr so Railway/Docker log
+  // viewers colorize by severity.
   const stream = level === "warn" || level === "error" ? process.stderr : process.stdout;
   if (jsonMode) {
     // Meta keys are spread top-level so Railway parses them as searchable

@@ -40,7 +40,6 @@ export function computeCronOffsetMinutes(machineId: string): number {
   for (let i = 0; i < machineId.length; i++) {
     h = (h * 31 + machineId.charCodeAt(i)) | 0;
   }
-  // unsigned 32-bit then modulo for positive offset
   const u = h >>> 0;
   return u % WINDOW_MINUTES;
 }

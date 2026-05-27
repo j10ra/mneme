@@ -3,11 +3,10 @@
 //   POST /api/capture  → write raw text; extract worker chunks + embeds
 //   POST /api/memory   → direct-write a self-contained memory; embed only
 //
-// Both share an edge-scrub policy: every string column that lands in storage
-// runs through the same secret + <private> patterns, not just `content`.
-// Originally only `content` was scrubbed, which let credentials embedded in
-// `repo` (e.g. a git remote URL with `user:token@host`) flow through
-// unredacted.
+// Both share an edge-scrub policy: every string column that lands in
+// storage runs through the same secret + <private> patterns, not just
+// `content` — so credentials embedded in `repo` (e.g. `user:token@host`
+// in a git remote URL) don't leak.
 
 import { Hono, type MiddlewareHandler } from "hono";
 import {
@@ -41,9 +40,7 @@ import { EMBEDDER_DIM } from "../infra/config.ts";
 import { actuateRawMeta } from "../lib/actuate.ts";
 import { KINDS, type Kind } from "../llm/index.ts";
 
-// Cap a single forwarded batch so a runaway daemon can't OOM the
-// server's tx. Realistic daemon batches sit at ~10 traces / 50 spans
-// per flush; this is a 100x ceiling.
+// Cap protects server tx from a runaway daemon's OOM.
 const MAX_BATCH_TRACES = 1000;
 const MAX_BATCH_SPANS = 10_000;
 const MAX_BATCH_LOGS = 10_000;

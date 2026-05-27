@@ -11,11 +11,6 @@
 //     a long-running job (Sonnet distill mid-cycle) isn't re-fired
 //     by the next tick
 //
-// Pattern in index.ts:
-//   register({ name: "dream", scheduleMs: 8 * 3600_000, run: () => runDreamCycle(...) });
-//   register({ name: "embedder-reap", scheduleMs: 60_000, run: disposeIfIdle });
-//   await startScheduler();
-//
 // Queue-driven workers (the outbox extract loop) keep their tight
 // polling and are NOT registered here. The scheduler is for cron-shape
 // work only.
@@ -79,8 +74,6 @@ async function saveState(s: State): Promise<void> {
   await rename(tmp, STATE_PATH);
 }
 
-// Add new jobs from the registry, update schedule_ms on existing ones,
-// drop entries for jobs that no longer exist in the registry.
 function syncRegistry(s: State): State {
   const out: State = {};
   const now = new Date().toISOString();
@@ -151,7 +144,6 @@ async function tick(): Promise<void> {
   if (due.length === 0) return;
   await saveState(state);
 
-  // Second pass: actually run each due job, recording outcome.
   for (const name of due) {
     const job = registry.get(name);
     if (!job) continue;
