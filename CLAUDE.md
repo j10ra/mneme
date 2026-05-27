@@ -51,6 +51,7 @@ Prefer `mneme_sql` over `psql` for any read — same scrubbing + reader role + R
 | Rule | Pointer |
 |---|---|
 | Bump plugin version on every push (`/plugin update` keys off it) | [`packages/plugin/.claude-plugin/plugin.json`](./packages/plugin/.claude-plugin/plugin.json) + [`packages/plugin/package.json`](./packages/plugin/package.json) |
+| `mneme_reader` role privileges are minimal by design; the `FORBIDDEN_RE` regex in `services/mcp.ts` is a tarpit, not the gate. Revisit the MCP boundary before granting any new privilege to that role | [`packages/server/src/services/mcp.ts`](./packages/server/src/services/mcp.ts) + [`docs/recall.md`](./docs/recall.md) |
 | Don't hand-edit the plugin's scrubber artefact | source: [`packages/shared/src/scrub.ts`](./packages/shared/src/scrub.ts); regenerate via `bun run build:plugin-scrub` |
 | Postgres `statement_timeout = 2 min` — long passes need pagination | [`docs/workers/nap.md`](./docs/workers/nap.md) |
 | `meta.in_cluster` is sticky — only digest may re-point it | [`docs/workers/digest.md`](./docs/workers/digest.md) |

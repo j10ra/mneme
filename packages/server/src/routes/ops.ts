@@ -86,6 +86,7 @@ type DreamRow = {
   last_window_at: Date | string | null;
   last_cluster_count: number | null;
   in_flight: number;
+  ghost: number;
   stuck: number;
 };
 
@@ -127,21 +128,40 @@ export function mountOpsRoutes(app: Hono): void {
         ORDER BY h.posted_at DESC
       `) as unknown as DaemonRow[];
 
+      // in_flight only counts claims whose owning daemon is still
+      // heartbeating. A claim from a daemon that died (SIGKILL during
+      // refresh, crash, machine offline) is a "ghost" — the cycle isn't
+      // actually running but the row sits there with completed_at = null
+      // until the next acquireDreamLock reaps it. Splitting these means
+      // the dashboard can render "RUNNING" only when something really is.
       const [dreamRow] = (await sql`
         SELECT
-          MAX(claimed_at) AS last_window_at,
+          MAX(dr.claimed_at) AS last_window_at,
           (
             SELECT cluster_count
             FROM _ops.dream_runs
             WHERE completed_at IS NOT NULL
             ORDER BY claimed_at DESC LIMIT 1
           ) AS last_cluster_count,
-          COUNT(*) FILTER (WHERE completed_at IS NULL)::int AS in_flight,
           COUNT(*) FILTER (
-            WHERE completed_at IS NULL
-              AND claimed_at < now() - interval '30 minutes'
+            WHERE dr.completed_at IS NULL
+              AND h.posted_at IS NOT NULL
+              AND h.posted_at > now() - (${HEARTBEAT_STALE_MS}::bigint || ' milliseconds')::interval
+          )::int AS in_flight,
+          COUNT(*) FILTER (
+            WHERE dr.completed_at IS NULL
+              AND (h.posted_at IS NULL
+                   OR h.posted_at <= now() - (${HEARTBEAT_STALE_MS}::bigint || ' milliseconds')::interval)
+          )::int AS ghost,
+          COUNT(*) FILTER (
+            WHERE dr.completed_at IS NULL
+              AND dr.claimed_at < now() - interval '30 minutes'
+              AND h.posted_at IS NOT NULL
+              AND h.posted_at > now() - (${HEARTBEAT_STALE_MS}::bigint || ' milliseconds')::interval
           )::int AS stuck
-        FROM _ops.dream_runs
+        FROM _ops.dream_runs dr
+        LEFT JOIN _ops.daemon_heartbeats h
+          ON h.machine_id::text = dr.claimed_by_machine_id::text
       `) as unknown as DreamRow[];
 
       return c.json({
@@ -180,6 +200,7 @@ export function mountOpsRoutes(app: Hono): void {
           last_window_at: dreamRow?.last_window_at ?? null,
           last_cluster_count: dreamRow?.last_cluster_count ?? null,
           in_flight: dreamRow?.in_flight ?? 0,
+          ghost: dreamRow?.ghost ?? 0,
           stuck: dreamRow?.stuck ?? 0,
           stuck_after_ms: DREAM_STUCK_AFTER_MS,
         },

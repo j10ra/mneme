@@ -66,6 +66,14 @@ const TOOL_DEF = {
   },
 };
 
+// Defense-in-depth tarpit, NOT the primary control. The real boundary
+// is the `mneme_reader` Postgres role this query runs under: SELECT only
+// on `public.*`, no privileges on `_ops.*`, RLS `USING (private = false)`
+// on memories + captures. The regex below catches typos and obvious
+// abuse but Postgres has many ways past a keyword deny-list (dollar
+// quoting, function aliases, etc.). If the reader role is ever granted
+// new privileges, revisit `services/mcp.ts` and assume this regex blocks
+// nothing.
 const FORBIDDEN_RE =
   /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|VACUUM|REINDEX|REFRESH|COPY|CALL|DO|EXECUTE|LOCK|MERGE)\b/i;
 

@@ -39,6 +39,8 @@ sequenceDiagram
 
 The connection runs as `mneme_reader` (Postgres role) — `SELECT`-only on `public.*`, blocked from `_ops.*`. RLS policy `USING (private = false)` means private rows are physically unreachable through this tool. The canonical implementation lives in [`/packages/server/src/services/mcp.ts`](../packages/server/src/services/mcp.ts).
 
+**The role + RLS are the real boundary.** The `FORBIDDEN_RE` regex in `services/mcp.ts` that rejects `INSERT`/`UPDATE`/etc. is defense-in-depth — a tarpit that catches typos and obvious abuse — not the primary control. Postgres has many ways past a keyword deny-list. If `mneme_reader` is ever granted additional privileges, revisit the MCP gate and don't rely on the regex.
+
 ---
 
 ## Default hybrid recall

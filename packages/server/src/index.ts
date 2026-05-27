@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { secureHeaders } from "hono/secure-headers";
 import {
   Logger,
   TraceStore,
@@ -31,6 +32,20 @@ configureAuth(sql);
 configureTraceStore(new TraceStore({ sql, scrubber: scrubData }));
 
 const app = new Hono();
+
+// Defense-in-depth security headers (AppSec M-2). The API doesn't
+// serve HTML, so CSP locks down to none — anything that tries to render
+// a response in a browser context gets nothing. HSTS asserts the
+// transport invariant for clients that respect it.
+app.use(
+  "*",
+  secureHeaders({
+    strictTransportSecurity: "max-age=31536000; includeSubDomains; preload",
+    xContentTypeOptions: "nosniff",
+    referrerPolicy: "no-referrer",
+    contentSecurityPolicy: { defaultSrc: ["'none'"] },
+  }),
+);
 
 // /health — public, no auth, no scope check.
 app.get("/health", mnemeRoute("health"), (c) => c.json({ status: "ok", phase: 0 }));
