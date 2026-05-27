@@ -78,7 +78,7 @@ _Since last session (2h ago): 24 captures, 11 memories · 3 superseded all-time_
 - [c1d2e3f4] 💬 The user prefers terse responses, no preamble
 
 ## Themes (3 of 16)
-- [5b1ed144] 🧩 **Trace forwarding (Phase A) shipped in 1.0.59** — Daemon batches spans every 5s/100 items to /api/ingest/spans; covers stage ticks, Claude SDK calls, scheduler jobs.
+- [5b1ed144] 🧩 **Trace forwarding** — Daemon batches spans every 5s/100 items to /api/ingest/spans; covers stage ticks, Claude SDK calls, scheduler jobs.
 
 ## Recent (last 14 days)
 - [c4f2a1b9] 5d ago · ⚖️ Two-phase migration: Phase 1 additive with rollback tag, Phase 2 cleanup gated on validation
@@ -105,7 +105,7 @@ The hook wraps the markdown in:
 {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<the markdown>"}}
 ```
 
-Claude Code only injects context when this envelope is present — raw markdown stdout is silently dropped (the v1.0.9 lesson). Multiple plugins' envelopes are merged into a `hook_additional_context` attachment with a `content[]` array; the **agent receives every plugin's `additionalContext`** in the conversation transcript.
+Claude Code only injects context when this envelope is present — raw markdown stdout is silently dropped. Multiple plugins' envelopes are merged into a `hook_additional_context` attachment with a `content[]` array; the **agent receives every plugin's `additionalContext`** in the conversation transcript.
 
 ---
 

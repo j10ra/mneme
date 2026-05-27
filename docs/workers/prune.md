@@ -46,26 +46,15 @@ mid-cycle doesn't skip the schedule.
 
 ---
 
-## Why app-level, not pg_cron
+## Why app-level
 
-Historical: a `pg_cron` job in `migrations/0004_pgcron.sql` and
-`migrations/0008_logs_prune.sql` step 4 handled this on Supabase.
-After #36 (the Railway migration), `pg_cron` is no longer canonical:
-
-- **Portability** — `pg_cron` ships on Supabase but isn't available on
-  Railway / Neon / most managed Postgres providers. The migrations now
-  wrap pg_cron calls in `DO $$ ... EXCEPTION $$` blocks that no-op if
-  the extension is missing.
-- **Observability** — the app-level worker emits logs and spans on the
-  same telemetry stream as everything else, so a missed prune shows up
-  in the same `_ops.spans` query path you'd use to debug nap or push.
-- **Versioning** — retention windows live in code (`infra/config.ts`)
-  next to the rest of the constants, not in a Postgres extension's
-  internal state.
-
-The pg_cron job rows in `cron.job` (if present) still exist on Supabase
-for legacy reasons but no longer drive retention; the app-level worker
-is the single source of truth regardless of which provider runs the DB.
+- **Portability** — `pg_cron` isn't available on Railway / Neon / most
+  managed Postgres providers. The app-level worker runs anywhere Bun does.
+- **Observability** — the worker emits logs and spans on the same
+  telemetry stream as everything else, so a missed prune shows up in
+  the same `_ops.spans` query path you'd use to debug nap or push.
+- **Versioning** — retention windows live in `infra/config.ts` next to
+  the rest of the constants.
 
 ---
 
@@ -73,7 +62,7 @@ is the single source of truth regardless of which provider runs the DB.
 
 | Env / constant | Default | Meaning |
 |---|---|---|
-| `TELEMETRY_RETENTION_DAYS` | `3` | Days of `_ops.*` history to retain. Tightened from `14` to `7` to `3` over time as telemetry volume grew. |
+| `TELEMETRY_RETENTION_DAYS` | `3` | Days of `_ops.*` history to retain. |
 
 To change retention, edit `packages/server/src/infra/config.ts` and
 redeploy. The next prune tick uses the new value; older rows beyond the
@@ -91,10 +80,7 @@ two-machine setup:
 - `_ops.logs` ≈ <1 MB
 
 Spikes (heavy migration windows, debug runs) inflate `_ops.spans`
-temporarily; the next 24h cycle brings it back. Manual one-off
-truncation is sometimes faster than waiting for the cycle — see the
-Railway cutover notes in [#36](https://github.com/j10ra/mneme/issues/36)
-for the pattern.
+temporarily; the next 24h cycle brings it back.
 
 ---
 

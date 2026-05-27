@@ -1,6 +1,6 @@
 # Data model
 
-Three tables in plain Postgres. Add a fourth only when an actual reader needs it. memsearch / mempalace shape: small surface, lots of derived behaviour in functions and crons.
+Three tables in plain Postgres. Add a fourth only when an actual reader needs it. Small surface, lots of derived behaviour in functions and crons.
 
 > Reads for context: [`concepts.md`](./concepts.md). Tuning knobs: [`/packages/server/src/infra/config.ts`](../packages/server/src/infra/config.ts).
 
@@ -112,7 +112,7 @@ CREATE TABLE memories (
   chunk_id         TEXT NOT NULL UNIQUE,        -- sha(content_hash + ":" + embedding_model)
   content          TEXT NOT NULL,
   content_hash     TEXT NOT NULL,
-  embedding        VECTOR(1024),
+  embedding        VECTOR(384),
   embedding_model  TEXT NOT NULL,
   tsv              TSVECTOR,
   kind             TEXT,
@@ -145,9 +145,9 @@ Captures are immutable. Dedup is additive: nothing is ever deleted; rows get fla
 Three layers, in order of strictness:
 
 1. **Ingest dedup (hard).** `UNIQUE (content_sha256, machine_id)` on captures. Posting the same content twice from one machine produces one row. Same content from two machines produces two (correctly — they happened in two contexts). `memories.chunk_id UNIQUE` (where `chunk_id = sha256(content_hash + ":" + embedder_model)`) rejects exact re-chunks under the same embedding model — by construction memories cannot have identical content under the same embedder.
-2. **Nap maintenance (additive, soft).** Every 4h: importance + recall_weight decay, semantic relations, rule-based supersede, auto-archive of fully decayed orphans. See [`workers/nap.md`](./workers/nap.md). The legacy shadow phase is gone (the chunk_id UNIQUE constraint made it dead code).
+2. **Nap maintenance (additive, soft).** Every 4h: importance + recall_weight decay, semantic relations, rule-based supersede, auto-archive of fully decayed orphans. See [`workers/nap.md`](./workers/nap.md).
 3. **Dream dedup (additive, semantic).** Every 8h: clustering produces `kind='cluster'` summaries. Member memories aren't deleted; their importance fades relative to the summary. See [`workers/dream.md`](./workers/dream.md).
-4. **Digest consolidation (cross-cluster).** Every 24h, opt-in. Merges near-duplicate cluster summaries (cosine < 0.15) into one canonical cluster + cross-cluster member supersede. See [`workers/digest.md`](./workers/digest.md).
+4. **Digest consolidation (cross-cluster).** Every 24h, opt-in. Merges near-duplicate cluster summaries (cosine < 0.2) into one canonical cluster + cross-cluster member supersede. See [`workers/digest.md`](./workers/digest.md).
 
 Net effect at recall time: the default hybrid query in the skill filters by `WHERE archived_at IS NULL` and applies a `× 0.3` rank penalty for `meta.superseded_by IS NOT NULL`. Archived entries are invisible by default; superseded entries are visible but rank-penalised; both are recoverable by an explicit query (drop the filter for archived, drop the penalty for superseded).
 
@@ -156,4 +156,4 @@ Net effect at recall time: the default hybrid query in the skill filters by `WHE
 - Importance + shadow flags + superseded flags give the same retrieval behaviour with full reversibility.
 - At personal scale, the cost (extra rows in Postgres) is trivial.
 
-This is the bitemporal pattern from mempalace: `valid_to` close-out beats `DELETE FROM`, every time.
+Bitemporal pattern: close-out via flags beats `DELETE FROM`.

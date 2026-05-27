@@ -44,20 +44,15 @@ flowchart TD
 
 ## Watermark-paginated candidate selection
 
-Dream is round-robin over the whole corpus, not "newest N rows". The server picks `DREAM_MAX_CANDIDATES_PER_CYCLE = 1000` seeds ordered by `meta.last_dreamed_at NULLS FIRST, created_at ASC` (indexed via migration 0027), stamps the watermark when the stream finishes, and the next cycle picks up where this one left off. Full corpus sweep in `ceil(corpus / 1000)` cycles — currently ~14 cycles ≈ 5 days at 3 cycles/day.
-
-Before 1.1.41 dream used `ORDER BY created_at DESC LIMIT 500` without advancing a cursor; every cycle re-pulled the same newest 500 rows. ~73% of un-clustered memories older than 7 days were permanently unreachable, capping clustering coverage at ~1.6%. The watermark + larger cap fixed both.
+Dream is round-robin over the whole corpus, not "newest N rows". The server picks `DREAM_MAX_CANDIDATES_PER_CYCLE = 3000` seeds ordered by `meta.last_dreamed_at NULLS FIRST, created_at ASC` (indexed via migration 0027). The watermark advances per-batch as the stream progresses; the next cycle picks up where this one left off. Full corpus sweep in `ceil(corpus / 3000)` cycles.
 
 ---
 
 ## NDJSON streaming candidates endpoint
 
-The candidate fetch used to be a single buffered JSON response. With `DREAM_MAX_NEIGHBORS_PER_MEMORY = 80` × 1000 seeds, the HNSW LATERAL exceeds Railway's gateway timeout (~30-60s idle). 1.1.41 split it:
+`/api/dream/candidates` (with `Accept: application/x-ndjson`) picks seed ids upfront (fast, partial-index hit), then loops `DREAM_STREAM_SEED_BATCH = 50` seeds at a time through the LATERAL with `DREAM_MAX_NEIGHBORS_PER_MEMORY = 80`. Each batch's edges flush as NDJSON `edge` frames the moment they're ready; `stampDreamedSeeds(batch)` stamps `meta.last_dreamed_at` on that batch's seed ids before the next batch starts. A `done` frame closes the stream. Neighbor content streams after edges in `neighbor` frames, batched at `DREAM_STREAM_NEIGHBOR_BATCH = 200`.
 
-- **Server** (`/api/dream/candidates` with `Accept: application/x-ndjson`) picks seed ids upfront (fast, partial-index hit), then loops `DREAM_STREAM_SEED_BATCH = 50` seeds at a time through the LATERAL. Each batch's edges flush as NDJSON `edge` frames the moment they're ready, then a `done` frame closes the stream. Bytes flow every few seconds → gateway never idles. Neighbor content streams after edges in `neighbor` frames, batched at `DREAM_STREAM_NEIGHBOR_BATCH = 200`.
-- **Daemon** (`parseNdjsonCandidates`) accumulates the frames into the same `{ repos: { seeds, edges } }` shape it used to consume. Falls back to buffered JSON if the server doesn't return NDJSON (single-release backward compat).
-
-`stampDreamedSeeds` runs after the daemon successfully consumes the stream. If the daemon disconnects mid-flight, no watermark advance — the next cycle re-attempts the same slice.
+The daemon (`parseNdjsonCandidates`) accumulates the frames into a `{ repos: { seeds, edges } }` shape. Per-batch stamping means a mid-stream abort still preserves the progress of every batch that completed before the abort — the next cycle re-attempts only the unfinished slice.
 
 ---
 
@@ -95,7 +90,7 @@ The persisted `kind='cluster'` row gets:
 
 **Cluster size bounds:** `DREAM_MIN_CLUSTER_SIZE = 3`, `DREAM_MAX_CLUSTER_SIZE = 20`. Components outside this range are skipped this cycle.
 
-**Cosine threshold:** `DREAM_CLUSTER_DISTANCE = 0.10` (tighter than nap's 0.15 — cluster members must be genuinely about the same thing, not just topically adjacent). Asymmetric with digest's looser merge threshold of 0.15 (see [`digest.md`](./digest.md)).
+**Cosine threshold:** `DREAM_CLUSTER_DISTANCE = 0.10` (tighter than nap's 0.15 — cluster members must be genuinely about the same thing, not just topically adjacent). Asymmetric with digest's looser merge threshold of 0.20 (see [`digest.md`](./digest.md)).
 
 ---
 
@@ -128,7 +123,7 @@ Each cluster moves through three outbox stages on the daemon side (`~/.mneme/out
 
 ## Cost per cycle
 
-~5-15 clusters × ~3k input tokens × ~200 output tokens, paid in `claude` quota the user already has. With watermark pagination producing more diverse slices the cluster yield per cycle climbed from ~0.5 (pre-1.1.42, neighbors=20) to ~3.5 (post-1.1.43, neighbors=80) — 7× improvement.
+~5-15 clusters × ~3k input tokens × ~200 output tokens, paid in `claude` quota the user already has.
 
 ---
 

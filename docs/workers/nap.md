@@ -12,7 +12,7 @@ The **maintenance pass**. No LLM, no embedder, no per-row HTTP calls — all SQL
 
 Four phases, each its own SQL call (not one transaction — a slow phase fails in isolation instead of rolling back the rest):
 
-1. **Importance decay.** Every non-archived unpinned memory's `importance` shrinks by age — exponential decay with τ = 30 days. Per-cycle factor is `NAP_DECAY_PER_CYCLE = exp(-1/180) ≈ 0.9945` (6 naps/day × 30 days = 180). Pinned memories decay too, just with a higher floor. Keyset-paginated so a full-table pass never trips the Postgres `statement_timeout = 2 min`.
+1. **Importance decay (with asymmetric floors).** Every non-archived memory's `importance` shrinks by age — exponential decay with τ = 30 days. Per-cycle factor is `NAP_DECAY_PER_CYCLE = exp(-1/180) ≈ 0.9945` (6 naps/day × 30 days = 180). A `GREATEST(...)` clamp inside the UPDATE enforces asymmetric floors: `NAP_PIN_FLOOR = 0.5` for `meta.pinned = true`, `NAP_FLOOR = 0.05` for everything else. Pinned content stays in recall's high zone; a fresh pin (1.0) still outranks a stale one (0.5). Keyset-paginated so a full-table pass never trips the Postgres `statement_timeout = 2 min`.
 
 2. **Recall-weight decay (LTP).** Multiplies `recall_weight` by `RECALL_LTD_DECAY = 0.933` per cycle so use-driven reinforcement fades when unused. With 6 cycles/day this preserves a ~42 hour half-life from a single recall hit. Same keyset pagination as importance decay.
 
@@ -20,13 +20,11 @@ Four phases, each its own SQL call (not one transaction — a slow phase fails i
    - `importance ≤ NAP_ARCHIVE_IMPORTANCE_MAX` (0.1) — fully decayed
    - `recall_weight = 0` — never accessed since extraction (or fully LTD-decayed)
    - `created_at` older than `NAP_ARCHIVE_MIN_AGE_DAYS` (30 days) — fair shot at being useful
-   - NOT pinned, NOT in_cluster, NOT superseded, NOT `kind='cluster'`
+   - NOT pinned, NOT in_cluster, NOT superseded
 
-   Capped at `NAP_ARCHIVE_PER_CYCLE_CAP = 200` so a one-time eligibility bloom doesn't dump thousands at once. Archived rows stay in the table and are still queryable via `mneme_sql` — they just stop appearing on the SessionStart surface. `/mneme:unarchive <uuid>` restores.
+   `kind='cluster'` rows get a longer grace window via `NAP_CLUSTER_ARCHIVE_MIN_AGE_DAYS = 60`. Capped at `NAP_ARCHIVE_PER_CYCLE_CAP = 200` so a one-time eligibility bloom doesn't dump thousands at once. Archived rows stay in the table and are still queryable via `mneme_sql` — they just stop appearing on the SessionStart surface. `/mneme:unarchive <uuid>` restores.
 
-4. **Asymmetric importance floors.** `NAP_PIN_FLOOR = 0.5` for `meta.pinned = true`, `NAP_FLOOR = 0.05` for everything else. This is what gives "pin" its meaning: pinned content stays in recall's high zone forever, while a fresh pin (1.0) still outranks a stale one (0.5) so newer pins surface first without disappearing the older ones. Applied as a `GREATEST(...)` clamp inside the decay UPDATE.
-
-5. **Seed phase (relate + rule-based supersede + last_napped_at stamp).** One transaction over a `NAP_PER_CYCLE_CAP = 500` slice of least-recently-napped rows:
+4. **Seed phase (relate + rule-based supersede + last_napped_at stamp).** One transaction over a `NAP_PER_CYCLE_CAP = 500` slice of least-recently-napped rows:
 
    a. **Semantic relations.** For each seed, find up to `NAP_RELATE_MAX_NEIGHBORS = 5` nearest same-repo neighbours at cosine `< NAP_RELATE_DISTANCE = 0.15` via a `LATERAL JOIN` over the HNSW index. Write each into the other's `meta.related_to` (mutual, idempotent — `DISTINCT` merge with the existing array).
 
@@ -55,7 +53,7 @@ flowchart LR
 
 ## Pagination via `meta.last_napped_at`
 
-Postgres on Railway has a `statement_timeout = 2 min` ceiling. With ~15k memories and growing, a one-shot pass would trip the timeout.
+Postgres on Railway has a `statement_timeout = 2 min` ceiling. At corpus scale, a one-shot pass would trip the timeout.
 
 Nap solves this with **round-robin pagination**: the seed phase picks `NAP_PER_CYCLE_CAP = 500` rows ordered by `meta.last_napped_at NULLS FIRST, created_at`, processes them, and stamps `meta.last_napped_at = now()` as part of the same transaction. Stamped rows naturally drop to the back of the queue. Over a few cycles, every row gets touched once; under steady-state arrival the queue stabilises at the cap. Indexed via the partial functional index from migration 0027.
 
@@ -72,7 +70,7 @@ Same reason any process loop lives in code:
 - Doesn't depend on a Postgres extension (keeps Mneme provider-portable across Railway / Neon / Supabase / self-host without needing `pg_cron` available).
 - The scheduler in `worker/scheduler.ts` persists `next_run_at` to `_ops.worker_runs` so a Railway redeploy mid-cycle doesn't skip the schedule.
 
-The same reasoning applies to [`prune.md`](./prune.md) (telemetry retention), which used to run as a `pg_cron` job on Supabase and has since moved fully to app-level for the same portability win.
+The same reasoning applies to [`prune.md`](./prune.md) (telemetry retention) — same portability win.
 
 ---
 

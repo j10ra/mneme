@@ -151,7 +151,7 @@ bun run dev                # local dev; for prod, deploy to any Bun-capable host
 <details>
 <summary><b>Provider configuration</b> — what to put in <code>.env</code></summary>
 
-Most LLM and embedder work happens **on the user's machine inside the daemon**, not on the server. The daemon uses the Claude Agent SDK (inheriting your existing `claude` OAuth) for extract + dream, and runs `BAAI/bge-small-en-v1.5` in an isolated subprocess for embeddings — neither needs a server-side env var. The server only needs LLM/embedder env vars if you opt into the **digest** worker (every-24h cross-cluster pass), in which case the picker uses OpenRouter or any OpenAI-compatible fallback.
+Most LLM and embedder work happens **on the user's machine inside the daemon**, not on the server. The daemon uses the Claude Agent SDK — credential resolution is per-platform (macOS Keychain, Windows Credential Manager, `~/.claude/.credentials.json` on Linux/WSL), with `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` env vars as overrides. The daemon also runs `BAAI/bge-small-en-v1.5` in an isolated subprocess for embeddings — neither needs a server-side env var. The server only needs LLM/embedder env vars if you opt into the **digest** worker (every-24h cross-cluster pass), in which case the picker uses OpenRouter or any OpenAI-compatible fallback.
 
 ```env
 # Database (required)
@@ -164,7 +164,7 @@ ADMIN_PASSWORD=...
 # Digest worker (optional; off by default)
 MNEME_DIGEST_ENABLED=1
 OPENROUTER_API_KEY=...
-OPENROUTER_DREAM_MODEL=anthropic/claude-sonnet-4
+OPENROUTER_DIGEST_MODEL=anthropic/claude-sonnet-4
 ```
 
 **Cost shape:** the daemon owns LLM extract + embed using the user's existing `claude` login, so per-machine compute is free. The server only runs nap (SQL) + the opt-in digest (Sonnet via OpenRouter), so a self-hosted Postgres + a $5 Bun host covers it. Enabling digest adds ~$1–5/mo in API spend depending on volume.
@@ -244,6 +244,6 @@ Hooks fire on their own. You shouldn't have to think about them.
 
 ## 🚦 Status
 
-Mneme is a personal tool. One user, several machines. **Phases 0–9 shipped:** capture, extract, embed, surface, nap (decay + auto-archive + relate + rule-based supersede), dream (cluster + distil + supersede, distributed-leader, NDJSON-streamed candidates), distributed daemon (extract + embed + dream moved to per-machine), dashboard + ops surface, digest (opt-in cross-cluster merge + supersede). Multi-harness rollout (Codex / Cursor / OpenCode) tracked at [#6](https://github.com/j10ra/mneme/issues/6).
+Mneme is a personal tool. One user, several machines. Pipeline live end-to-end: capture, extract, embed, surface, nap (decay + auto-archive + relate + rule-based supersede), dream (cluster + distil + supersede, distributed-leader, NDJSON-streamed candidates), distributed daemon (extract + embed + dream per-machine), dashboard + ops surface, digest (opt-in cross-cluster merge + supersede). Multi-harness rollout (Codex / Cursor / OpenCode) tracked at [#6](https://github.com/j10ra/mneme/issues/6).
 
 > Not multi-tenant. Not team memory. Not a search engine. One human, multiple machines, one continuous memory.

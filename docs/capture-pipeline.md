@@ -65,7 +65,7 @@ embedded/      memories now have content_hash, chunk_id, embedding, meta.extract
 failed/        permanent error during any stage; file moved with reason
 ```
 
-The four real on-disk directories are `captured/`, `observations/`, `embedded/`, and `failed/`. There's an automatic one-time migration from the pre-rename layout (`pending/ → captured/`, `extracted/ → observations/`).
+The four real on-disk directories are `captured/`, `observations/`, `embedded/`, and `failed/`.
 
 **Why files, not SQLite.** A personal daemon with a single writer doesn't need a transactional store. Atomic-rename is enough crash safety; `find`-style scanning is enough query power; the directory structure visualises pipeline depth without any tooling.
 
@@ -101,13 +101,13 @@ Per-turn `Stop` events deliberately do **not** flush — captures from many turn
 
 When the gate fires, the runtime takes up to `MAX_BATCH_SIZE = 20` matching captures into one LLM bundle. Larger backlogs (e.g. when `EXTRACT_BATCH_FULL=50` triggers) split across multiple bundles inside the same tick.
 
-The agent provider (`packages/daemon/src/agents/claude.ts`) calls the Claude Agent SDK with `pathToClaudeCodeExecutable` (resolved at startup by `findClaudeExecutable` in `claude-path.ts`) so it inherits the user's OAuth login. Streaming JSON; no API keys to manage. **Extract uses `EXTRACT_MODEL = "haiku"`; dream uses `DREAM_MODEL = "sonnet"`** (both passed through to the SDK as the model alias). The system prompt (`packages/daemon/src/agents/prompts.ts`) enforces atomic observations, importance ratings (0.1–1.0), and the kind taxonomy.
+The streaming agent provider (`packages/daemon/src/agents/claude-streaming.ts`) calls the Claude Agent SDK with `pathToClaudeCodeExecutable` (resolved at startup by `findClaudeExecutable` in `claude-path.ts`). The SDK resolves credentials per-platform (Keychain on macOS, Credential Manager on Windows, `~/.claude/.credentials.json` on Linux/WSL); `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` env vars override. **Extract uses `EXTRACT_MODEL = "haiku"`; dream uses `DREAM_MODEL = "sonnet"`** (both passed through to the SDK as the model alias). The system prompt (`packages/daemon/src/agents/prompts.ts`) enforces atomic observations, importance ratings (0.1–1.0), and the kind taxonomy.
 
 **Per-cluster failure isolation:** a single bundle's failure doesn't take down the rest of the tick.
 
 ### Stage 3 · Embed
 
-`embed.ts` spawns `embed-worker.ts` as a child process on first request (`Bun.spawn` with JSON-lines stdio). The worker lazily loads `BAAI/bge-small-en-v1.5` (384-dim, quantised int8 ONNX) from `@xenova/transformers` — auto-downloaded once per machine (~33 MB), cached under `~/.cache/transformers/`. `embedBatch(texts)` enqueues a request, the parent serialises one batch at a time over the pipe, and the worker writes JSON responses back. After 60 seconds idle, `disposeIfIdle` closes the worker's stdin; the worker exits cleanly on EOF and the OS reclaims the entire ONNX heap (this is the architectural payoff of #33: in-process disposal left ~500 MB of `MALLOC_LARGE` fragmentation in the daemon's address space — subprocess disposal collapses to zero). Daemon's steady-state RSS stays at ~80-100 MB regardless of embed bursts.
+`embed.ts` spawns `embed-worker.ts` as a child process on first request (`Bun.spawn` with JSON-lines stdio). The worker lazily loads `BAAI/bge-small-en-v1.5` (384-dim, quantised int8 ONNX) from `@xenova/transformers` — auto-downloaded once per machine (~33 MB), cached under `~/.cache/transformers/`. `embedBatch(texts)` enqueues a request, the parent serialises one batch at a time over the pipe, and the worker writes JSON responses back. After 60 seconds idle, `disposeIfIdle` closes the worker's stdin; the worker exits cleanly on EOF and the OS reclaims the entire ONNX heap. Daemon's steady-state RSS stays at ~80-100 MB regardless of embed bursts.
 
 Each memory gets stamped with:
 - `content_hash = sha256(content)`
@@ -145,10 +145,10 @@ The push worker runs **4-wide concurrent** `POST /api/bundle` calls against the 
 
 ---
 
-## Bundle vs. legacy `/api/capture`
+## Bundle vs. `/api/capture`
 
 - `POST /api/bundle` — the daemon's path. Bundle arrives with capture + memories already extracted and embedded; server writes both atomically.
-- `POST /api/capture` — retained for legacy clients and direct HTTP callers that have no daemon. The server scrubs and stores the capture row, but extract/embed only happen on machines that run the daemon.
+- `POST /api/capture` — direct HTTP path for callers without a daemon. The server scrubs and stores the capture row, but no extract/embed runs on those rows.
 
 ---
 

@@ -23,7 +23,7 @@ The vocabulary used everywhere else. Read this first if other docs use a term yo
 | **Embed macro** | `embed('text')` inside SQL passed to `mneme_sql`. The MCP tool replaces it with a vector literal from the configured embedder before execution. |
 | **Nap** | Server-side, every 4h, pure SQL. Importance + recall_weight decay, auto-archive orphans, relate, rule-based supersede. See [`workers/nap.md`](./workers/nap.md). |
 | **Dream** | Daemon-side, every 8h, LLM-driven clustering. Distributed-leader via durable lock row in `_ops.dream_runs` (INSERT ON CONFLICT). NDJSON-streamed candidates. See [`workers/dream.md`](./workers/dream.md). |
-| **Digest** | Server-side, every 24h, opt-in (`MNEME_DIGEST_ENABLED=1`). Cross-cluster merge (DIGEST_MERGE_DISTANCE = 0.15) + supersede. See [`workers/digest.md`](./workers/digest.md). |
+| **Digest** | Server-side, every 24h, opt-in (`MNEME_DIGEST_ENABLED=1`). Cross-cluster merge (DIGEST_MERGE_DISTANCE = 0.2) + supersede. See [`workers/digest.md`](./workers/digest.md). |
 | **Surface** | Per-session injection. `/api/session/start` returns five sections of memory pointers (Pinned, Rules, Themes, Recent, Sessions); the SessionStart hook prints them as Claude Code's `additionalContext`. Never writes to user files. See [`surface.md`](./surface.md). |
 | **Recall** | Read path via the MCP `mneme_sql` tool. Hybrid score (cosine + ts_rank + importance) with rank-down for superseded. See [`recall.md`](./recall.md). |
 | **Source** | Origin tag on a capture row. Today: `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`, `manual:/memory`, `manual:/api/memory`. |
@@ -34,5 +34,5 @@ The vocabulary used everywhere else. Read this first if other docs use a term yo
 
 ## Two invariants worth memorising
 
-1. **Captures are immutable.** Every later phase is additive: new memory rows, updated `meta jsonb`, flipped `archived_at`. **Never DELETE.** Bitemporal supersede via flags. (Pattern from mempalace.)
+1. **Captures are immutable.** Every later phase is additive: new memory rows, updated `meta jsonb`, flipped `archived_at`. **Never DELETE.** Bitemporal supersede via flags.
 2. **`meta.in_cluster` is sticky.** Once set, the daemon dream never re-clusters. Only [`workers/digest.md`](./workers/digest.md) can re-point it via cluster merges.

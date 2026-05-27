@@ -10,7 +10,7 @@ The **cross-cluster pass** the daemon dream can't do. Daemon dream operates per-
 
 ## What digest does
 
-**Op1 — Merge duplicate clusters.** Find pairs of `kind='cluster'` rows at cosine `< DIGEST_MERGE_DISTANCE = 0.15`. The threshold is intentionally looser than dream's `DREAM_CLUSTER_DISTANCE = 0.10`: raw observations at 0.15 cosine are often just topically adjacent, but cluster summaries are already-distilled prose at a higher abstraction level so 0.15 between two summaries is functionally "same topic" most of the time. **Asymmetric tuning** — raw clustering stays tight at 0.10; summary-level merge is the permissive layer that gathers adjacent topics back together.
+**Op1 — Merge duplicate clusters.** Find pairs of `kind='cluster'` rows at cosine `< DIGEST_MERGE_DISTANCE = 0.20`. The threshold is intentionally looser than dream's `DREAM_CLUSTER_DISTANCE = 0.10`: raw observations at 0.20 cosine are often just topically adjacent, but cluster summaries are already-distilled prose at a higher abstraction level so 0.20 between two summaries is functionally "same topic" most of the time. **Asymmetric tuning** — raw clustering stays tight at 0.10; summary-level merge is the permissive layer that gathers adjacent topics back together.
 
 For each pair within the cosine threshold, Sonnet (via OpenRouter) judges `same_topic` via `CLUSTER_MERGE_PROMPT`. If true:
 - Higher-importance cluster wins as canonical
