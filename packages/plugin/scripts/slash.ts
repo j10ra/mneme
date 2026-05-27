@@ -337,15 +337,12 @@ async function setup(url: string, adminPassword: string, name?: string): Promise
 
   const daemonPort = pickFreePortDeterministic(reg.machine_id);
 
-  // Write the daemon block up-front — the daemon's readConfig() throws
-  // if it's missing, and installDaemonService below loads the plist
-  // immediately (RunAtLoad=true) which races with this write. Older
-  // versions deferred the daemon block until install succeeded, but
-  // that left the daemon in a KeepAlive crash loop the first time it
-  // was loaded. The hook is daemon-only now (no server fallback), so
-  // a leftover daemon block from a failed install is harmless: the
-  // daemon writes captures into outbox/capture/pending/ on disk and
-  // the next successful daemon launch picks them up.
+  // Write the daemon block up-front because installDaemonService below
+  // loads the plist immediately (RunAtLoad=true) which races with the
+  // write. The hook is daemon-only (no server fallback), so a leftover
+  // daemon block from a failed install is harmless: the daemon writes
+  // captures into outbox/capture/captured/ on disk and the next
+  // successful daemon launch picks them up.
   // Encrypt the admin password with a key derived from this machine's
   // hardware fingerprint so the slash commands that need admin scope
   // (status / machines / revoke) don't have to re-prompt every call.
@@ -617,10 +614,9 @@ function fmtAge(ms: number | null): string {
 }
 
 /** Status: GET /api/_ops/status, render as compact markdown.
- *  Uses the per-machine bearer (cfg.auth.key). The endpoint moved from
- *  `admin` to `read` scope as part of the dashboard prep — operational
- *  health isn't a privileged read, so any registered machine can fetch
- *  it without holding the admin password. */
+ *  Uses the per-machine bearer (cfg.auth.key); `read` scope, so any
+ *  registered machine can fetch operational health without holding the
+ *  admin password. */
 async function status(): Promise<void> {
   const cfg = loadConfig();
   const resp = await fetch(serverUrl(cfg, "/api/_ops/status"), {
@@ -706,9 +702,9 @@ type MachineRow = {
   revoked_at: string | null;
 };
 
-/** List registered machines. Uses the per-machine bearer; the endpoint
- *  moved from `admin` to `read` scope so listing works on any machine
- *  with a config, no admin password required. */
+/** List registered machines. Uses the per-machine bearer; `read` scope,
+ *  so listing works on any machine with a config, no admin password
+ *  required. */
 async function machines(): Promise<void> {
   const cfg = loadConfig();
   const resp = await fetch(serverUrl(cfg, "/api/auth/machines"), {

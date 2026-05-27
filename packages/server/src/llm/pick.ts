@@ -1,11 +1,10 @@
 // LLM provider picker for the digest worker.
 //
-// As of 1.1.63 the server has exactly one LLM path: OpenRouter, used by
-// digest's two cross-cluster judgments (findSupersedes for Op2,
-// judgeClusterMerge for Op1). Extract and distill both moved to the
-// per-machine daemon. The picker survives only to (a) gate digest off
-// when OPENROUTER_API_KEY is unset and (b) trip the circuit breaker
-// after consecutive failures so a flapping OpenRouter doesn't burn the
+// The server has exactly one LLM path: OpenRouter, used by digest's two
+// cross-cluster judgments (findSupersedes for Op2, judgeClusterMerge
+// for Op1). The picker exists only to (a) gate digest off when
+// OPENROUTER_API_KEY is unset and (b) trip the circuit breaker after
+// consecutive failures so a flapping OpenRouter doesn't burn the
 // cycle's Sonnet budget.
 //
 // Breaker semantics (see lib/breaker.ts):

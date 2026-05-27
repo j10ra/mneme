@@ -1,6 +1,5 @@
-// Server-side LLM prompts. Extract + distill prompts moved out with
-// their workers in 1.1.63 (daemon owns those). What remains: digest's
-// two cross-cluster judgments, both invoked against OpenRouter from
+// Server-side LLM prompts. Only digest's two cross-cluster judgments
+// live here, both invoked against OpenRouter from
 // packages/server/src/llm/providers/openrouter.ts.
 
 // Cluster-merge judgment prompt — used by the digest worker (#30).

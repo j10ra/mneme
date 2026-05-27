@@ -1,7 +1,6 @@
 // Shared resolver for the local `claude` binary.
 //
-// Used by both the streaming and (deprecated) one-shot paths inside
-// agents/. Lookup order:
+// Used by the streaming agent path inside agents/. Lookup order:
 //   1. CLAUDE_EXECUTABLE_PATH env var (operator override; baked into
 //      the systemd unit / launchd plist by daemon-install.ts at
 //      `/mneme:setup` time). Treated as a fast-path cache: if the path

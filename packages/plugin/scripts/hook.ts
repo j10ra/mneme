@@ -568,10 +568,9 @@ async function main(): Promise<void> {
       // Self-heal launchd target after /plugin update. Detached spawn,
       // doesn't block surface fetch.
       refreshDaemonIfStale();
-      // Outbox draining used to live here for the legacy plugin/ fallback
-      // queue. Now the hook writes directly into outbox/capture/pending/
-      // when the daemon is briefly unreachable, and the daemon's worker
-      // tick + fs.watch drains it without any plugin-side help.
+      // Hook writes directly into outbox/capture/captured/ when the
+      // daemon's HTTP listener is briefly unreachable; the daemon's
+      // worker tick + fs.watch drains it without any plugin-side help.
       // Walk cwd for sub-repos (Pinnacle-style multi-repo workspaces, git
       // worktrees). Falls back to whatever canonicalRepo resolved at the top.
       const discovered = sessionCwd ? discoverRepos(sessionCwd) : [];

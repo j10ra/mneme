@@ -143,10 +143,10 @@ export function createRuntime(deps: DaemonDeps) {
   // Keys are captured/ file ids. Entries are deleted on success,
   // permanent failure, or when the budget is exhausted.
   //
-  // Without this, runCoalescedExtract used to silently `continue` on
-  // every transient extract throw — files trapped in captured/, no log,
-  // no failed/ row, heartbeat reporting OK. A wedged streaming-claude
-  // subprocess could stall the entire pipeline indefinitely.
+  // Bounds transient retries so a wedged streaming-claude subprocess
+  // can't trap files in captured/ silently — without this budget,
+  // runCoalescedExtract would `continue` on every throw with no log,
+  // no failed/ row, heartbeat reporting OK.
   const transientRetries = new Map<string, number>();
 
   // Initialised to now() so the idle gate doesn't trip on the first
@@ -310,8 +310,8 @@ export function createRuntime(deps: DaemonDeps) {
   // re-rendering) get caught by uuid; UserPromptSubmit / PostToolUse
   // captures (no uuid) are caught by content sha. Either match => dup.
   //
-  // Lives daemon-side now (was hook-side in 1.0.49-1.0.54). Hook becomes
-  // dumb: write file, exit. All dedup logic in one place.
+  // Dedup ledger lives daemon-side so the hook stays dumb: write file,
+  // exit. All dedup logic in one place.
   const SHAS_DIR = deps.shasDir ?? join(homedir(), ".mneme", "shas");
 
   function shasFile(sessionId: string): string {

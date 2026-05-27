@@ -42,9 +42,10 @@ export const TELEMETRY_RETENTION_DAYS = 3;
  *  cycle extract/embed knobs went with them. */
 export const SCHEDULER_TICK_MS = 60_000;
 
-// ── Picker (LLM provider primary/fallback breaker) ────────────────────
-// Still used by server-side dream via llm/pick.ts. Will go away if/when
-// the bigger-dream consolidation plan retires the server-side LLM path.
+// ── Picker (LLM provider breaker) ─────────────────────────────────────
+// Used by the digest worker (worker/digest.ts) to gate its OpenRouter
+// calls and trip the breaker after consecutive failures. Extract and
+// distill no longer live on the server.
 
 export const PICKER_FAILURE_THRESHOLD = 3;
 export const PICKER_COOLDOWN_MS = 5 * 60_000;
@@ -52,9 +53,8 @@ export const PICKER_COOLDOWN_MS = 5 * 60_000;
 // ── Nap (decay + relations) ───────────────────────────────────────────
 
 /** Per-cycle decay factor. e^(-1/180) ≈ 0.9945 — at 6 naps/day (4h
- *  cadence) this yields τ=30 days for unpinned memories. Recalibrated
- *  from e^(-1/120) when nap moved from 6h → 4h cadence so the τ stays
- *  at 30 days regardless of cycle frequency. */
+ *  cadence) this yields τ=30 days for unpinned memories. Keep the
+ *  numerator in sync with the cadence: τ_days × cycles_per_day = 180. */
 export const NAP_DECAY_PER_CYCLE = Math.exp(-1 / 180);
 
 /** Per-cycle seed cap for nap's relate-pass + supersede-rule pass.

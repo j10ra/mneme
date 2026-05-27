@@ -1,15 +1,12 @@
-// Server-side worker entry. Used to drive a tight extract+embed polling
-// loop too, but as of #22 the per-machine daemon owns extract+embed
-// (and dream coordination via Postgres advisory lock). Server now runs
-// the four scheduler-driven jobs:
+// Server-side worker entry. The per-machine daemon owns extract + embed
+// + dream coordination; the server runs the four scheduler-driven jobs:
 //   - nap       (every 4h): decay importance + recall_weight, archive
 //                irrelevant memories, link semantically related ones,
 //                run the rule-based supersede pass. Paginated via
 //                meta.last_napped_at round-robin (cap NAP_PER_CYCLE_CAP).
 //                NAP_DECAY_PER_CYCLE (e^(-1/180)) and RECALL_LTD_DECAY
-//                (0.933) are calibrated for 6 cycles/day, preserving
-//                importance τ=30 days and recall_weight half-life ~42h
-//                regardless of the cadence move from 6h → 4h.
+//                (0.933) are calibrated for 6 cycles/day so importance
+//                τ stays 30 days and recall_weight half-life stays ~42h.
 //                Archive phase targets memories with importance ≤ 0.1,
 //                recall_weight = 0, age ≥ 30 days, not pinned/clustered/
 //                superseded (cap NAP_ARCHIVE_PER_CYCLE_CAP). Archived

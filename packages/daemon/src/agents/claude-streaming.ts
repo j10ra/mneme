@@ -30,7 +30,6 @@ import { detectAuthMode } from "./claude.ts";
 import { findClaudeExecutable } from "./claude-path.ts";
 
 // Tools the extractor / distiller / supersede pass should never invoke.
-// Same list as the one-shot path.
 const DISALLOWED_TOOLS = [
   "Bash",
   "Read",

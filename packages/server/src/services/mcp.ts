@@ -41,10 +41,9 @@ const ERR_INVALID_PARAMS = -32602;
 const ERR_INTERNAL = -32603;
 
 // ---------------------------------------------------------------------------
-// Tool: mneme_sql (was mneme.sql before 1.0.58 — the dot tripped Claude
-// Code's tool-name dispatcher in some agent contexts. Server still
-// accepts both names in tools/call so old plugin caches keep working
-// during the rollout window.)
+// Tool: mneme_sql. The legacy alias `mneme.sql` is still accepted in
+// tools/call so older plugin caches keep working — the dot tripped
+// Claude Code's tool-name dispatcher in some agent contexts.
 // ---------------------------------------------------------------------------
 const TOOL_NAME = "mneme_sql";
 const LEGACY_TOOL_NAME = "mneme.sql";

@@ -26,9 +26,9 @@ const Schema = z.object({
   // ── OpenRouter (the only server-side LLM path) ────────────────────
   // Digest runs its two cross-cluster judgments (findSupersedes for Op2,
   // judgeClusterMerge for Op1) against OpenRouter. When OPENROUTER_API_KEY
-  // is unset or the breaker opens, digest skips. No other server-side LLM
-  // provider exists — extract and distill moved to the per-machine daemon
-  // entirely in 1.1.63.
+  // is unset or the breaker opens, digest skips. Digest is the only
+  // server-side LLM path; extract and distill live on the per-machine
+  // daemon.
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_DIGEST_MODEL: z.string().default("anthropic/claude-sonnet-4"),
   OPENROUTER_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
