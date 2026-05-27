@@ -19,12 +19,12 @@ sequenceDiagram
     participant DB as Postgres
 
     Hook->>Daemon: POST /capture { content, source, repo, harness, session_id, ... }<br/>fire-and-forget · sub-ms
-    Daemon->>Daemon: scrub · strip <private> · sha256 · dedup ledger
+    Daemon->>Daemon: scrub · strip <private> · sha256
     Daemon->>Outbox: write captured/<id>.json
     Daemon-->>Hook: 200 { id }
 
     Note over Daemon,Outbox: 2-second tick · queue-driven
-    Daemon->>Outbox: read captured/, coalesce siblings (±5 min)
+    Daemon->>Outbox: dedup ledger check · read captured/, coalesce siblings (±5 min)
     Daemon->>Agent: extract observations (streaming JSON)
     Agent-->>Daemon: { memories: [{kind, content, importance, topics}] }
     Daemon->>Outbox: write observations/<id>.json
@@ -77,18 +77,17 @@ The four real on-disk directories are `captured/`, `observations/`, `embedded/`,
 
 ### Stage 1 · Capture intake
 
-Hook posts `{ content, source, repo, harness, session_id, private, ... }` to the daemon's `POST /capture`. The daemon:
+Hook posts `{ content, source, repo, harness, session_id, private, ... }` to the daemon's `POST /capture`. The daemon's `handleCapture`:
 
 1. Runs `scrub` + `scrubData` on every string field (the same shared scrubber the server uses, generated into the plugin via `bun run build:plugin-scrub`). The canonical patterns live in [`/packages/shared/src/scrub.ts`](../packages/shared/src/scrub.ts).
 2. Computes `content_sha256`.
-3. Checks `~/.mneme/shas/<session_id>.txt` for an exact-match duplicate within this session; drops if seen.
-4. Writes `captured/<uuid>.json` and returns `{ id }`. Sub-millisecond.
+3. Writes `captured/<uuid>.json` and returns `{ id }`. Sub-millisecond.
 
 If the daemon is unreachable, the hook itself writes the same shape to `~/.mneme/outbox/capture/captured/`. The next daemon tick picks it up.
 
 ### Stage 2 · Coalesce + extract
 
-Captures sharing `(session_id, repo, private)` within ±5 minutes of the oldest pending file are bundled into one LLM call. The gate that triggers extraction has four triggers in priority order:
+The worker tick's `runDedup()` runs before extract; it drops files whose `content_sha256` matches anything already in `~/.mneme/shas/<session_id>.txt` (the per-session ledger). Surviving captures sharing `(session_id, repo, private)` within ±5 minutes of the oldest pending file are bundled into one LLM call. The gate that triggers extraction has four triggers in priority order:
 
 | Trigger | When | Why |
 |---|---|---|
@@ -119,8 +118,8 @@ Each memory gets stamped with:
 
 The push worker runs **4-wide concurrent** `POST /api/bundle` calls against the server. The server's `/api/bundle` handler does the entire write in **one transaction**:
 
-1. Insert capture (`ON CONFLICT (content_sha256, machine_id) DO NOTHING`).
-2. Insert memories (`ON CONFLICT (chunk_id) DO NOTHING`).
+1. Upsert capture (`ON CONFLICT (content_sha256, machine_id) DO UPDATE SET content = EXCLUDED.content`).
+2. Upsert memories (`ON CONFLICT (chunk_id) DO UPDATE SET meta = memories.meta || EXCLUDED.meta, importance = GREATEST(memories.importance, EXCLUDED.importance)`).
 3. Apply pin actuations from `raw_meta.kind = 'pin'` if present.
 
 | Outcome | What the daemon does |
@@ -136,7 +135,7 @@ The push worker runs **4-wide concurrent** `POST /api/bundle` calls against the 
 | Source | Trigger | Default `kind` | Notes |
 |---|---|---|---|
 | `claude_hook` | Claude Code `UserPromptSubmit` and `PostToolUse` | (extracted by daemon) | Coalesced by `session_id` within ±5-min window |
-| `claude_summary` | Claude Code `Stop` and `PreCompact` hooks | `summary` | Skips coalescing |
+| `claude_summary` | Claude Code `Stop`, `PreCompact`, `SessionEnd` hooks | `summary` | Skips coalescing |
 | `claude_assistant` | Assistant turns transcribed from Claude Code's session JSONL | (extracted) | Lets Mneme see what the agent said, not just what the user prompted |
 | `claude_memory` | Claude Code `PostToolUse(Write\|Edit)` on `~/.claude/projects/*/memory/*.md` | `claude_memory` (frontmatter `type:` lands in `meta.original_type`) | Mirrors Anthropic auto-memory |
 | `manual:/memory` | `/mneme:memory <text>` slash command | (extracted) | Goes through daemon extract like any other capture |

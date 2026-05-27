@@ -35,19 +35,21 @@ Including the `dir:*` fallback for the cwd itself matters: captures from a sessi
 
 The hook POSTs `{ machine_id, repos: string[], session_id }` to `/api/session/start`. The aggregator builds these five sections in parallel queries against `memories WHERE repo = ANY(repos)`. Every section also filters out `meta.superseded_by IS NOT NULL` — the surface is curated for the *current* version of every fact.
 
+Importance-ordered sections rank by `(importance + RECALL_RANKING_COEF * ln(1 + recall_weight))` rather than raw importance, so use-driven memories drift up alongside the importance signal.
+
 | Section | Filter | Cap |
 |---|---|---|
-| **Pinned** | `(meta->>'pinned')::boolean = true AND (repo = ANY(repos) OR repo IS NULL)`, ORDER BY importance DESC, created_at DESC | 5 |
-| **Rules** | `kind IN ('preference','constraint') AND importance >= 0.7 AND (repo = ANY(repos) OR repo IS NULL)`, ORDER BY importance DESC, created_at DESC | 3 |
-| **Themes** | `kind = 'cluster' AND repo = ANY(repos)`, ORDER BY importance DESC, created_at DESC. Renders `meta.cluster_title`. | 3 |
-| **Recent** | `repo = ANY(repos) AND kind IN ('decision','feature','bugfix','discovery') AND importance >= 0.6 AND created_at > now() - interval '14 days'`, ORDER BY importance DESC, created_at DESC | 6 |
+| **Pinned** | `(meta->>'pinned')::boolean = true AND (repo = ANY(repos) OR repo IS NULL)`, ORDER BY (importance + LTP-boost) DESC, created_at DESC | 5 |
+| **Rules** | `kind IN ('preference','constraint') AND importance >= 0.7 AND (repo = ANY(repos) OR repo IS NULL)`, ORDER BY (importance + LTP-boost) DESC, created_at DESC | 3 |
+| **Themes** | `kind = 'cluster' AND repo = ANY(repos)`, ORDER BY (importance + LTP-boost) DESC, created_at DESC. Renders `meta.cluster_title`. | 3 |
+| **Recent** | `repo = ANY(repos) AND kind IN ('decision','feature','bugfix','discovery') AND importance >= 0.6 AND created_at > now() - interval '14 days'`, ORDER BY (importance + LTP-boost) DESC, created_at DESC | 6 |
 | **Sessions** | `repo = ANY(repos) AND kind = 'summary'`, ORDER BY created_at DESC | 3 |
 
 Total budget: 5 + 3 + 3 + 6 + 3 = **20 items**.
 
 The aggregator also returns:
 - **`supersededCount`** — total superseded rows in the repo set, rendered in the surface footer so the agent can pivot to historical-context queries when needed.
-- **`delta`** — captures + memories created since the last session-start ping for this machine, rendered as "Since last session: X captures, Y memories".
+- **`delta`** — captures + memories created on `repo = ANY(repos)` since the most-recent `kind='summary'` memory on those repos, rendered as "Since last session: X captures, Y memories".
 
 ---
 

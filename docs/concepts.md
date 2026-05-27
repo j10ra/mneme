@@ -27,7 +27,6 @@ The vocabulary used everywhere else. Read this first if other docs use a term yo
 | **Surface** | Per-session injection. `/api/session/start` returns five sections of memory pointers (Pinned, Rules, Themes, Recent, Sessions); the SessionStart hook prints them as Claude Code's `additionalContext`. Never writes to user files. See [`surface.md`](./surface.md). |
 | **Recall** | Read path via the MCP `mneme_sql` tool. Hybrid score (cosine + ts_rank + importance) with rank-down for superseded. See [`recall.md`](./recall.md). |
 | **Source** | Origin tag on a capture row. Today: `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`, `manual:/memory`, `manual:/api/memory`. |
-| **Urgent capture** | Kinds `security_alert`, `decision`, or explicit `urgent: true` flush the daemon's coalescing gate immediately rather than waiting for the idle / batch-full / force timers. |
 | **Skill** | The bundled MCP-companion (`packages/plugin/skills/using-mneme/SKILL.md`) that teaches the agent how to write `mneme_sql` queries. Loaded on demand via Anthropic's progressive-disclosure pattern. |
 
 ---

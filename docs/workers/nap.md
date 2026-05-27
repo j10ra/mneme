@@ -10,21 +10,25 @@ The **maintenance pass**. No LLM, no embedder, no per-row HTTP calls — all SQL
 
 ## What nap does, top to bottom
 
-Four phases, each its own SQL call (not one transaction — a slow phase fails in isolation instead of rolling back the rest):
+Six phases, each its own SQL call (not one transaction — a slow phase fails in isolation instead of rolling back the rest):
 
 1. **Importance decay (with asymmetric floors).** Every non-archived memory's `importance` shrinks by age — exponential decay with τ = 30 days. Per-cycle factor is `NAP_DECAY_PER_CYCLE = exp(-1/180) ≈ 0.9945` (6 naps/day × 30 days = 180). A `GREATEST(...)` clamp inside the UPDATE enforces asymmetric floors: `NAP_PIN_FLOOR = 0.5` for `meta.pinned = true`, `NAP_FLOOR = 0.05` for everything else. Pinned content stays in recall's high zone; a fresh pin (1.0) still outranks a stale one (0.5). Keyset-paginated so a full-table pass never trips the Postgres `statement_timeout = 2 min`.
 
 2. **Recall-weight decay (LTP).** Multiplies `recall_weight` by `RECALL_LTD_DECAY = 0.933` per cycle so use-driven reinforcement fades when unused. With 6 cycles/day this preserves a ~42 hour half-life from a single recall hit. Same keyset pagination as importance decay.
 
-3. **Auto-archive orphans.** `napArchiveOrphans` sets `archived_at = now()` on memories matching ALL of:
+3. **Auto-archive orphan atoms (`napArchiveOrphans`).** Sets `archived_at = now()` on `kind <> 'cluster'` memories matching ALL of:
    - `importance ≤ NAP_ARCHIVE_IMPORTANCE_MAX` (0.1) — fully decayed
    - `recall_weight = 0` — never accessed since extraction (or fully LTD-decayed)
    - `created_at` older than `NAP_ARCHIVE_MIN_AGE_DAYS` (30 days) — fair shot at being useful
    - NOT pinned, NOT in_cluster, NOT superseded
 
-   `kind='cluster'` rows get a longer grace window via `NAP_CLUSTER_ARCHIVE_MIN_AGE_DAYS = 60`. Capped at `NAP_ARCHIVE_PER_CYCLE_CAP = 200` so a one-time eligibility bloom doesn't dump thousands at once. Archived rows stay in the table and are still queryable via `mneme_sql` — they just stop appearing on the SessionStart surface. Restore by calling `bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" unarchive "<uuid>"`.
+   Capped at `NAP_ARCHIVE_PER_CYCLE_CAP = 200` so a one-time eligibility bloom doesn't dump thousands at once. Archived rows stay in the table and are still queryable via `mneme_sql` — they just stop appearing on the SessionStart surface. Restore by calling `bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" unarchive "<uuid>"`.
 
-4. **Seed phase (relate + rule-based supersede + last_napped_at stamp).** One transaction over a `NAP_PER_CYCLE_CAP = 500` slice of least-recently-napped rows:
+4. **Archive dead clusters (`napArchiveDeadClusters`).** Sets `archived_at = now()` on `kind='cluster'` rows that are either already superseded OR have decayed (mirrors the orphan criteria above) — but with `NAP_CLUSTER_ARCHIVE_MIN_AGE_DAYS = 60` instead of 30. Same per-cycle cap.
+
+5. **Archive orphaned cluster members (`napArchiveOrphanedMembers`).** Transitive cleanup: archives atoms whose `meta.in_cluster` points at a cluster that's already archived. Runs after step 4 so it catches the new archives in the same cycle.
+
+6. **Seed phase (relate + rule-based supersede + last_napped_at stamp).** One transaction over a `NAP_PER_CYCLE_CAP = 500` slice of least-recently-napped rows:
 
    a. **Semantic relations.** For each seed, find up to `NAP_RELATE_MAX_NEIGHBORS = 5` nearest same-repo neighbours at cosine `< NAP_RELATE_DISTANCE = 0.15` via a `LATERAL JOIN` over the HNSW index. Write each into the other's `meta.related_to` (mutual, idempotent — `DISTINCT` merge with the existing array).
 
@@ -42,8 +46,10 @@ Four phases, each its own SQL call (not one transaction — a slow phase fails i
 flowchart LR
     A[server scheduler · 4h] --> B[1. Importance decay<br/>importance *= 0.9945<br/>floor 0.05 unpinned / 0.5 pinned]
     A --> C[2. Recall-weight decay<br/>recall_weight *= 0.933<br/>~42h half-life]
-    A --> D[3. Auto-archive orphans<br/>importance ≤ 0.1<br/>recall_weight = 0<br/>age > 30 days<br/>not pinned/clustered/superseded<br/>cap 200/cycle]
-    A --> E[4. Seed phase · cap 500<br/>least-recently-napped first]
+    A --> D[3. Archive orphan atoms<br/>importance ≤ 0.1<br/>recall_weight = 0<br/>age > 30 days<br/>not pinned/clustered/superseded<br/>cap 200/cycle]
+    A --> D2[4. Archive dead clusters<br/>superseded OR decayed<br/>age > 60 days<br/>cap 200/cycle]
+    A --> D3[5. Archive orphaned members<br/>transitive: in_cluster points<br/>at an archived cluster]
+    A --> E[6. Seed phase · cap 500<br/>least-recently-napped first]
     E --> F[a. Relate · HNSW LATERAL<br/>same repo, cosine < 0.15<br/>meta.related_to mutual]
     E --> G[b. Rule supersede<br/>cosine < 0.05 + keyword + 12h gap<br/>meta.superseded_by + clear in_cluster<br/>cap 50/cycle]
     E --> H[c. Stamp last_napped_at = now]

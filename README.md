@@ -36,7 +36,7 @@ That's Mneme.
 
 ## ⚙️ How it works
 
-The data plumbing under the brain trio below: hooks scrub and post captures to a local file outbox; the per-machine daemon coalesces same-session captures, calls Claude (via the Agent SDK on your existing `claude` login) to distill atomic observations, embeds with `bge-small-en-v1.5` in an isolated subprocess so the ONNX session can't fragment the daemon's address space, then pushes pre-built bundles to the server. The server is a single Bun process — it inserts in one transaction, runs the workers below, and exposes one MCP tool (`mneme_sql`) so any agent on any harness can read. One Postgres holds it all.
+The data plumbing under the brain trio below: hooks scrub and post captures to the per-machine daemon at `127.0.0.1/capture` (falling back to a direct file-outbox write only if the daemon is unreachable); the daemon coalesces same-session captures, calls Claude (via the Agent SDK; credentials resolved per-platform) to distill atomic observations, embeds with `bge-small-en-v1.5` in an isolated subprocess so the ONNX session can't fragment the daemon's address space, then pushes pre-built bundles to the server. The server is a single Bun process — it inserts in one transaction, runs the workers below, and exposes one MCP tool (`mneme_sql`) so any agent on any harness can read. One Postgres holds it all.
 
 ```mermaid
 flowchart LR
@@ -140,7 +140,7 @@ psql "$DATABASE_URL" -c "ALTER ROLE mneme_reader WITH LOGIN PASSWORD '$(openssl 
 #    mneme_reader credentials. Put it in .env as MNEME_READER_DATABASE_URL.
 ```
 
-The reader role has `SELECT` only on `public.*` (not `_ops.*`), backing the MCP `mneme_sql` tool. RLS on `memories` further restricts cross-machine private rows. Defense in depth.
+The reader role has `SELECT` only on `public.*` (not `_ops.*`), backing the MCP `mneme_sql` tool. RLS on `memories` and `captures` applies `USING (private = false)`, so the MCP tool physically cannot see any private row regardless of machine. Defense in depth.
 
 **Run it:**
 

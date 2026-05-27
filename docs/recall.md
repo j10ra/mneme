@@ -54,7 +54,8 @@ ORDER BY
   (
     0.6  * (1 - (embedding <=> embed($1))) +
     0.4  * ts_rank(tsv, websearch_to_tsquery('english', $1)) +
-    0.05 * importance
+    0.05 * importance +
+    0.10 * ln(1 + recall_weight)
   )
   * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
 DESC
@@ -65,6 +66,7 @@ LIMIT 10;
 - **60% cosine** — semantic similarity via the HNSW index on `memories.embedding`.
 - **40% `ts_rank`** — keyword match via the GIN index on `memories.tsv`.
 - **5% importance** — small but always-on so [`workers/nap.md`](./workers/nap.md)'s decay actually shifts retrieval.
+- **10% `ln(1 + recall_weight)`** — use-driven reinforcement (LTP). The server bumps `recall_weight` on every successful `mneme_sql` query that signals intent; nap decays it each cycle. `ln()` bounds the contribution so a single hot memory can't dominate.
 
 **Filters:**
 - Archived rows (`archived_at IS NOT NULL`) are filtered out — nap's auto-archive pass moves fully decayed orphans here.
@@ -107,12 +109,10 @@ SELECT * FROM memories WHERE id::text = ANY(
 
 ## What recall doesn't use yet
 
-- **Recency boost.** Considered (`+ 0.10 * exp(-age / 7d)`) but not in the canonical template. Nap's decay already pulls down old unpinned memories via the importance term; an explicit recency factor would double-count. [`surface.md`](./surface.md) handles "what's fresh" at session-start time.
+- **Recency boost.** Nap's decay already pulls down old unpinned memories via the importance term; an explicit recency factor would double-count. [`surface.md`](./surface.md) handles "what's fresh" at session-start time.
 - `meta.related_to` is selected but not used in scoring. Two natural evolutions when the relation graph fills out:
   1. **Neighbour boost** — bump a memory's rank when its `related_to` ids also appear in the result set (mutual reinforcement).
   2. **Render alongside** — when a memory hits the top-N, fetch its `related_to` ids and render them as context-adjacent suggestions so the agent sees the cluster, not just the centroid.
-
-  Worth adding once user signal says recall is missing nearby context. Today, top-10 hybrid is sufficient.
 
 ---
 
