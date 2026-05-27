@@ -1,5 +1,5 @@
 // Minimal MCP JSON-RPC server. We implement the subset of MCP that
-// matters for our one tool (mneme.sql): initialize, tools/list, tools/call,
+// matters for our one tool (mneme_sql): initialize, tools/list, tools/call,
 // notifications/initialized, ping. No SDK dep, no streaming.
 
 import { Logger, errorMessageOf, mnemeFn } from "@mneme/core";

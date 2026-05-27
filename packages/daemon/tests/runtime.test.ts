@@ -2,12 +2,12 @@
 //
 // The runtime exposes two units:
 //   - handleCapture: takes a parsed capture body, scrubs strings at the
-//     edge, writes to outbox/pending with a deterministic id, returns
+//     edge, writes to outbox/captured/ with a deterministic id, returns
 //     the id (or an error reason on validation failure).
-//   - runWorkerTick: scans pending/, extracts via the agent, transitions
-//     to extracted/; scans extracted/, embeds via the in-process model,
-//     transitions to embedded/; scans embedded/, pushes the bundle,
-//     deletes on success.
+//   - runWorkerTick: scans captured/, extracts via the agent, transitions
+//     to observations/; scans observations/, embeds via the subprocess-
+//     backed bge worker, transitions to embedded/; scans embedded/,
+//     pushes the bundle, deletes on success.
 //
 // Tests inject mock extract / embed / push functions so the cycle is
 // deterministic without touching Claude or a server.
@@ -74,7 +74,7 @@ function createMocks(
 }
 
 describe("handleCapture", () => {
-  test("writes a valid capture into outbox/pending and returns its id", async () => {
+  test("writes a valid capture into outbox/captured and returns its id", async () => {
     const outbox = createOutbox(root);
     const mocks = createMocks();
     const runtime = createRuntime({
@@ -421,7 +421,7 @@ describe("runWorkerTick", () => {
     expect(extractCalls).toBe(0);
 
     // Advance time past the idle window. Tick again: now extract runs
-    // because pending/ has been "quiet" since lastPendingWriteAt.
+    // because captured/ has been "quiet" since lastCapturedWriteAt.
     virtualNow += 31_000;
     await runtime.runWorkerTick();
     expect(extractCalls).toBe(1);

@@ -121,8 +121,9 @@ export type DreamDeps = {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   distill: (memories: Memory[]) => Promise<DreamOutput>;
   /** Embed the cluster summary so the resulting cluster memory is
-   *  semantically searchable. Same in-process bge-large pipeline that
-   *  embeds new memories. Optional only because tests inject a mock. */
+   *  semantically searchable. Same bge-small pipeline that embeds new
+   *  memories (subprocess-backed, see embed.ts). Optional only because
+   *  tests inject a mock. */
   embed?: (texts: string[]) => Promise<number[][]>;
   /** Optional supersede pass run after each cluster's distill. Skipped
    *  when omitted (e.g. providers that opt out for safety). */

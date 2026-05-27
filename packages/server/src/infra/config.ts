@@ -27,10 +27,8 @@ export const EMBEDDER_DIM = 384;
 // ── Telemetry retention ───────────────────────────────────────────────
 
 /** Prune _ops.spans, _ops.traces, _ops.logs older than this many days.
- *  Runs daily via the prune scheduler job. Tightened to 3 days after the
- *  1.0.96 idle-tick gate landed — even with the gate dropping inflow by
- *  ~92%, public-schema growth + observability tail at 7 days pushed the
- *  free-tier 500 MB cap; 3 days gives comfortable headroom. */
+ *  Runs daily via the prune scheduler job. 3 days fits the free-tier
+ *  500 MB Postgres cap with headroom. */
 export const TELEMETRY_RETENTION_DAYS = 3;
 
 // ── Worker scheduling ─────────────────────────────────────────────────
@@ -118,20 +116,16 @@ export const NAP_RELATE_MAX_NEIGHBORS = 5;
 export const DREAM_CLUSTER_DISTANCE = 0.1;
 
 /** Per-memory NN cap inside the LATERAL JOIN — keeps union-find bounded
- *  for hub memories in dense graphs. 20 → 40 → 80 as NDJSON streaming
- *  proved gateway-safe; richer connectivity surfaces more eligible 3+
- *  components per slice on sparse corpora where seeds rarely had even
- *  20 near-neighbors. */
+ *  for hub memories in dense graphs while surfacing enough connectivity
+ *  for eligible 3+ components on sparse corpora. */
 export const DREAM_MAX_NEIGHBORS_PER_MEMORY = 80;
 
 /** Watermark-ordered seed slice per dream cycle. Each cycle takes the
  *  least-recently-dreamed N rows and stamps meta.last_dreamed_at, so
  *  successive cycles round-robin the whole corpus rather than re-scanning
- *  the newest rows. A full sweep spans ceil(corpus / cap) cycles. Bumped
- *  500 → 1000 → 3000 to drain the ~15k unclustered-atom backlog in ~1.7
- *  days (3 cycles/day × 3000) instead of ~5 days. Scales LATERAL HNSW
- *  work linearly with DREAM_MAX_NEIGHBORS_PER_MEMORY; watch Railway
- *  gateway timeouts on the first cycles after bumping. */
+ *  the newest rows. A full sweep spans ceil(corpus / cap) cycles. Scales
+ *  LATERAL HNSW work linearly with DREAM_MAX_NEIGHBORS_PER_MEMORY; watch
+ *  Railway gateway timeouts when raising. */
 export const DREAM_MAX_CANDIDATES_PER_CYCLE = 3000;
 
 /** Per-batch seed count for the NDJSON streaming candidates endpoint.
@@ -148,7 +142,7 @@ export const DREAM_STREAM_NEIGHBOR_BATCH = 200;
 
 // ── Supersede ─────────────────────────────────────────────────────────
 
-/** Rule-based pass (runs in nap, every 6h). Tight cosine + explicit
+/** Rule-based pass (runs in nap, every 4h). Tight cosine + explicit
  *  "this replaces that" wording — catches the obvious cases for free
  *  without an LLM call. Anything subtler is left to the dream pass. */
 export const SUPERSEDE_RULE_COSINE_MAX = 0.05;
@@ -212,10 +206,8 @@ export const RECALL_LTP_PARTIAL = env.RECALL_LTP_PARTIAL;
 export const RECALL_LTP_PARTIAL_ROW_CAP = env.RECALL_LTP_PARTIAL_ROW_CAP;
 
 /** Per-nap-cycle multiplier on recall_weight. 0.933 ≈ 10-nap half-life
- *  from a single hit, which at the current 4h nap cadence is ~42 hours.
- *  Was 0.9 (7-nap half-life) under the prior 6h nap cadence; recalibrated
- *  when nap moved 6h → 4h so the wall-clock half-life stays consistent.
- *  Long enough to feel persistent, short enough to fade if truly unused. */
+ *  from a single hit, which at the 4h nap cadence is ~42 hours — long
+ *  enough to feel persistent, short enough to fade if truly unused. */
 export const RECALL_LTD_DECAY = env.RECALL_LTD_DECAY;
 
 /** Coefficient on the `ln(1 + recall_weight)` term added to surface
@@ -223,20 +215,19 @@ export const RECALL_LTD_DECAY = env.RECALL_LTD_DECAY;
  *  not 100×. Conservative initial value; tune from data. */
 export const RECALL_RANKING_COEF = env.RECALL_RANKING_COEF;
 
-// ── Digest (cross-cluster consolidator, every 48h) ────────────────────
-// Issue #30. Third worker in the brain trio (nap → dream → digest).
-// Where dream synthesises clusters from one window's memories, digest
-// rises above the per-cluster view to merge duplicate clusters and
-// reconcile contradicting facts across cluster boundaries.
+// ── Digest (cross-cluster consolidator, every 24h) ────────────────────
+// Third worker in the brain trio (nap → dream → digest). Where dream
+// synthesises clusters from one window's memories, digest rises above
+// the per-cluster view to merge duplicate clusters and reconcile
+// contradicting facts across cluster boundaries.
 
 /** Cosine-distance ceiling for treating two cluster summaries as
- *  candidate "same topic". 0.10 → 0.15 → 0.20 as we kept finding
- *  obvious merges landing just outside the threshold. Cluster
- *  summaries are already distilled prose so they're more abstract than
- *  raw observations; 0.20 between two summaries is still "same topic"
- *  most of the time. Asymmetric tuning: raw clustering stays tight at
- *  DREAM_CLUSTER_DISTANCE=0.10, summary-level merge is the permissive
- *  layer that gathers adjacent topics back together. */
+ *  candidate "same topic". Cluster summaries are already distilled
+ *  prose so they're more abstract than raw observations; 0.20 between
+ *  two summaries is still "same topic" most of the time. Asymmetric
+ *  tuning: raw clustering stays tight at DREAM_CLUSTER_DISTANCE=0.10;
+ *  summary-level merge is the permissive layer that gathers adjacent
+ *  topics back together. */
 export const DIGEST_MERGE_DISTANCE = 0.2;
 
 /** Max merge candidate pairs per digest cycle. Bounds Sonnet call

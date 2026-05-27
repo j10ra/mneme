@@ -15,7 +15,9 @@
 // Leader election uses a durable claim row keyed on window_key
 // (floor(now()/8h)). INSERT ON CONFLICT DO NOTHING is the race primitive.
 // completed_at + cluster_count are stamped at /api/dream/clusters time.
-// Stale claims (no completed_at after 30min) are reaped by nap.
+// Stale claims (no completed_at after STALE_LOCK_AGE_MS) are reaped
+// opportunistically inside acquireDreamLock; an admin route can force-
+// clear earlier via /api/dream/clear-stale.
 
 import { Hono } from "hono";
 import { stream } from "hono/streaming";

@@ -1,10 +1,9 @@
 // Embedder subprocess.
 //
 // Spawned lazily by `packages/daemon/src/embed.ts`. Lives in its own
-// process so the bge-large ONNX session's ~700MB-1GB heap growth never
-// fragments the daemon's address space. When this process exits, the
-// OS reclaims everything (no MALLOC_LARGE creep), which is the whole
-// point of #33.
+// process so the ONNX session's heap growth never fragments the
+// daemon's address space. When this process exits, the OS reclaims
+// everything (no MALLOC_LARGE creep).
 //
 // Protocol (JSON-lines):
 //   stdin:  { "texts": ["...", ...] }

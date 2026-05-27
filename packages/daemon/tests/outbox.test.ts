@@ -2,7 +2,7 @@
 //
 // The outbox is four directories under ~/.mneme/outbox/. Files move
 // between them via atomic POSIX rename, accumulating state at each
-// transition (raw capture in pending/, capture+memories in extracted/,
+// transition (raw capture in captured/, capture+memories in observations/,
 // capture+memories+vectors in embedded/, failed/). These tests use a
 // per-test temp directory.
 
@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 describe("outbox", () => {
-  test("writeRaw lands a file in pending/", async () => {
+  test("writeRaw lands a file in captured/", async () => {
     const outbox = createOutbox(root);
     await outbox.writeRaw("abc-001", { content: "hello" });
 

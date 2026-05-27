@@ -3,7 +3,7 @@
 //   - The outbox at ~/.mneme/outbox/
 //   - The configured agent provider (Claude via SDK with pathToClaude
 //     CodeExecutable for OAuth inheritance)
-//   - The in-process embedder around the runtime pipeline
+//   - The subprocess-backed embedder around the runtime pipeline
 //   - The local scheduler for time-driven jobs (dream, heartbeat,
 //     embedder reap), persisted to ~/.mneme/schedule.json
 //

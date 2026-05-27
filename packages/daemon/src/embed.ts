@@ -1,14 +1,12 @@
 // Subprocess-backed embedder.
 //
-// Lifts the bge-large ONNX session out of the daemon process into a
-// child (`embed-worker.ts`). The daemon's own RSS stays at ~100MB
-// baseline; the embedder process only exists while embedding work is
-// happening, and on idle disposal the OS reclaims everything (no
-// MALLOC_LARGE fragmentation, see #33).
+// Runs the bge-small ONNX session in a child process (`embed-worker.ts`)
+// so the daemon's own RSS stays at ~100MB baseline; the embedder process
+// only exists while embedding work is happening, and on idle disposal
+// the OS reclaims everything (no MALLOC_LARGE fragmentation).
 //
-// Public surface is unchanged from the in-process version: callers
-// see `embedBatch(texts) -> Promise<number[][]>` and the daemon's
-// scheduler still calls `disposeIfIdle()` on a tick.
+// Public surface: callers see `embedBatch(texts) -> Promise<number[][]>`
+// and the daemon's scheduler calls `disposeIfIdle()` on a tick.
 
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -25,8 +23,7 @@ export const EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5";
 export const EMBEDDER_DIM = 384;
 
 // Idle window after which `disposeIfIdle()` will kill the worker. Cold
-// start on the next embed is ~1-2s (model load); same idle threshold
-// the in-process version used so behaviour stays unchanged.
+// start on the next embed is ~1-2s (model load).
 const PIPELINE_IDLE_MS = 60 * 1000;
 
 // How long to wait after closing stdin before SIGTERM. The worker

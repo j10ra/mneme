@@ -378,11 +378,9 @@ function forwardPath(upstreamPath: string, traceTag: string) {
 
 // ── log streaming ───────────────────────────────────────────────────
 //
-// Reads ~/.mneme/logs/daemon.log — a single unified file (was split
-// out/err pre-1.0.83). Unifying lets a fixed line cap reflect actual
-// recency: the previous setup had a sparse err.log whose "last 15
-// lines" spanned days, so yesterday's blips kept replaying on every
-// dashboard refresh.
+// Reads ~/.mneme/logs/daemon.log — a single unified file. A fixed
+// line cap on this stream reflects actual recency rather than the
+// sparse tail of a multi-file split.
 
 const LOG_POLL_MS = 1000;
 const LOG_PING_MS = 15_000;
