@@ -319,7 +319,9 @@ async function submitClusters(
 }
 
 export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> {
+  const cycleStart = Date.now();
   const windowKey = deps.windowKey ?? computeWindowKey();
+  Logger.info("dream: cycle start", { window_key: windowKey });
   Logger.info("dream: attempting lock", { window_key: windowKey });
 
   const lock = await lockWindow(deps, windowKey);
@@ -332,12 +334,14 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
   }
   Logger.info("dream: lock acquired", { window_key: windowKey });
 
+  let t = Date.now();
   const candidates = await fetchCandidates(deps, windowKey);
   const repoCount = Object.keys(candidates.repos).length;
   const seedCount = Object.values(candidates.repos).reduce((sum, r) => sum + r.seeds.length, 0);
   Logger.info("dream: candidates fetched", {
     repos: repoCount,
     seeds: seedCount,
+    ms: Date.now() - t,
   });
 
   // Stage 1: distill (Sonnet) + supersede (Sonnet). Each successful
@@ -501,6 +505,13 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     }
     await deps.outbox.cleanupWindow(windowKey);
   }
+
+  Logger.info("dream: cycle done", {
+    window_key: windowKey,
+    submitted: submissions.length,
+    written: result.written,
+    total_ms: Date.now() - cycleStart,
+  });
 
   return {
     skipped: false,

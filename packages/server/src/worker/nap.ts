@@ -324,12 +324,42 @@ async function napSeedPhase(): Promise<{ related: number; superseded: number }> 
  *  archive phases: clusters die first so the transitive member pass in
  *  the same cycle catches their atoms, instead of waiting another 4h. */
 export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult> => {
+  const cycleStart = Date.now();
+  Logger.info("nap: cycle start");
+
+  let t = Date.now();
   const decayed = await napDecayImportance();
+  Logger.info("nap: 1/6 importance decay", { rows: decayed, ms: Date.now() - t });
+
+  t = Date.now();
   const ltpDecayed = await napDecayRecallWeight();
+  Logger.info("nap: 2/6 recall_weight decay (LTP)", { rows: ltpDecayed, ms: Date.now() - t });
+
+  t = Date.now();
   const archived = await napArchiveOrphans();
+  Logger.info("nap: 3/6 archive orphan atoms", { archived, ms: Date.now() - t });
+
+  t = Date.now();
   const clusterArchived = await napArchiveDeadClusters();
+  Logger.info("nap: 4/6 archive dead clusters", {
+    archived: clusterArchived,
+    ms: Date.now() - t,
+  });
+
+  t = Date.now();
   const memberArchived = await napArchiveOrphanedMembers();
+  Logger.info("nap: 5/6 archive orphaned members", {
+    archived: memberArchived,
+    ms: Date.now() - t,
+  });
+
+  t = Date.now();
   const seed = await napSeedPhase();
+  Logger.info("nap: 6/6 seed (relate + rule supersede)", {
+    related: seed.related,
+    superseded: seed.superseded,
+    ms: Date.now() - t,
+  });
 
   const result: NapResult = {
     decayed,
@@ -340,6 +370,6 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
     related: seed.related,
     superseded: seed.superseded,
   };
-  Logger.info("nap: done", result);
+  Logger.info("nap: done", { ...result, total_ms: Date.now() - cycleStart });
   return result;
 });

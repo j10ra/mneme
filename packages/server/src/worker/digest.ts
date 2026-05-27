@@ -274,6 +274,9 @@ function chunk<T>(arr: T[], n: number): T[][] {
 }
 
 export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<DigestResult> => {
+  const cycleStart = Date.now();
+  Logger.info("digest: cycle start");
+
   const dr = pickDigest();
   if (!dr.judgeClusterMerge || !dr.findSupersedes) {
     Logger.info("digest: skipped (provider lacks judgeClusterMerge or findSupersedes)", {
@@ -291,8 +294,12 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
   const findSupersedes = dr.findSupersedes;
 
   // ─── Operation 1: cluster merge ─────────────────────────────────
+  Logger.info("digest: Op1 cluster merge — selecting window");
+  let opStart = Date.now();
   const mergeWindow = await selectDigestClusterWindow(DIGEST_MERGE_WINDOW);
+  Logger.info("digest: Op1 window selected", { clusters: mergeWindow.length });
   const mergePairs = await findMergePairs(mergeWindow);
+  Logger.info("digest: Op1 candidate pairs", { pairs: mergePairs.length });
   let mergesApplied = 0;
   for (const pair of mergePairs) {
     const a = await loadCluster(pair.a_id);
@@ -351,9 +358,13 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
   // Stamp every cluster in this cycle's window, merged or not, so the
   // next cycle advances to the next-stalest clusters.
   await stampDigested(mergeWindow);
+  Logger.info("digest: Op1 done", { merges_applied: mergesApplied, ms: Date.now() - opStart });
 
   // ─── Operation 2: cross-cluster supersede ──────────────────────
+  Logger.info("digest: Op2 cross-cluster supersede — selecting candidates");
+  opStart = Date.now();
   const candidates = await findCrossClusterSupersedeCandidates();
+  Logger.info("digest: Op2 candidates", { count: candidates.length });
   let supersedesApplied = 0;
   let supersedesRejected = 0;
   let batchCount = 0;
@@ -403,6 +414,12 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
   // Stamp every candidate considered this cycle so the next cycle's
   // watermark-ordered scan advances to the next-stalest member rows.
   await stampDigested(candidates.map((c) => c.id));
+  Logger.info("digest: Op2 done", {
+    batches: batchCount,
+    supersedes_applied: supersedesApplied,
+    rejected: supersedesRejected,
+    ms: Date.now() - opStart,
+  });
 
   const result: DigestResult = {
     merge_pairs_evaluated: mergePairs.length,
@@ -411,6 +428,6 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
     supersedes_applied: supersedesApplied,
     supersedes_rejected: supersedesRejected,
   };
-  Logger.info("digest: done", result);
+  Logger.info("digest: done", { ...result, total_ms: Date.now() - cycleStart });
   return result;
 });
