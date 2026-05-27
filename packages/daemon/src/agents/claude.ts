@@ -2,20 +2,16 @@
 //
 // Uses @anthropic-ai/claude-agent-sdk's `query()` with
 // pathToClaudeCodeExecutable pointing at the local `claude` binary.
-// That gives us all three of:
-//   - Auth inheritance from the user's existing `claude login` (no
-//     ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN setup required)
-//   - Structured assistant-message streaming (no stdout regex)
-//   - Tool restrictions (extractor can't accidentally run Bash/Edit/etc.)
+// Auth resolution is delegated entirely to the SDK, which checks (in
+// priority order):
+//   1. ANTHROPIC_API_KEY  — pay-per-token, no Keychain access
+//   2. CLAUDE_CODE_OAUTH_TOKEN  — long-lived SDK token from `claude setup-token`
+//   3. Logged-in `claude` CLI session — platform-native store (macOS
+//      Keychain, Windows Credential Manager, Linux/WSL ~/.claude/.credentials.json)
 //
-// detectAuthMode() reports credentials / oauth-token / api-key /
-// subprocess for `mneme agent list` visibility; the call always routes
-// through the SDK regardless. credentials mode is the primary path —
-// ~/.claude/.credentials.json is read at runtime and the SDK subprocess
-// inherits a token that the `claude` CLI itself auto-rotates. The other
-// modes are fallbacks for environments without a credentials file.
+// We never read those stores ourselves. detectAuthMode() inspects env
+// vars only, for `mneme agent list` status display.
 
-import { hasValidCredentialsToken } from "./auth.ts";
 import { streamingCallClaude } from "./claude-streaming.ts";
 import { CLUSTER_PROMPT, SUPERSEDE_PROMPT, SYSTEM_PROMPT } from "./prompts.ts";
 import type {
@@ -42,13 +38,17 @@ const VALID_KINDS = new Set([
   "note",
 ]);
 
-export type AuthMode = "credentials" | "oauth-token" | "api-key" | "subprocess";
+export type AuthMode = "api-key" | "oauth-token" | "claude-code";
 
+/** Status-display only. The SDK does the real auth resolution; this
+ *  just reports which env var (if any) is set so `mneme agent list`
+ *  shows the user what path the SDK will pick. "claude-code" means
+ *  neither env var is set and the SDK will fall through to the active
+ *  `claude` CLI session. */
 export function detectAuthMode(): AuthMode {
-  if (hasValidCredentialsToken()) return "credentials";
-  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return "oauth-token";
   if (process.env.ANTHROPIC_API_KEY) return "api-key";
-  return "subprocess";
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return "oauth-token";
+  return "claude-code";
 }
 
 // User-message builders. The system prompt is passed separately to the
@@ -241,14 +241,12 @@ function callClaude(prompt: string, model: string, systemPrompt: string): Promis
 
 function authDetail(mode: AuthMode): string {
   switch (mode) {
-    case "credentials":
-      return "SDK + ~/.claude/.credentials.json (auto-rotated by `claude` CLI)";
-    case "oauth-token":
-      return "SDK + CLAUDE_CODE_OAUTH_TOKEN (Max subscription)";
     case "api-key":
       return "SDK + ANTHROPIC_API_KEY (pay-per-token)";
-    case "subprocess":
-      return "SDK + claude CLI subprocess (Max subscription, OAuth inherited)";
+    case "oauth-token":
+      return "SDK + CLAUDE_CODE_OAUTH_TOKEN (long-lived subscription token)";
+    case "claude-code":
+      return "SDK + claude CLI session (auth resolved by SDK from platform-native store)";
   }
 }
 

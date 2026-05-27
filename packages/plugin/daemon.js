@@ -3,8 +3,8 @@ var __require = import.meta.require;
 
 // packages/daemon/src/index.ts
 import { readFile as readFile4 } from "fs/promises";
-import { homedir as homedir6 } from "os";
-import { join as join8 } from "path";
+import { homedir as homedir5 } from "os";
+import { join as join7 } from "path";
 
 // packages/core/src/context.ts
 import { AsyncLocalStorage } from "async_hooks";
@@ -443,73 +443,38 @@ function mnemeFn(name, fn) {
 // packages/daemon/src/index.ts
 import { Hono } from "hono";
 
-// packages/daemon/src/agents/auth.ts
-import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
-var VALIDITY_MARGIN_MS = 60000;
-function credentialsPath() {
-  return process.env.MNEME_CREDENTIALS_PATH ?? join(homedir(), ".claude", ".credentials.json");
-}
-function hasValidCredentialsToken() {
-  const p = credentialsPath();
-  if (!existsSync(p))
-    return false;
-  try {
-    const raw = JSON.parse(readFileSync(p, "utf8"));
-    const token = raw.claudeAiOauth?.accessToken;
-    if (!token)
-      return false;
-    const exp = raw.claudeAiOauth?.expiresAt;
-    if (typeof exp === "number" && exp - Date.now() < VALIDITY_MARGIN_MS)
-      return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-function resolveOauthEnv() {
-  if (hasValidCredentialsToken()) {
-    if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    }
-    return "credentials";
-  }
-  return process.env.CLAUDE_CODE_OAUTH_TOKEN ? "env" : "none";
-}
-
 // packages/daemon/src/agents/claude-streaming.ts
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 // packages/daemon/src/agents/claude-path.ts
-import { existsSync as existsSync2, readdirSync } from "fs";
+import { existsSync, readdirSync } from "fs";
 import { spawnSync } from "child_process";
-import { homedir as homedir2 } from "os";
+import { homedir } from "os";
 function findClaudeExecutable() {
   const fromEnv = process.env.CLAUDE_EXECUTABLE_PATH;
-  if (fromEnv && existsSync2(fromEnv)) {
+  if (fromEnv && existsSync(fromEnv)) {
     return fromEnv;
   }
   const which = spawnSync("which", ["claude"], { encoding: "utf8" });
   const fromPath = which.stdout?.trim();
-  if (fromPath && existsSync2(fromPath))
+  if (fromPath && existsSync(fromPath))
     return fromPath;
   const fallbacks = [
     "/usr/local/bin/claude",
     "/opt/homebrew/bin/claude",
-    `${homedir2()}/.local/bin/claude`,
-    `${homedir2()}/.bun/bin/claude`
+    `${homedir()}/.local/bin/claude`,
+    `${homedir()}/.bun/bin/claude`
   ];
   try {
-    const nvmRoot = `${homedir2()}/.nvm/versions/node`;
-    if (existsSync2(nvmRoot)) {
+    const nvmRoot = `${homedir()}/.nvm/versions/node`;
+    if (existsSync(nvmRoot)) {
       for (const v of readdirSync(nvmRoot)) {
         fallbacks.push(`${nvmRoot}/${v}/bin/claude`);
       }
     }
   } catch {}
   for (const candidate of fallbacks) {
-    if (existsSync2(candidate))
+    if (existsSync(candidate))
       return candidate;
   }
   throw new Error("claude executable not found. Install Claude Code or set CLAUDE_EXECUTABLE_PATH.");
@@ -562,7 +527,6 @@ class StreamingClaudeSession {
   start() {
     if (this.querySession)
       return;
-    const authSource = resolveOauthEnv();
     this.inputClosed = false;
     this.inputBuffer = [];
     this.querySession = query({
@@ -581,7 +545,7 @@ class StreamingClaudeSession {
     this.startedAt = Date.now();
     Logger.info("streaming-claude: session started", {
       model: this.model,
-      auth: authSource
+      auth: detectAuthMode()
     });
   }
   pushInput(prompt) {
@@ -808,13 +772,11 @@ var VALID_KINDS = new Set([
   "note"
 ]);
 function detectAuthMode() {
-  if (hasValidCredentialsToken())
-    return "credentials";
-  if (process.env.CLAUDE_CODE_OAUTH_TOKEN)
-    return "oauth-token";
   if (process.env.ANTHROPIC_API_KEY)
     return "api-key";
-  return "subprocess";
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN)
+    return "oauth-token";
+  return "claude-code";
 }
 function buildExtractPrompt(captures) {
   const blocks = captures.map((c, i) => {
@@ -972,14 +934,12 @@ function callClaude(prompt, model, systemPrompt) {
 }
 function authDetail(mode) {
   switch (mode) {
-    case "credentials":
-      return "SDK + ~/.claude/.credentials.json (auto-rotated by `claude` CLI)";
-    case "oauth-token":
-      return "SDK + CLAUDE_CODE_OAUTH_TOKEN (Max subscription)";
     case "api-key":
       return "SDK + ANTHROPIC_API_KEY (pay-per-token)";
-    case "subprocess":
-      return "SDK + claude CLI subprocess (Max subscription, OAuth inherited)";
+    case "oauth-token":
+      return "SDK + CLAUDE_CODE_OAUTH_TOKEN (long-lived subscription token)";
+    case "claude-code":
+      return "SDK + claude CLI session (auth resolved by SDK from platform-native store)";
   }
 }
 var claudeProvider = {
@@ -1037,15 +997,15 @@ function listAgents() {
 
 // packages/daemon/src/dream-outbox.ts
 import { mkdir, readFile, readdir, rename, rm, rmdir, writeFile } from "fs/promises";
-import { join as join2 } from "path";
+import { join } from "path";
 var STAGES = ["distilled", "embedded", "failed"];
 function clusterFile(root, windowKey, stage, clusterId) {
-  return join2(root, String(windowKey), stage, `${clusterId}.json`);
+  return join(root, String(windowKey), stage, `${clusterId}.json`);
 }
 async function atomicWrite(path, payload) {
   const dir = path.substring(0, path.lastIndexOf("/"));
   const name = path.substring(path.lastIndexOf("/") + 1);
-  const tmp = join2(dir, `.${name}.tmp`);
+  const tmp = join(dir, `.${name}.tmp`);
   await mkdir(dir, { recursive: true });
   await writeFile(tmp, JSON.stringify(payload));
   await rename(tmp, path);
@@ -1053,7 +1013,7 @@ async function atomicWrite(path, payload) {
 function createDreamOutbox(rootPath) {
   async function ensureWindow(windowKey) {
     for (const stage of STAGES) {
-      await mkdir(join2(rootPath, String(windowKey), stage), { recursive: true });
+      await mkdir(join(rootPath, String(windowKey), stage), { recursive: true });
     }
   }
   return {
@@ -1071,7 +1031,7 @@ function createDreamOutbox(rootPath) {
     },
     async list(windowKey, stage) {
       try {
-        const entries = await readdir(join2(rootPath, String(windowKey), stage));
+        const entries = await readdir(join(rootPath, String(windowKey), stage));
         return entries.filter((f) => !f.startsWith(".") && f.endsWith(".json")).map((f) => f.slice(0, -".json".length));
       } catch (err) {
         if (err.code === "ENOENT")
@@ -1093,7 +1053,7 @@ function createDreamOutbox(rootPath) {
       const src = clusterFile(rootPath, windowKey, from, clusterId);
       const cluster = JSON.parse(await readFile(src, "utf8"));
       await atomicWrite(clusterFile(rootPath, windowKey, "failed", clusterId), cluster);
-      await writeFile(join2(rootPath, String(windowKey), "failed", `${clusterId}.error.txt`), reason);
+      await writeFile(join(rootPath, String(windowKey), "failed", `${clusterId}.error.txt`), reason);
       await rm(src);
     },
     async listWindows() {
@@ -1115,11 +1075,11 @@ function createDreamOutbox(rootPath) {
       }
       for (const stage of STAGES) {
         try {
-          await rmdir(join2(rootPath, String(windowKey), stage));
+          await rmdir(join(rootPath, String(windowKey), stage));
         } catch {}
       }
       try {
-        await rmdir(join2(rootPath, String(windowKey)));
+        await rmdir(join(rootPath, String(windowKey)));
       } catch {}
     }
   };
@@ -1137,8 +1097,8 @@ async function clusterIdFor(memberIds) {
 }
 
 // packages/daemon/src/embed.ts
-import { existsSync as existsSync3 } from "fs";
-import { dirname, join as join3 } from "path";
+import { existsSync as existsSync2 } from "fs";
+import { dirname, join as join2 } from "path";
 import { fileURLToPath } from "url";
 var EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5";
 var PIPELINE_IDLE_MS = 60 * 1000;
@@ -1151,18 +1111,18 @@ var lastUsedAt = 0;
 function workerScriptPath() {
   const fromEnv = process.env.MNEME_PLUGIN_ROOT;
   if (fromEnv && fromEnv.trim()) {
-    const p = join3(fromEnv.trim(), "embed-worker.js");
-    if (existsSync3(p))
+    const p = join2(fromEnv.trim(), "embed-worker.js");
+    if (existsSync2(p))
       return p;
   }
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    join3(here, "embed-worker.js"),
-    join3(here, "embed-worker.ts"),
-    join3(here, "..", "..", "..", "packages", "plugin", "embed-worker.js")
+    join2(here, "embed-worker.js"),
+    join2(here, "embed-worker.ts"),
+    join2(here, "..", "..", "..", "packages", "plugin", "embed-worker.js")
   ];
   for (const p of candidates) {
-    if (existsSync3(p))
+    if (existsSync2(p))
       return p;
   }
   throw new Error(`embed-worker not found. Checked MNEME_PLUGIN_ROOT and ${candidates.join(", ")}`);
@@ -1724,21 +1684,21 @@ async function resumeDreamCycles(deps) {
 }
 
 // packages/daemon/src/outbox.ts
-import { existsSync as existsSync4 } from "fs";
+import { existsSync as existsSync3 } from "fs";
 import { mkdir as mkdir2, readFile as readFile2, readdir as readdir2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "fs/promises";
-import { join as join4 } from "path";
+import { join as join3 } from "path";
 var STATES = ["captured", "observations", "embedded", "failed"];
 var LEGACY_MOVES = [
   { from: "pending", to: "captured" },
   { from: "extracted", to: "observations" }
 ];
 function fileFor(root, state, id) {
-  return join4(root, state, `${id}.json`);
+  return join3(root, state, `${id}.json`);
 }
 async function atomicWrite2(path, data) {
   const dir = path.substring(0, path.lastIndexOf("/"));
   const name = path.substring(path.lastIndexOf("/") + 1);
-  const tmp = join4(dir, `.${name}.tmp`);
+  const tmp = join3(dir, `.${name}.tmp`);
   await writeFile2(tmp, JSON.stringify(data));
   await rename2(tmp, path);
 }
@@ -1746,16 +1706,16 @@ function createOutbox(rootPath) {
   let initialized = false;
   async function migrateLegacy() {
     for (const { from, to } of LEGACY_MOVES) {
-      const oldDir = join4(rootPath, from);
-      const newDir = join4(rootPath, to);
-      if (!existsSync4(oldDir))
+      const oldDir = join3(rootPath, from);
+      const newDir = join3(rootPath, to);
+      if (!existsSync3(oldDir))
         continue;
-      if (!existsSync4(newDir)) {
+      if (!existsSync3(newDir)) {
         await rename2(oldDir, newDir);
       } else {
         const entries = await readdir2(oldDir);
         for (const f of entries) {
-          await rename2(join4(oldDir, f), join4(newDir, f));
+          await rename2(join3(oldDir, f), join3(newDir, f));
         }
         await rm2(oldDir, { recursive: true, force: true });
       }
@@ -1766,7 +1726,7 @@ function createOutbox(rootPath) {
       return;
     await migrateLegacy();
     for (const state of STATES) {
-      await mkdir2(join4(rootPath, state), { recursive: true });
+      await mkdir2(join3(rootPath, state), { recursive: true });
     }
     initialized = true;
   }
@@ -1778,7 +1738,7 @@ function createOutbox(rootPath) {
     },
     async list(state) {
       await ensureDirs();
-      const entries = await readdir2(join4(rootPath, state));
+      const entries = await readdir2(join3(rootPath, state));
       return entries.filter((f) => !f.startsWith(".") && f.endsWith(".json")).map((f) => f.slice(0, -".json".length));
     },
     async read(id, state) {
@@ -1800,7 +1760,7 @@ function createOutbox(rootPath) {
       const src = fileFor(rootPath, from, id);
       const data = JSON.parse(await readFile2(src, "utf8"));
       await atomicWrite2(fileFor(rootPath, "failed", id), data);
-      await writeFile2(join4(rootPath, "failed", `${id}.error.txt`), reason);
+      await writeFile2(join3(rootPath, "failed", `${id}.error.txt`), reason);
       await rm2(src);
     },
     async rehydrateFailed() {
@@ -1813,7 +1773,7 @@ function createOutbox(rootPath) {
           const target = inferOriginStage(data);
           await atomicWrite2(fileFor(rootPath, target, id), data);
           await rm2(fileFor(rootPath, "failed", id), { force: true });
-          await rm2(join4(rootPath, "failed", `${id}.error.txt`), {
+          await rm2(join3(rootPath, "failed", `${id}.error.txt`), {
             force: true
           });
           moved++;
@@ -1848,27 +1808,27 @@ function mountCaptureRoute(app, runtime) {
 }
 
 // packages/daemon/src/routes/dashboard.ts
-import { existsSync as existsSync5, statSync } from "fs";
+import { existsSync as existsSync4, statSync } from "fs";
 import { open as fsOpen } from "fs/promises";
-import { homedir as homedir3 } from "os";
-import { dirname as dirname2, join as join5 } from "path";
+import { homedir as homedir2 } from "os";
+import { dirname as dirname2, join as join4 } from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
 import { streamSSE } from "hono/streaming";
 function dashboardDist() {
   const fromEnv = process.env.MNEME_PLUGIN_ROOT;
   if (fromEnv && fromEnv.trim()) {
-    const p = join5(fromEnv.trim(), "dashboard", "dist");
-    if (existsSync5(join5(p, "index.html")))
+    const p = join4(fromEnv.trim(), "dashboard", "dist");
+    if (existsSync4(join4(p, "index.html")))
       return p;
   }
   const here = dirname2(fileURLToPath2(import.meta.url));
   const candidates = [
-    join5(here, "..", "..", "..", "..", "packages", "plugin", "dashboard", "dist"),
-    join5(here, "dashboard", "dist"),
-    join5(here, "..", "dashboard", "dist")
+    join4(here, "..", "..", "..", "..", "packages", "plugin", "dashboard", "dist"),
+    join4(here, "dashboard", "dist"),
+    join4(here, "..", "dashboard", "dist")
   ];
   for (const p of candidates) {
-    if (existsSync5(join5(p, "index.html")))
+    if (existsSync4(join4(p, "index.html")))
       return p;
   }
   return candidates[1];
@@ -1889,8 +1849,8 @@ the bundle, or you're running from a fresh dev checkout where
 function mountDashboardRoutes(app, forceDream) {
   const distDir = dashboardDist();
   app.get("/dashboard", mnemeRoute("daemon.dashboard"), async (c) => {
-    const indexPath = join5(distDir, "index.html");
-    if (!existsSync5(indexPath)) {
+    const indexPath = join4(distDir, "index.html");
+    if (!existsSync4(indexPath)) {
       Logger.warn("dashboard: dist/index.html not found", undefined, {
         looked_at: indexPath
       });
@@ -1903,8 +1863,8 @@ function mountDashboardRoutes(app, forceDream) {
     if (!filename.endsWith(".js") || filename.includes("/") || filename.includes("..")) {
       return c.notFound();
     }
-    const filePath = join5(distDir, filename);
-    if (!existsSync5(filePath)) {
+    const filePath = join4(distDir, filename);
+    if (!existsSync4(filePath)) {
       return c.text("// not found", 404);
     }
     const bytes = await Bun.file(filePath).bytes();
@@ -1946,7 +1906,7 @@ function mountDashboardRoutes(app, forceDream) {
   app.get("/dashboard/api/daemon-schedule", mnemeRoute("daemon.dashboard.daemon_schedule"), async (c) => {
     try {
       const { readFile: readFile3 } = await import("fs/promises");
-      const path = join5(homedir3(), ".mneme", "schedule.json");
+      const path = join4(homedir2(), ".mneme", "schedule.json");
       const raw = await readFile3(path, "utf8");
       return c.body(raw, 200, { "content-type": "application/json" });
     } catch (err) {
@@ -2085,7 +2045,7 @@ var LOG_BACKFILL_BYTES = 256 * 1024;
 var LOG_BACKFILL_BYTES_RANGE = 16 * 1024 * 1024;
 var LOG_BACKFILL_MAX_LINES = 500;
 function logPath() {
-  return join5(homedir3(), ".mneme", "logs", "daemon.log");
+  return join4(homedir2(), ".mneme", "logs", "daemon.log");
 }
 function inferLevel(line) {
   if (line.includes(" ERROR "))
@@ -2097,7 +2057,7 @@ function inferLevel(line) {
   return "info";
 }
 async function readTail(path, maxBytes) {
-  if (!existsSync5(path))
+  if (!existsSync4(path))
     return { text: "", size: 0 };
   const st = statSync(path);
   const size = st.size;
@@ -2121,7 +2081,7 @@ async function readTail(path, maxBytes) {
   }
 }
 async function readNewBytes(path, fromByte) {
-  if (!existsSync5(path))
+  if (!existsSync4(path))
     return { text: "", size: fromByte };
   const st = statSync(path);
   const size = st.size;
@@ -2244,8 +2204,8 @@ async function streamLogs(stream, rangeMs) {
 async function readDaemonConfig() {
   try {
     const { readFile: readFile3 } = await import("fs/promises");
-    const { homedir: homedir4 } = await import("os");
-    const path = join5(homedir4(), ".mneme", "config.json");
+    const { homedir: homedir3 } = await import("os");
+    const path = join4(homedir3(), ".mneme", "config.json");
     const raw = await readFile3(path, "utf8");
     const cfg = JSON.parse(raw);
     if (!cfg.server?.url || !cfg.auth?.key)
@@ -2314,10 +2274,10 @@ function mountOpsRoutes(app, runtime) {
 }
 
 // packages/daemon/src/runtime.ts
-import { existsSync as existsSync6 } from "fs";
+import { existsSync as existsSync5 } from "fs";
 import { appendFile, mkdir as mkdir3, readFile as fsReadFile } from "fs/promises";
-import { homedir as homedir4 } from "os";
-import { join as join6 } from "path";
+import { homedir as homedir3 } from "os";
+import { join as join5 } from "path";
 
 // packages/shared/src/scrub.ts
 var SECRET_PATTERNS = [
@@ -2555,13 +2515,13 @@ function createRuntime(deps) {
       }));
     }
   }
-  const SHAS_DIR = deps.shasDir ?? join6(homedir4(), ".mneme", "shas");
+  const SHAS_DIR = deps.shasDir ?? join5(homedir3(), ".mneme", "shas");
   function shasFile(sessionId) {
-    return join6(SHAS_DIR, `${sessionId}.txt`);
+    return join5(SHAS_DIR, `${sessionId}.txt`);
   }
   async function loadSessionLedger(sessionId) {
     const file = shasFile(sessionId);
-    if (!existsSync6(file))
+    if (!existsSync5(file))
       return new Set;
     try {
       const buf = await fsReadFile(file, "utf8");
@@ -2575,7 +2535,7 @@ function createRuntime(deps) {
     if (keys.length === 0)
       return;
     try {
-      if (!existsSync6(SHAS_DIR)) {
+      if (!existsSync5(SHAS_DIR)) {
         await mkdir3(SHAS_DIR, { recursive: true, mode: 448 });
       }
       await appendFile(shasFile(sessionId), `${keys.join(`
@@ -2819,10 +2779,10 @@ function createRuntime(deps) {
 
 // packages/daemon/src/scheduler.ts
 import { mkdir as mkdir4, readFile as readFile3, rename as rename3, writeFile as writeFile3 } from "fs/promises";
-import { homedir as homedir5 } from "os";
-import { dirname as dirname3, join as join7 } from "path";
+import { homedir as homedir4 } from "os";
+import { dirname as dirname3, join as join6 } from "path";
 var TICK_MS = SCHEDULER_TICK_MS;
-var STATE_PATH = join7(homedir5(), ".mneme", "schedule.json");
+var STATE_PATH = join6(homedir4(), ".mneme", "schedule.json");
 var STALE_NEW_JOB_SLACK_MS = 5 * 60000;
 var registry = new Map;
 var state = {};
@@ -3224,7 +3184,7 @@ var DREAM_SCHEDULE_MS = 8 * 3600000;
 var HEARTBEAT_SCHEDULE_MS = 60000;
 var EMBEDDER_REAP_SCHEDULE_MS = 60000;
 async function readConfig() {
-  const path = join8(homedir6(), ".mneme", "config.json");
+  const path = join7(homedir5(), ".mneme", "config.json");
   const raw = await readFile4(path, "utf8");
   const shaped = JSON.parse(raw);
   if (!shaped.daemon) {
@@ -3260,8 +3220,8 @@ function pushBundleViaServer(serverUrl, token) {
 }
 async function startDaemon() {
   const config = await readConfig();
-  const captureOutboxRoot = join8(homedir6(), ".mneme", "outbox", "capture");
-  const dreamOutboxRoot = join8(homedir6(), ".mneme", "outbox", "dream");
+  const captureOutboxRoot = join7(homedir5(), ".mneme", "outbox", "capture");
+  const dreamOutboxRoot = join7(homedir5(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
   const agent = pickAgent(config.agent_provider);

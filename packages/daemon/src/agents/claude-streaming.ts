@@ -26,7 +26,7 @@
 
 import { Logger } from "@mneme/core";
 import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
-import { resolveOauthEnv } from "./auth.ts";
+import { detectAuthMode } from "./claude.ts";
 import { findClaudeExecutable } from "./claude-path.ts";
 
 // Tools the extractor / distiller / supersede pass should never invoke.
@@ -93,12 +93,11 @@ class StreamingClaudeSession {
 
   private start(): void {
     if (this.querySession) return;
-    // Align process.env with credentials.json first — strips any stale
-    // CLAUDE_CODE_OAUTH_TOKEN that systemd/launchd baked at install time
-    // so the spawned subprocess reads the auto-rotated credentials file
-    // the way interactive `claude` does. Falls through to env-var when
-    // credentials.json is absent.
-    const authSource = resolveOauthEnv();
+    // Auth is owned by the SDK. We do not touch process.env — the SDK
+    // picks ANTHROPIC_API_KEY → CLAUDE_CODE_OAUTH_TOKEN → active `claude`
+    // CLI session in that priority. Reading credential stores ourselves
+    // would duplicate (and on Mac/Windows mis-locate) what the SDK already
+    // does correctly.
     this.inputClosed = false;
     this.inputBuffer = [];
     this.querySession = query({
@@ -117,7 +116,7 @@ class StreamingClaudeSession {
     this.startedAt = Date.now();
     Logger.info("streaming-claude: session started", {
       model: this.model,
-      auth: authSource,
+      auth: detectAuthMode(),
     });
   }
 

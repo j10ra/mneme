@@ -13,7 +13,7 @@ export type MnemeConfig = {
   /** Daemon block, present once /mneme:setup has installed the daemon
    *  service. The hook checks for this and, when present, posts captures
    *  to the daemon at 127.0.0.1:port instead of the cloud server. */
-  daemon?: { port: number; agent_provider: string; claudeOauthToken?: string };
+  daemon?: { port: number; agent_provider: string };
   /** Optional admin block. Present only on machines where the operator
    *  ran /mneme:setup with the admin password and wants admin slash
    *  commands (machines/revoke/status) to run without re-prompting.
@@ -39,10 +39,19 @@ export function configPath(): string {
 export function loadConfig(): MnemeConfig {
   const path = configPath();
   const raw = readFileSync(path, "utf8");
-  const cfg = JSON.parse(raw) as MnemeConfig;
+  const cfg = JSON.parse(raw) as MnemeConfig & {
+    daemon?: { claudeOauthToken?: string };
+  };
   if (!cfg.server?.url) throw new Error("config missing server.url");
   if (!cfg.auth?.key) throw new Error("config missing auth.key");
   if (!cfg.machine?.id) throw new Error("config missing machine.id");
+  // Self-healing migration: pre-1.1.73 configs cached the user's OAuth
+  // token here. The SDK owns auth now, no code reads this field, and
+  // leaving it on disk is a needless secret-at-rest. Strip and rewrite.
+  if (cfg.daemon?.claudeOauthToken) {
+    delete cfg.daemon.claudeOauthToken;
+    saveConfig(cfg);
+  }
   return cfg;
 }
 
@@ -53,9 +62,11 @@ export function serverUrl(cfg: MnemeConfig, path: string): string {
 // Paths we never auto-register. Anything under these is treated as ghost
 // agent activity (claude-mem observers, transient subprocess workdirs, etc).
 // The .claude* pattern intentionally covers .claude, .claude-mem, and any
-// future hidden-dir convention used by Claude-adjacent tooling.
+// future hidden-dir convention used by Claude-adjacent tooling — EXCEPT
+// .claude/worktrees/, which holds git worktrees of the surrounding repo
+// and represents real dev work, not ghost activity.
 const BLACKLIST_PATTERNS: RegExp[] = [
-  /\/\.claude[a-z0-9_-]*(\/|$)/,
+  /\/\.claude[a-z0-9_-]*(?!\/worktrees\/)(\/|$)/,
   /^\/tmp(\/|$)/,
   /^\/var\/tmp(\/|$)/,
   /^\/private\/var\/folders(\/|$)/,
