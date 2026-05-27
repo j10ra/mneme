@@ -22,7 +22,7 @@ Four phases, each its own SQL call (not one transaction — a slow phase fails i
    - `created_at` older than `NAP_ARCHIVE_MIN_AGE_DAYS` (30 days) — fair shot at being useful
    - NOT pinned, NOT in_cluster, NOT superseded
 
-   `kind='cluster'` rows get a longer grace window via `NAP_CLUSTER_ARCHIVE_MIN_AGE_DAYS = 60`. Capped at `NAP_ARCHIVE_PER_CYCLE_CAP = 200` so a one-time eligibility bloom doesn't dump thousands at once. Archived rows stay in the table and are still queryable via `mneme_sql` — they just stop appearing on the SessionStart surface. `/mneme:unarchive <uuid>` restores.
+   `kind='cluster'` rows get a longer grace window via `NAP_CLUSTER_ARCHIVE_MIN_AGE_DAYS = 60`. Capped at `NAP_ARCHIVE_PER_CYCLE_CAP = 200` so a one-time eligibility bloom doesn't dump thousands at once. Archived rows stay in the table and are still queryable via `mneme_sql` — they just stop appearing on the SessionStart surface. Restore by calling `bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" unarchive "<uuid>"`.
 
 4. **Seed phase (relate + rule-based supersede + last_napped_at stamp).** One transaction over a `NAP_PER_CYCLE_CAP = 500` slice of least-recently-napped rows:
 

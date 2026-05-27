@@ -28,6 +28,7 @@ erDiagram
         jsonb raw_meta
         timestamptz captured_at
         timestamptz archived_at
+        timestamptz created_at
     }
 
     memories {
@@ -50,6 +51,7 @@ erDiagram
         jsonb meta
         timestamptz created_at
         timestamptz archived_at
+        real recall_weight
     }
 
 ```
@@ -100,6 +102,7 @@ CREATE TABLE captures (
   raw_meta        JSONB NOT NULL DEFAULT '{}',
   captured_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
   archived_at     TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (content_sha256, machine_id)   -- the dedup wall
 );
 
@@ -125,7 +128,8 @@ CREATE TABLE memories (
   private          BOOLEAN NOT NULL DEFAULT false,
   meta             JSONB NOT NULL DEFAULT '{}',
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  archived_at      TIMESTAMPTZ
+  archived_at      TIMESTAMPTZ,
+  recall_weight    REAL NOT NULL DEFAULT 0      -- LTP/LTD reinforcement signal, decayed by nap
 );
 
 CREATE INDEX memories_embedding_idx  ON memories USING hnsw (embedding vector_cosine_ops)

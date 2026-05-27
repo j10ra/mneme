@@ -39,7 +39,7 @@ sequenceDiagram
     Daemon->>Outbox: delete embedded/<id>.json
 ```
 
-**SLA:** the hook → daemon hop is sub-millisecond. The hook never waits for extract or embed. If the daemon is down, the hook writes directly to its outbox at `~/.mneme/outbox/capture/pending/`. If the server is down, the daemon retries with backoff; bundles stay in the outbox until they post or move to `failed/`.
+**SLA:** the hook → daemon hop is sub-millisecond. The hook never waits for extract or embed. If the daemon is down, the hook writes directly to its outbox at `~/.mneme/outbox/capture/captured/`. If the server is down, the daemon retries with backoff; bundles stay in the outbox until they post or move to `failed/`.
 
 ---
 
@@ -84,7 +84,7 @@ Hook posts `{ content, source, repo, harness, session_id, private, ... }` to the
 3. Checks `~/.mneme/shas/<session_id>.txt` for an exact-match duplicate within this session; drops if seen.
 4. Writes `captured/<uuid>.json` and returns `{ id }`. Sub-millisecond.
 
-If the daemon is unreachable, the hook itself writes the same shape to `~/.mneme/outbox/capture/pending/`. The next daemon tick picks it up.
+If the daemon is unreachable, the hook itself writes the same shape to `~/.mneme/outbox/capture/captured/`. The next daemon tick picks it up.
 
 ### Stage 2 · Coalesce + extract
 
