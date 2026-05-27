@@ -1920,10 +1920,12 @@ function mountDashboardRoutes(app, forceDream) {
       const cfg = await readDaemonConfig();
       if (!cfg)
         return c.json({ error: "config not loaded" }, 503);
+      const adminPw = decryptAdminPassword(cfg.adminSecret);
+      const bearer = adminPw ?? cfg.token;
       try {
         const resp = await fetch(`${cfg.serverUrl}/api/_ops/worker/${name}/run`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${cfg.token}` }
+          headers: { Authorization: `Bearer ${bearer}` }
         });
         const body = await resp.text();
         return c.body(body, resp.status, {
@@ -2246,8 +2248,74 @@ async function readDaemonConfig() {
       return null;
     return {
       serverUrl: cfg.server.url.replace(/\/$/, ""),
-      token: cfg.auth.key
+      token: cfg.auth.key,
+      adminSecret: cfg.admin?.secret ?? null
     };
+  } catch {
+    return null;
+  }
+}
+function decryptAdminPassword(blob) {
+  if (!blob)
+    return null;
+  try {
+    const { createDecipheriv, scryptSync } = __require("crypto");
+    const { execFileSync, spawnSync: spawnSync2 } = __require("child_process");
+    const { existsSync: existsSync5, readFileSync } = __require("fs");
+    const { platform } = __require("os");
+    const fp = machineFingerprint(platform(), {
+      execFileSync,
+      spawnSync: spawnSync2,
+      existsSync: existsSync5,
+      readFileSync
+    });
+    if (!fp)
+      return null;
+    const SALT = Buffer.from("mneme-admin-secret-v1");
+    const key = scryptSync(fp, SALT, 32);
+    const buf = Buffer.from(blob, "base64");
+    if (buf.length < 29)
+      return null;
+    const iv = buf.subarray(0, 12);
+    const tag = buf.subarray(12, 28);
+    const ct = buf.subarray(28);
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+    return pt.toString("utf8");
+  } catch {
+    return null;
+  }
+}
+function machineFingerprint(plat, fs) {
+  try {
+    if (plat === "darwin") {
+      const out = fs.execFileSync("ioreg", ["-d2", "-c", "IOPlatformExpertDevice"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 2000
+      });
+      const match = String(out).match(/IOPlatformUUID["\s=]+"([0-9A-Fa-f-]{36})"/);
+      return match?.[1]?.toLowerCase() ?? null;
+    }
+    if (plat === "linux") {
+      for (const p of ["/etc/machine-id", "/var/lib/dbus/machine-id"]) {
+        if (fs.existsSync(p)) {
+          const id = fs.readFileSync(p, "utf8").trim();
+          if (/^[0-9a-f]{32}$/.test(id))
+            return id;
+        }
+      }
+      return null;
+    }
+    if (plat === "win32") {
+      const result = fs.spawnSync("reg", ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"], { encoding: "utf8", timeout: 2000 });
+      if (result.status !== 0)
+        return null;
+      const match = result.stdout.match(/MachineGuid\s+REG_SZ\s+([0-9A-Fa-f-]{36})/);
+      return match?.[1]?.toLowerCase() ?? null;
+    }
+    return null;
   } catch {
     return null;
   }

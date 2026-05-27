@@ -142,10 +142,19 @@ export function mountDashboardRoutes(app: Hono, forceDream: () => Promise<DreamC
       if (name === "nap" || name === "digest") {
         const cfg = await readDaemonConfig();
         if (!cfg) return c.json({ error: "config not loaded" }, 503);
+        // /api/_ops/worker/:name/run requires admin scope (AppSec H-2).
+        // The dashboard runs locally so it has read access to the same
+        // encrypted admin block the slash commands use; decrypt with the
+        // machine-fingerprint-derived key and use that as the bearer.
+        // Falls back to per-machine token if the admin block isn't
+        // present — server will return 403 in that case, which the UI
+        // can surface as "admin password missing on this machine".
+        const adminPw = decryptAdminPassword(cfg.adminSecret);
+        const bearer = adminPw ?? cfg.token;
         try {
           const resp = await fetch(`${cfg.serverUrl}/api/_ops/worker/${name}/run`, {
             method: "POST",
-            headers: { Authorization: `Bearer ${cfg.token}` },
+            headers: { Authorization: `Bearer ${bearer}` },
           });
           const body = await resp.text();
           return c.body(body, resp.status as 200, {
@@ -569,7 +578,7 @@ async function streamLogs(stream: SSEStream, rangeMs: number | null): Promise<vo
 
 // Lazy-read of ~/.mneme/config.json so we always pick up the latest
 // token after rotation. The slash dispatcher uses a similar pattern.
-type DaemonProxyConfig = { serverUrl: string; token: string };
+type DaemonProxyConfig = { serverUrl: string; token: string; adminSecret: string | null };
 
 async function readDaemonConfig(): Promise<DaemonProxyConfig | null> {
   try {
@@ -580,12 +589,100 @@ async function readDaemonConfig(): Promise<DaemonProxyConfig | null> {
     const cfg = JSON.parse(raw) as {
       server?: { url?: string };
       auth?: { key?: string };
+      admin?: { secret?: string };
     };
     if (!cfg.server?.url || !cfg.auth?.key) return null;
     return {
       serverUrl: cfg.server.url.replace(/\/$/, ""),
       token: cfg.auth.key,
+      adminSecret: cfg.admin?.secret ?? null,
     };
+  } catch {
+    return null;
+  }
+}
+
+// Decrypt the AES-GCM-encrypted admin password from ~/.mneme/config.json.
+// Mirrors packages/plugin/scripts/admin-secret.ts; duplicated here so the
+// daemon is self-contained and doesn't reach across package boundaries.
+// Returns null when no admin block is present, when the fingerprint is
+// unavailable on this platform, or on auth-tag failure.
+function decryptAdminPassword(blob: string | null): string | null {
+  if (!blob) return null;
+  try {
+    const { createDecipheriv, scryptSync } = require("node:crypto");
+    const { execFileSync, spawnSync } = require("node:child_process");
+    const { existsSync, readFileSync } = require("node:fs");
+    const { platform } = require("node:os");
+    const fp = machineFingerprint(platform(), {
+      execFileSync,
+      spawnSync,
+      existsSync,
+      readFileSync,
+    });
+    if (!fp) return null;
+    const SALT = Buffer.from("mneme-admin-secret-v1");
+    const key = scryptSync(fp, SALT, 32);
+    const buf = Buffer.from(blob, "base64");
+    if (buf.length < 12 + 16 + 1) return null;
+    const iv = buf.subarray(0, 12);
+    const tag = buf.subarray(12, 28);
+    const ct = buf.subarray(28);
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+    return pt.toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+// Mirrors packages/plugin/scripts/config.ts:machineFingerprint. Pure
+// function, probes platform-canonical hardware ids. Same constraint:
+// daemon stays self-contained.
+function machineFingerprint(
+  plat: NodeJS.Platform,
+  fs: {
+    execFileSync: (cmd: string, args: string[], opts: object) => string | Buffer;
+    spawnSync: (
+      cmd: string,
+      args: string[],
+      opts: object,
+    ) => { status: number | null; stdout: string };
+    existsSync: (p: string) => boolean;
+    readFileSync: (p: string, enc: "utf8") => string;
+  },
+): string | null {
+  try {
+    if (plat === "darwin") {
+      const out = fs.execFileSync("ioreg", ["-d2", "-c", "IOPlatformExpertDevice"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 2000,
+      });
+      const match = String(out).match(/IOPlatformUUID["\s=]+"([0-9A-Fa-f-]{36})"/);
+      return match?.[1]?.toLowerCase() ?? null;
+    }
+    if (plat === "linux") {
+      for (const p of ["/etc/machine-id", "/var/lib/dbus/machine-id"]) {
+        if (fs.existsSync(p)) {
+          const id = fs.readFileSync(p, "utf8").trim();
+          if (/^[0-9a-f]{32}$/.test(id)) return id;
+        }
+      }
+      return null;
+    }
+    if (plat === "win32") {
+      const result = fs.spawnSync(
+        "reg",
+        ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"],
+        { encoding: "utf8", timeout: 2000 },
+      );
+      if (result.status !== 0) return null;
+      const match = result.stdout.match(/MachineGuid\s+REG_SZ\s+([0-9A-Fa-f-]{36})/);
+      return match?.[1]?.toLowerCase() ?? null;
+    }
+    return null;
   } catch {
     return null;
   }
