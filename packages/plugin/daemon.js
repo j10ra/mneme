@@ -1467,7 +1467,9 @@ async function submitClusters(deps, windowKey, clusters) {
   return await response.json();
 }
 async function runDreamCycle(deps) {
+  const cycleStart = Date.now();
   const windowKey = deps.windowKey ?? computeWindowKey();
+  Logger.info("dream: cycle start", { window_key: windowKey });
   Logger.info("dream: attempting lock", { window_key: windowKey });
   const lock = await lockWindow(deps, windowKey);
   if (!lock.acquired) {
@@ -1478,12 +1480,14 @@ async function runDreamCycle(deps) {
     return { skipped: true, reason: `held by ${lock.heldBy ?? "unknown"}` };
   }
   Logger.info("dream: lock acquired", { window_key: windowKey });
+  let t = Date.now();
   const candidates = await fetchCandidates(deps, windowKey);
   const repoCount = Object.keys(candidates.repos).length;
   const seedCount = Object.values(candidates.repos).reduce((sum, r) => sum + r.seeds.length, 0);
   Logger.info("dream: candidates fetched", {
     repos: repoCount,
-    seeds: seedCount
+    seeds: seedCount,
+    ms: Date.now() - t
   });
   const distilledClusters = [];
   for (const [repo, repoData] of Object.entries(candidates.repos)) {
@@ -1610,6 +1614,12 @@ async function runDreamCycle(deps) {
     }
     await deps.outbox.cleanupWindow(windowKey);
   }
+  Logger.info("dream: cycle done", {
+    window_key: windowKey,
+    submitted: submissions.length,
+    written: result.written,
+    total_ms: Date.now() - cycleStart
+  });
   return {
     skipped: false,
     clustersSubmitted: submissions.length,
