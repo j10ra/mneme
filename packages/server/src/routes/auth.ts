@@ -17,8 +17,12 @@
 // via direct DB.
 
 import { Hono } from "hono";
-import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
+import type postgres from "postgres";
+import { currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql, sha256Hex } from "../infra/db.ts";
+
+// eslint-disable-next-line @typescript-eslint/ban-types
+type SqlClient = postgres.ISql<{}>;
 
 function generateToken(machineName: string): string {
   const safeName = machineName
@@ -42,21 +46,17 @@ export type RegisterResult = {
   reused_machine_id: boolean;
 };
 
-/** Opportunistic cleanup: every register call deletes _ops.api_keys rows
- *  that were revoked > 1 day ago. The 1-day buffer lets a recently revoked
- *  token be un-revoked manually if needed; older rows are inert (auth.ts
- *  filters `revoked_at IS NULL` on every check) and only serve as audit
- *  cruft that bloats the table and causes join-multiplication in any
- *  query that forgets the filter. */
-async function pruneStaleRevokedKeys(): Promise<void> {
-  const pruned = await sql`
-    DELETE FROM _ops.api_keys
-    WHERE revoked_at IS NOT NULL
-      AND revoked_at < now() - interval '1 day'
+/** Hard delete every api_keys row for a machine. Used by:
+ *   - /api/auth/revoke (operator terminates a machine's access)
+ *   - registerOrRotate's reuse path (rotate = out with the old, in with new)
+ *  Confirmation lives upstream: /mneme:revoke prompts before posting and
+ *  /mneme:setup is itself a deliberate action. No revoked_at tombstone —
+ *  absence of the row IS the audit trail. */
+async function deleteMachineKeys(machineId: string, client: SqlClient): Promise<number> {
+  const result = await client`
+    DELETE FROM _ops.api_keys WHERE machine_id = ${machineId}
   `;
-  if (pruned.count > 0) {
-    Logger.info("register: pruned stale revoked api_keys", { rows: pruned.count });
-  }
+  return result.count;
 }
 
 /** Pure upsert: rotates token + reuses machine_id when an active row
@@ -73,7 +73,6 @@ export async function registerOrRotate(input: {
       SELECT machine_id, name
       FROM _ops.api_keys
       WHERE machine_fingerprint = ${fingerprint}
-        AND revoked_at IS NULL
         AND machine_id IS NOT NULL
       ORDER BY created_at DESC
       LIMIT 1
@@ -87,18 +86,13 @@ export async function registerOrRotate(input: {
       // Single transaction so the old token is never valid alongside
       // the new one and the unique fingerprint index never sees both.
       await sql.begin(async (tx) => {
-        await tx`
-          UPDATE _ops.api_keys
-          SET revoked_at = now()
-          WHERE machine_id = ${reusedId} AND revoked_at IS NULL
-        `;
+        await deleteMachineKeys(reusedId, tx);
         await tx`
           INSERT INTO _ops.api_keys
             (key_hash, name, machine_id, machine_fingerprint)
           VALUES (${keyHash}, ${reusedName}, ${reusedId}, ${fingerprint})
         `;
       });
-      await pruneStaleRevokedKeys();
       return {
         machine_id: reusedId,
         machine_name: reusedName,
@@ -116,7 +110,6 @@ export async function registerOrRotate(input: {
       (key_hash, name, machine_id, machine_fingerprint)
     VALUES (${keyHash}, ${machineName}, ${machineId}, ${fingerprint})
   `;
-  await pruneStaleRevokedKeys();
   return {
     machine_id: machineId,
     machine_name: machineName,
@@ -171,7 +164,7 @@ export function mountAuthRoutes(app: Hono): void {
 
   // ---------------------------------------------------------------------------
   // POST /api/auth/revoke — revoke a machine's token.
-  // Body: { machine_id }. Sets revoked_at on every active key for that machine.
+  // Body: { machine_id }. Hard-deletes every api_keys row for that machine.
   // ---------------------------------------------------------------------------
   app.post("/api/auth/revoke", mnemeRoute("api.auth.revoke"), requireAuth("admin"), async (c) => {
     const body = (await c.req.json().catch(() => null)) as {
@@ -181,12 +174,8 @@ export function mountAuthRoutes(app: Hono): void {
       typeof body?.machine_id === "string" && body.machine_id.trim() ? body.machine_id.trim() : "";
     if (!machineId) return c.json({ error: "machine_id required" }, 400);
 
-    const result = await sql`
-        UPDATE _ops.api_keys
-        SET revoked_at = now()
-        WHERE machine_id = ${machineId} AND revoked_at IS NULL
-      `;
-    return c.json({ machine_id: machineId, revoked: result.count });
+    const revoked = await deleteMachineKeys(machineId, sql);
+    return c.json({ machine_id: machineId, revoked });
   });
 
   // ---------------------------------------------------------------------------

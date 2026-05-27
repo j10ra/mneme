@@ -20,7 +20,7 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
       `;
   });
 
-  test("fingerprint match: reuses machine_id, rotates token, revokes old keys", async () => {
+  test("fingerprint match: reuses machine_id, rotates token, deletes old keys", async () => {
     const { registerOrRotate } = await import("../src/routes/auth.ts");
     const { sql } = await import("../src/infra/db.ts");
     const fp = `test-fp-reuse-${crypto.randomUUID()}`;
@@ -45,15 +45,13 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
     expect(second.machine_name).toBe("macbook-test"); // body name ignored on match
     expect(second.token).not.toBe(first.token); // rotated
 
-    const rows = await sql<{ token_count_active: bigint; token_count_total: bigint }[]>`
-        SELECT
-          COUNT(*) FILTER (WHERE revoked_at IS NULL) AS token_count_active,
-          COUNT(*) AS token_count_total
+    const rows = await sql<{ token_count_total: bigint }[]>`
+        SELECT COUNT(*) AS token_count_total
         FROM _ops.api_keys
         WHERE machine_id = ${first.machine_id}
       `;
-    expect(Number(rows[0]!.token_count_active)).toBe(1);
-    expect(Number(rows[0]!.token_count_total)).toBe(2); // first revoked, second active
+    // The old row is hard-deleted on rotate; only the new active row remains.
+    expect(Number(rows[0]!.token_count_total)).toBe(1);
   });
 
   test("no fingerprint: mints a fresh machine_id every call", async () => {
@@ -92,52 +90,9 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
     const rows = await sql<{ machine_fingerprint: string | null }[]>`
         SELECT machine_fingerprint
         FROM _ops.api_keys
-        WHERE machine_id = ${r.machine_id} AND revoked_at IS NULL
+        WHERE machine_id = ${r.machine_id}
       `;
     expect(rows.length).toBe(1);
     expect(rows[0]!.machine_fingerprint).toBe(fp);
-  });
-
-  test("register prunes revoked_at > 1 day rows; keeps recent-revoked and active", async () => {
-    const { registerOrRotate } = await import("../src/routes/auth.ts");
-    const { sql, sha256Hex } = await import("../src/infra/db.ts");
-
-    const fpStale = `test-fp-stale-${crypto.randomUUID()}`;
-    const fpRecent = `test-fp-recent-${crypto.randomUUID()}`;
-    const fpActive = `test-fp-active-${crypto.randomUUID()}`;
-    const fpTrigger = `test-fp-trigger-${crypto.randomUUID()}`;
-    fingerprintsToCleanup.push(fpStale, fpRecent, fpActive, fpTrigger);
-
-    // Stale: revoked 2 days ago — should be DELETED.
-    const staleHash = await sha256Hex("stale-tok");
-    await sql`
-      INSERT INTO _ops.api_keys (key_hash, name, machine_id, machine_fingerprint, revoked_at)
-      VALUES (${staleHash}, 'stale', ${crypto.randomUUID()}, ${fpStale}, now() - interval '2 days')
-    `;
-    // Recent-revoked: revoked 1 hour ago — should be KEPT (inside 1-day buffer).
-    const recentHash = await sha256Hex("recent-tok");
-    await sql`
-      INSERT INTO _ops.api_keys (key_hash, name, machine_id, machine_fingerprint, revoked_at)
-      VALUES (${recentHash}, 'recent', ${crypto.randomUUID()}, ${fpRecent}, now() - interval '1 hour')
-    `;
-    // Active: never revoked — should be KEPT.
-    const activeHash = await sha256Hex("active-tok");
-    await sql`
-      INSERT INTO _ops.api_keys (key_hash, name, machine_id, machine_fingerprint)
-      VALUES (${activeHash}, 'active', ${crypto.randomUUID()}, ${fpActive})
-    `;
-
-    // Trigger the register path; the pruneStaleRevokedKeys call fires inside it.
-    await registerOrRotate({ machineName: "trigger", fingerprint: fpTrigger });
-
-    const rows = await sql<{ machine_fingerprint: string | null }[]>`
-        SELECT machine_fingerprint
-        FROM _ops.api_keys
-        WHERE machine_fingerprint = ANY(${[fpStale, fpRecent, fpActive]})
-      `;
-    const surviving = rows.map((r) => r.machine_fingerprint);
-    expect(surviving).not.toContain(fpStale);
-    expect(surviving).toContain(fpRecent);
-    expect(surviving).toContain(fpActive);
   });
 });
