@@ -176,7 +176,7 @@ export function createRuntime(deps: DaemonDeps) {
   // can raise once we observe DB / network behavior under burst.
   const PUSH_CONCURRENCY = 4;
 
-  // Cap on total memory texts handed to bge-large in a single call. The
+  // Cap on total memory texts handed to bge-small in a single call. The
   // model accepts arbitrary-length batches in principle, but very large
   // arrays risk OOM on quantized weights. 64 keeps memory bounded while
   // still ~5x faster than per-file embed for typical drain bursts.

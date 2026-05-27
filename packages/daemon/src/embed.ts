@@ -16,9 +16,8 @@ import { Logger } from "@mneme/core";
 // Canonical model name written into `meta.embedding_model` and used in
 // `chunk_id = sha256(content_hash + ":" + EMBEDDER_MODEL)`. The
 // Transformers.js mirror ID (`Xenova/bge-small-en-v1.5`) is an
-// implementation detail of the worker. Phase 1 of #36 swapped from
-// bge-large (1024-dim) to bge-small (384-dim): retrieval-tier MTEB
-// score is higher, on-disk ONNX shrinks ~3x, peak RAM ~5x.
+// implementation detail of the worker. bge-small at 384 dims is the
+// retrieval-tier MTEB sweet spot — small ONNX, low peak RAM.
 export const EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5";
 export const EMBEDDER_DIM = 384;
 

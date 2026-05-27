@@ -509,9 +509,7 @@ export async function writeClusters(
       // path: sha256(content) -> content_hash, sha256(content_hash +
       // ":" + embedding_model) -> chunk_id. The daemon supplies
       // embedding_model in the cluster submission — server is
-      // label-agnostic and just hashes against what was sent. Pre-1.1.62
-      // this was a hardcoded "BAAI/bge-large-en-v1.5" literal that
-      // produced 89 mislabeled cluster rows; migration 0030 backfills.
+      // label-agnostic and just hashes against what was sent.
       const embeddingModel = cluster.embedding_model;
       const contentHash = await sha256Hex(cluster.summary);
       const chunkId = await sha256Hex(`${contentHash}:${embeddingModel}`);

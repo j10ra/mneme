@@ -31,7 +31,7 @@ Traceless logs are handled by the third `DELETE`.
 
 ## When it runs
 
-Registered in [`packages/server/src/worker/index.ts`](../../packages/server/src/worker/index.ts) alongside `nap`, `dream`, `keepalive`, `digest`:
+Registered in [`packages/server/src/worker/index.ts`](../../packages/server/src/worker/index.ts) alongside `nap`, `keepalive`, and the gated `digest`. (Dream is daemon-side, registered in [`packages/daemon/src/index.ts`](../../packages/daemon/src/index.ts).)
 
 ```ts
 register({

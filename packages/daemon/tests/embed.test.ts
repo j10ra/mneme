@@ -2,8 +2,8 @@
 //
 // The default suite covers the wrapper logic (empty input, constants).
 // The live test that actually spawns the subprocess and loads the
-// bge-large ONNX model is gated behind MNEME_RUN_LIVE=1 because the
-// first run downloads ~1.3GB and warms up an ONNX runtime — not
+// bge-small ONNX model is gated behind MNEME_RUN_LIVE=1 because the
+// first run downloads ~33MB and warms up an ONNX runtime — not
 // appropriate for the default test loop.
 
 import { afterAll, describe, expect, test } from "bun:test";

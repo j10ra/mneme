@@ -103,9 +103,9 @@ const TOOL_DEF = {
   name: "mneme_sql",
   description:
     "Execute a read-only SELECT against Mneme's Postgres. " +
-    "Use embed('text') macro for semantic search (substituted with a 1024-dim vector before execution). " +
+    "Use embed('text') macro for semantic search (substituted with a 384-dim vector before execution). " +
     "Combine with `<=>` for cosine distance and `ts_rank(tsv, websearch_to_tsquery(...))` for keyword. " +
-    "Auto-LIMIT 200 if absent. 5s timeout, 1MB result cap. " +
+    "Auto-LIMIT 50 if absent. 5s timeout, 1MB result cap. " +
     "See the using-mneme skill for the schema and query templates.",
   inputSchema: {
     type: "object",

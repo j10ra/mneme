@@ -16,12 +16,12 @@ Column types, jsonb shapes, and the source taxonomy. Load when you need to const
 | `chunk_id` | `text` UNIQUE | model-scoped: `sha256(content_hash + ":" + embedding_model)`. Re-embed under a new model produces fresh rows, doesn't overwrite. |
 | `content` | `text` | the memory itself. For `kind='cluster'` rows, this is the LLM-distilled summary. |
 | `content_hash` | `text` | sha256 of `content` |
-| `embedding` | `vector(1024)` | cosine via `<=>`. Use `embed('text')` macro to inject query vector. |
+| `embedding` | `vector(384)` | cosine via `<=>`. Use `embed('text')` macro to inject query vector. |
 | `embedding_model` | `text` | model name from the embedder; varies by deployment |
 | `tsv` | `tsvector` | for `ts_rank(tsv, websearch_to_tsquery('english', 'q'))` |
 | `kind` | `text` | one of: `note`, `bugfix`, `feature`, `discovery`, `decision`, `preference`, `constraint`, `security_alert`, `reference`, `summary`, `cluster`. |
-| `importance` | `real` | `[0.05, 1.0]` for unpinned, `[0.5, 1.0]` for pinned. Decays each nap cycle (every 6h, τ=30 days). |
-| `recall_weight` | `real` | Use-driven reinforcement (LTP). Server bumps it on every successful `mneme_sql` access whose intent is clear: explicit UUIDs in WHERE, the `/recall` marker, or a narrowed ≤10-row query. Decays ×0.9 each nap cycle. Ranking adds `0.1 * ln(1 + recall_weight)`, so hot rows drift up without dominating. Filter/inspect freely; the server writes it for you. |
+| `importance` | `real` | `[0.05, 1.0]` for unpinned, `[0.5, 1.0]` for pinned. Decays each nap cycle (every 4h, τ=30 days). |
+| `recall_weight` | `real` | Use-driven reinforcement (LTP). Server bumps it on every successful `mneme_sql` access whose intent is clear: explicit UUIDs in WHERE, the `/recall` marker, or a narrowed ≤10-row query. Decays ×0.933 each nap cycle. Ranking adds `0.1 * ln(1 + recall_weight)`, so hot rows drift up without dominating. Filter/inspect freely; the server writes it for you. |
 | `meta` | `jsonb` | see jsonb shapes below |
 | `repo`, `machine_id`, `harness`, `agent`, `topics[]` | `text` / `text[]` | denormalised scope from capture |
 | `private` | `bool` | RLS-blocked from the reader role. Don't filter on it — you can't see them anyway. |
