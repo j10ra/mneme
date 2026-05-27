@@ -778,7 +778,7 @@ export function mountOpsRoutes(app: Hono): void {
   app.post(
     "/api/_ops/worker/:name/run",
     mnemeRoute("api._ops.worker.run"),
-    requireAuth("capture"),
+    requireAuth("admin"),
     async (c) => {
       const r = await forceWorkerRun(c.req.param("name"));
       if (!r.ok) return c.json({ error: r.error }, r.status);
