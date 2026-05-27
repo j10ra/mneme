@@ -104,6 +104,20 @@ export async function releaseDreamLock(
   `;
 }
 
+/** Hard-delete a still-in-flight claim. Called by the daemon's SIGTERM
+ *  handler before exit so a refresh-daemon or container-kill doesn't
+ *  leave the row dangling with completed_at = null, which the dashboard
+ *  paints as "RUNNING" until the next acquireDreamLock attempt reaps it. */
+export async function abortDreamLock(windowKey: number, machineId: string): Promise<number> {
+  const result = await sql`
+    DELETE FROM _ops.dream_runs
+    WHERE window_key = ${windowKey}
+      AND claimed_by_machine_id = ${machineId}
+      AND completed_at IS NULL
+  `;
+  return result.count;
+}
+
 export type EdgeRow = {
   id: string;
   repo: string | null;
@@ -645,6 +659,29 @@ export function mountDreamRoutes(app: Hono): void {
     if (result.acquired) return c.json(result);
     return c.json(result, 409);
   });
+
+  // Self-release: the calling daemon abandons its own in-flight window.
+  // Used by the daemon's SIGTERM handler so a refresh-daemon doesn't
+  // leave an orphan claim row paint the dashboard as "RUNNING" until
+  // the next acquireDreamLock reaps it.
+  app.post(
+    "/api/dream/lock/release",
+    mnemeRoute("api.dream.lock.release"),
+    requireAuth("capture"),
+    async (c) => {
+      const body = (await c.req.json().catch(() => null)) as { window_key?: unknown } | null;
+      const windowKey = body && typeof body.window_key === "number" ? body.window_key : NaN;
+      if (!Number.isFinite(windowKey)) {
+        return c.json({ error: "window_key required" }, 400);
+      }
+      const auth = currentAuth();
+      if (!auth?.machineId) {
+        return c.json({ error: "dream lock release requires per-machine token" }, 400);
+      }
+      const aborted = await abortDreamLock(windowKey, auth.machineId);
+      return c.json({ window_key: windowKey, aborted });
+    },
+  );
 
   app.get(
     "/api/dream/candidates",

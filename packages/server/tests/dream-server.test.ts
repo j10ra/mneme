@@ -51,6 +51,60 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
     }
   });
 
+  test("abortDreamLock deletes only own in-flight claim", async () => {
+    const { acquireDreamLock, abortDreamLock } = await import("../src/routes/dream.ts");
+    const { sql } = await import("../src/infra/db.ts");
+    const windowKey = -999_999_005;
+    const otherWindow = -999_999_006;
+    const machineA = "00000000-0000-0000-0000-00000000a005";
+    const machineB = "00000000-0000-0000-0000-00000000a006";
+
+    try {
+      await acquireDreamLock(windowKey, machineA);
+      await acquireDreamLock(otherWindow, machineB);
+
+      // Wrong machine: no-op
+      const wrongMachine = await abortDreamLock(windowKey, machineB);
+      expect(wrongMachine).toBe(0);
+
+      // Right machine: deletes
+      const own = await abortDreamLock(windowKey, machineA);
+      expect(own).toBe(1);
+
+      // Verify A's row is gone, B's is intact
+      const a = await sql`SELECT 1 FROM _ops.dream_runs WHERE window_key = ${windowKey}`;
+      expect(a.length).toBe(0);
+      const b = await sql`SELECT 1 FROM _ops.dream_runs WHERE window_key = ${otherWindow}`;
+      expect(b.length).toBe(1);
+    } finally {
+      await sql`DELETE FROM _ops.dream_runs WHERE window_key IN (${windowKey}, ${otherWindow})`;
+    }
+  });
+
+  test("abortDreamLock leaves completed claims untouched", async () => {
+    const { acquireDreamLock, releaseDreamLock, abortDreamLock } = await import(
+      "../src/routes/dream.ts"
+    );
+    const { sql } = await import("../src/infra/db.ts");
+    const windowKey = -999_999_007;
+    const machineA = "00000000-0000-0000-0000-00000000a007";
+
+    try {
+      await acquireDreamLock(windowKey, machineA);
+      await releaseDreamLock(windowKey, machineA, 3);
+      // Already completed — abort must be a no-op (filter: completed_at IS NULL).
+      const aborted = await abortDreamLock(windowKey, machineA);
+      expect(aborted).toBe(0);
+
+      const rows = await sql<{ completed_at: Date | null }[]>`
+        SELECT completed_at FROM _ops.dream_runs WHERE window_key = ${windowKey}
+      `;
+      expect(rows[0]?.completed_at).not.toBeNull();
+    } finally {
+      await sql`DELETE FROM _ops.dream_runs WHERE window_key = ${windowKey}`;
+    }
+  });
+
   test("upsertHeartbeat records and overwrites the per-machine row", async () => {
     const { upsertHeartbeat } = await import("../src/routes/heartbeat.ts");
     const { sql } = await import("../src/infra/db.ts");

@@ -1279,6 +1279,10 @@ var DREAM_MAX_CLUSTER_SIZE = 20;
 // packages/daemon/src/dream.ts
 var WINDOW_SECONDS = DREAM_WINDOW_HOURS * 3600;
 var WINDOW_MINUTES = DREAM_WINDOW_HOURS * 60;
+var activeWindow = null;
+function getActiveDreamWindow() {
+  return activeWindow;
+}
 function computeWindowKey(date = new Date) {
   return Math.floor(date.getTime() / 1000 / WINDOW_SECONDS);
 }
@@ -1425,6 +1429,11 @@ async function parseNdjsonCandidates(response, expectedWindowKey) {
         break;
     }
   };
+  const PROGRESS_LOG_INTERVAL_MS = 1e4;
+  let edgeFrames = 0;
+  let neighborFrames = 0;
+  let lastProgressAt = Date.now();
+  const streamStart = lastProgressAt;
   while (true) {
     const { value, done } = await reader.read();
     if (done)
@@ -1436,6 +1445,19 @@ async function parseNdjsonCandidates(response, expectedWindowKey) {
       const line = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
       handleFrame(line);
+      if (line.includes('"t":"edge"'))
+        edgeFrames++;
+      else if (line.includes('"t":"neighbor"'))
+        neighborFrames++;
+    }
+    if (Date.now() - lastProgressAt >= PROGRESS_LOG_INTERVAL_MS) {
+      lastProgressAt = Date.now();
+      Logger.info("dream: candidates streaming", {
+        elapsed_s: Math.round((lastProgressAt - streamStart) / 1000),
+        edges: edgeFrames,
+        neighbors: neighborFrames,
+        repos: Object.keys(repos).length
+      });
     }
   }
   if (buf.trim())
@@ -1480,6 +1502,7 @@ async function runDreamCycle(deps) {
     return { skipped: true, reason: `held by ${lock.heldBy ?? "unknown"}` };
   }
   Logger.info("dream: lock acquired", { window_key: windowKey });
+  activeWindow = windowKey;
   let t = Date.now();
   const candidates = await fetchCandidates(deps, windowKey);
   const repoCount = Object.keys(candidates.repos).length;
@@ -1620,6 +1643,7 @@ async function runDreamCycle(deps) {
     written: result.written,
     total_ms: Date.now() - cycleStart
   });
+  activeWindow = null;
   return {
     skipped: false,
     clustersSubmitted: submissions.length,
@@ -3413,7 +3437,27 @@ async function startDaemon() {
   });
   await startScheduler();
   const shutdown = async (signal) => {
-    Logger.info(`daemon ${signal} \u2014 flushing traces`);
+    Logger.info(`daemon ${signal} \u2014 releasing dream lock + flushing traces`);
+    const window = getActiveDreamWindow();
+    if (window !== null) {
+      try {
+        const resp = await fetch(`${config.server_url}/api/dream/lock/release`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.token}`
+          },
+          body: JSON.stringify({ window_key: window }),
+          signal: AbortSignal.timeout(2000)
+        });
+        if (resp.ok)
+          Logger.info("daemon: released dream lock", { window_key: window });
+        else
+          Logger.warn(`dream lock release returned ${resp.status}`, { window_key: window });
+      } catch (err) {
+        Logger.warn("dream lock release on shutdown failed", err);
+      }
+    }
     try {
       await getTraceStore()?.stop();
     } catch (err) {

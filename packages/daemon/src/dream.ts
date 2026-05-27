@@ -28,6 +28,15 @@ import {
 const WINDOW_SECONDS = DREAM_WINDOW_HOURS * 3600;
 const WINDOW_MINUTES = DREAM_WINDOW_HOURS * 60;
 
+// Track the daemon's in-flight dream lock so the SIGTERM handler can
+// release it before exit. Only one cycle runs at a time per daemon
+// (server-side lock prevents concurrent claims), so module-scope state
+// is sufficient. Null when no cycle is in flight.
+let activeWindow: number | null = null;
+export function getActiveDreamWindow(): number | null {
+  return activeWindow;
+}
+
 export function computeWindowKey(date = new Date()): number {
   return Math.floor(date.getTime() / 1000 / WINDOW_SECONDS);
 }
@@ -269,6 +278,17 @@ export async function parseNdjsonCandidates(
     }
   };
 
+  // Intra-stream progress so a slow fetch isn't a black box. Log every
+  // PROGRESS_LOG_INTERVAL_MS with running counts; the fetch can run for
+  // minutes against a large corpus and the operator wants to see it
+  // making progress, not just "lock acquired ... silence ... candidates
+  // fetched (5m later)".
+  const PROGRESS_LOG_INTERVAL_MS = 10_000;
+  let edgeFrames = 0;
+  let neighborFrames = 0;
+  let lastProgressAt = Date.now();
+  const streamStart = lastProgressAt;
+
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -278,6 +298,18 @@ export async function parseNdjsonCandidates(
       const line = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
       handleFrame(line);
+      // Count frames here (we don't reach into handleFrame's switch).
+      if (line.includes('"t":"edge"')) edgeFrames++;
+      else if (line.includes('"t":"neighbor"')) neighborFrames++;
+    }
+    if (Date.now() - lastProgressAt >= PROGRESS_LOG_INTERVAL_MS) {
+      lastProgressAt = Date.now();
+      Logger.info("dream: candidates streaming", {
+        elapsed_s: Math.round((lastProgressAt - streamStart) / 1000),
+        edges: edgeFrames,
+        neighbors: neighborFrames,
+        repos: Object.keys(repos).length,
+      });
     }
   }
   // Producers usually terminate with \n, but be defensive about a
@@ -333,6 +365,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     return { skipped: true, reason: `held by ${lock.heldBy ?? "unknown"}` };
   }
   Logger.info("dream: lock acquired", { window_key: windowKey });
+  activeWindow = windowKey;
 
   let t = Date.now();
   const candidates = await fetchCandidates(deps, windowKey);
@@ -512,6 +545,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     written: result.written,
     total_ms: Date.now() - cycleStart,
   });
+  activeWindow = null;
 
   return {
     skipped: false,

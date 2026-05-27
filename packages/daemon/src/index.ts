@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { Logger, configureLogger, configureTraceStore, getTraceStore, mnemeFn } from "@mneme/core";
 import { Hono } from "hono";
 import { pickAgent } from "./agents/index.ts";
-import { type DreamDeps, resumeDreamCycles, runDreamCycle } from "./dream.ts";
+import { type DreamDeps, getActiveDreamWindow, resumeDreamCycles, runDreamCycle } from "./dream.ts";
 import { createDreamOutbox } from "./dream-outbox.ts";
 import { disposeIfIdle, embedBatch } from "./embed.ts";
 import { createOutbox } from "./outbox.ts";
@@ -363,10 +363,31 @@ export async function startDaemon(): Promise<void> {
   });
   await startScheduler();
 
-  // Flush in-flight spans on shutdown so the operator sees the trail
-  // when launchctl yanks the daemon. Best-effort; failures don't block.
+  // Best-effort shutdown: release in-flight dream lock + flush spans.
+  // Without the lock release, a refresh-daemon / SIGTERM mid-cycle leaves
+  // the _ops.dream_runs row with completed_at = null forever, which the
+  // dashboard paints as "RUNNING" until the next acquireDreamLock reaps
+  // it. Releasing here lets the next cycle claim immediately.
   const shutdown = async (signal: string): Promise<void> => {
-    Logger.info(`daemon ${signal} — flushing traces`);
+    Logger.info(`daemon ${signal} — releasing dream lock + flushing traces`);
+    const window = getActiveDreamWindow();
+    if (window !== null) {
+      try {
+        const resp = await fetch(`${config.server_url}/api/dream/lock/release`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.token}`,
+          },
+          body: JSON.stringify({ window_key: window }),
+          signal: AbortSignal.timeout(2000),
+        });
+        if (resp.ok) Logger.info("daemon: released dream lock", { window_key: window });
+        else Logger.warn(`dream lock release returned ${resp.status}`, { window_key: window });
+      } catch (err) {
+        Logger.warn("dream lock release on shutdown failed", err);
+      }
+    }
     try {
       await getTraceStore()?.stop();
     } catch (err) {
