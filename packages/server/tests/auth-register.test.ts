@@ -97,4 +97,47 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
     expect(rows.length).toBe(1);
     expect(rows[0]!.machine_fingerprint).toBe(fp);
   });
+
+  test("register prunes revoked_at > 1 day rows; keeps recent-revoked and active", async () => {
+    const { registerOrRotate } = await import("../src/routes/auth.ts");
+    const { sql, sha256Hex } = await import("../src/infra/db.ts");
+
+    const fpStale = `test-fp-stale-${crypto.randomUUID()}`;
+    const fpRecent = `test-fp-recent-${crypto.randomUUID()}`;
+    const fpActive = `test-fp-active-${crypto.randomUUID()}`;
+    const fpTrigger = `test-fp-trigger-${crypto.randomUUID()}`;
+    fingerprintsToCleanup.push(fpStale, fpRecent, fpActive, fpTrigger);
+
+    // Stale: revoked 2 days ago — should be DELETED.
+    const staleHash = await sha256Hex("stale-tok");
+    await sql`
+      INSERT INTO _ops.api_keys (key_hash, name, machine_id, machine_fingerprint, revoked_at)
+      VALUES (${staleHash}, 'stale', ${crypto.randomUUID()}, ${fpStale}, now() - interval '2 days')
+    `;
+    // Recent-revoked: revoked 1 hour ago — should be KEPT (inside 1-day buffer).
+    const recentHash = await sha256Hex("recent-tok");
+    await sql`
+      INSERT INTO _ops.api_keys (key_hash, name, machine_id, machine_fingerprint, revoked_at)
+      VALUES (${recentHash}, 'recent', ${crypto.randomUUID()}, ${fpRecent}, now() - interval '1 hour')
+    `;
+    // Active: never revoked — should be KEPT.
+    const activeHash = await sha256Hex("active-tok");
+    await sql`
+      INSERT INTO _ops.api_keys (key_hash, name, machine_id, machine_fingerprint)
+      VALUES (${activeHash}, 'active', ${crypto.randomUUID()}, ${fpActive})
+    `;
+
+    // Trigger the register path; the pruneStaleRevokedKeys call fires inside it.
+    await registerOrRotate({ machineName: "trigger", fingerprint: fpTrigger });
+
+    const rows = await sql<{ machine_fingerprint: string | null }[]>`
+        SELECT machine_fingerprint
+        FROM _ops.api_keys
+        WHERE machine_fingerprint = ANY(${[fpStale, fpRecent, fpActive]})
+      `;
+    const surviving = rows.map((r) => r.machine_fingerprint);
+    expect(surviving).not.toContain(fpStale);
+    expect(surviving).toContain(fpRecent);
+    expect(surviving).toContain(fpActive);
+  });
 });

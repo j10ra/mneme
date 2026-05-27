@@ -17,7 +17,7 @@
 // via direct DB.
 
 import { Hono } from "hono";
-import { currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
+import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql, sha256Hex } from "../infra/db.ts";
 
 function generateToken(machineName: string): string {
@@ -41,6 +41,23 @@ export type RegisterResult = {
    *  a fresh machine_id. */
   reused_machine_id: boolean;
 };
+
+/** Opportunistic cleanup: every register call deletes _ops.api_keys rows
+ *  that were revoked > 1 day ago. The 1-day buffer lets a recently revoked
+ *  token be un-revoked manually if needed; older rows are inert (auth.ts
+ *  filters `revoked_at IS NULL` on every check) and only serve as audit
+ *  cruft that bloats the table and causes join-multiplication in any
+ *  query that forgets the filter. */
+async function pruneStaleRevokedKeys(): Promise<void> {
+  const pruned = await sql`
+    DELETE FROM _ops.api_keys
+    WHERE revoked_at IS NOT NULL
+      AND revoked_at < now() - interval '1 day'
+  `;
+  if (pruned.count > 0) {
+    Logger.info("register: pruned stale revoked api_keys", { rows: pruned.count });
+  }
+}
 
 /** Pure upsert: rotates token + reuses machine_id when an active row
  *  shares the fingerprint, else mints fresh. Exported so tests can hit
@@ -81,6 +98,7 @@ export async function registerOrRotate(input: {
           VALUES (${keyHash}, ${reusedName}, ${reusedId}, ${fingerprint})
         `;
       });
+      await pruneStaleRevokedKeys();
       return {
         machine_id: reusedId,
         machine_name: reusedName,
@@ -98,6 +116,7 @@ export async function registerOrRotate(input: {
       (key_hash, name, machine_id, machine_fingerprint)
     VALUES (${keyHash}, ${machineName}, ${machineId}, ${fingerprint})
   `;
+  await pruneStaleRevokedKeys();
   return {
     machine_id: machineId,
     machine_name: machineName,
