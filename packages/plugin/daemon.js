@@ -3198,16 +3198,30 @@ async function readConfig() {
     agent_provider: shaped.daemon.agent_provider
   };
 }
+var PUSH_FETCH_TIMEOUT_MS = 30000;
 function pushBundleViaServer(serverUrl, token) {
   return async (bundle) => {
-    const response = await fetch(`${serverUrl}/api/bundle`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`
-      },
-      body: JSON.stringify(bundle)
-    });
+    const controller = new AbortController;
+    const timer2 = setTimeout(() => controller.abort(), PUSH_FETCH_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(`${serverUrl}/api/bundle`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(bundle),
+        signal: controller.signal
+      });
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error(`push timed out after ${PUSH_FETCH_TIMEOUT_MS}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer2);
+    }
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
       const err = new Error(`push failed ${response.status}: ${detail.slice(0, 300)}`);
@@ -3405,6 +3419,7 @@ if (import.meta.main) {
 }
 export {
   startDaemon,
+  pushBundleViaServer,
   pickAgent,
   listAgents
 };

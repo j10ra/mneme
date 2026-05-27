@@ -81,16 +81,37 @@ async function readConfig(): Promise<DaemonConfig> {
   };
 }
 
-function pushBundleViaServer(serverUrl: string, token: string) {
+// Per-request ceiling on /api/bundle fetch. Without this, a server
+// flip into "Application not found" mid-flight (Railway redeploy, edge
+// hiccup) can leave the fetch awaiting forever — the push worker then
+// holds a dead promise, captures pile in embedded/, and only a daemon
+// restart unwedges it. With the timeout, an idle fetch aborts and the
+// next push tick retries cleanly. Issue #47.
+const PUSH_FETCH_TIMEOUT_MS = 30_000;
+
+export function pushBundleViaServer(serverUrl: string, token: string) {
   return async (bundle: Bundle): Promise<void> => {
-    const response = await fetch(`${serverUrl}/api/bundle`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(bundle),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PUSH_FETCH_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(`${serverUrl}/api/bundle`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(bundle),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error(`push timed out after ${PUSH_FETCH_TIMEOUT_MS}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
       const err = new Error(`push failed ${response.status}: ${detail.slice(0, 300)}`);
