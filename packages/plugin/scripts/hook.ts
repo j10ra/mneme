@@ -621,7 +621,9 @@ async function main(): Promise<void> {
         //   systemMessage     → user gets a compact status banner: repo,
         //                       machines, since-last-session totals, plus
         //                       a flavor line. No raw memory rows here.
-        // Gate systemMessage to source=startup only.
+        // Banner on startup + clear: both are moments the user is looking
+        // at a fresh context and wants confirmation the surface re-injected.
+        // resume/compact stay quiet (they're mid-flow, not fresh starts).
         const fullForLlm = prefixSurfaceForLLM(surface, formatSurfaceForTerminal(surface));
         const injectedBytes = Buffer.byteLength(fullForLlm, "utf8");
         const summaryForUser = summariseSurfaceForUser(surface, injectedBytes);
@@ -631,7 +633,7 @@ async function main(): Promise<void> {
             additionalContext: fullForLlm,
           },
         };
-        if (source === "startup") {
+        if (source === "startup" || source === "clear") {
           envelope.systemMessage = summaryForUser;
         }
         // Stale-session banner: the hook running RIGHT NOW lives at
