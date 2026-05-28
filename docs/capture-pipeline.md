@@ -159,6 +159,16 @@ The push worker runs **4-wide concurrent** `POST /api/bundle` calls against the 
 
 ---
 
+## Trust boundary — the daemon trusts every loopback caller
+
+The daemon's HTTP listener binds to `127.0.0.1` and runs **no authentication on any route** (`/capture`, `/embed`, `/dashboard`, `/dashboard/api/*`, `/flush`). This is a deliberate, accepted design choice for a single-user personal tool, not an oversight ([#54](https://github.com/j10ra/mneme/issues/54)).
+
+What that means: any process running **on the same machine** can enqueue captures with arbitrary `machine_id`/`content` (which then push to the server under the real per-machine token), use the embedder, or open the dashboard (which proxies `/api/_ops/*` reads with the daemon's stored admin bearer). The `127.0.0.1` bind already removes all network exposure — only local processes can reach it.
+
+**The boundary: run Mneme only on machines whose local user space you trust.** Don't run it on a shared CI runner, a multi-user dev box, or a container that shares a network namespace with untrusted processes. On such a host, add a daemon-local shared secret before deploying (the [#54](https://github.com/j10ra/mneme/issues/54) "option B" sketch). A loopback secret stored in `~/.mneme/config.json` (mode `0600`) buys nothing against an attacker who already runs as you — they can read the secret file, the per-machine token, and the keychain alike — so it's only worth adding when there's a genuine second local user to defend against.
+
+---
+
 ## See also
 
 - [`workers/nap.md`](./workers/nap.md), [`workers/dream.md`](./workers/dream.md), [`workers/digest.md`](./workers/digest.md) — what happens to the memories after they land.

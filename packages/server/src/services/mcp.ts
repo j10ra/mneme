@@ -78,23 +78,36 @@ const FORBIDDEN_RE =
   /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|VACUUM|REINDEX|REFRESH|COPY|CALL|DO|EXECUTE|LOCK|MERGE)\b/i;
 
 const EMBED_RE = /\bembed\(\s*'((?:[^'\\]|\\.)*)'\s*\)/gi;
-const LIMIT_RE = /\bLIMIT\b\s+(\d+)/i;
+
+// A *top-level* LIMIT sits at the tail of the statement. A LIMIT inside a
+// CTE or subquery is always followed by a ")", so anchoring to end-of-string
+// excludes it. This closes #57: `WITH foo AS (SELECT 1 LIMIT 9e9) SELECT *
+// FROM memories` no longer reads the inner LIMIT as the outer cap.
+const TOP_LIMIT_RE = /\bLIMIT\s+(\d+|ALL)\b(?:\s+OFFSET\s+\d+)?\s*$/i;
 
 function stripComments(sql: string): string {
   return sql.replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-function injectLimit(sql: string): string {
-  if (LIMIT_RE.test(sql)) return sql;
-  return `${sql.trimEnd().replace(/;\s*$/, "")} LIMIT ${DEFAULT_LIMIT}`;
+function stripTrailingSemicolon(sql: string): string {
+  return sql.trimEnd().replace(/;\s*$/, "");
 }
 
-// Effective row cap for a query: the agent's own LIMIT if it wrote one,
-// else the auto-injected default. Returned to the agent so it can tell a
-// capped result (`total === limit`) from a complete one.
-function effectiveLimit(sql: string): number {
-  const m = LIMIT_RE.exec(sql);
-  return m ? Number(m[1]) : DEFAULT_LIMIT;
+// Inject the default row cap unless the agent already wrote a top-level
+// LIMIT (an inner CTE/subquery LIMIT does not count — see TOP_LIMIT_RE).
+export function injectLimit(sql: string): string {
+  const clean = stripTrailingSemicolon(sql);
+  if (TOP_LIMIT_RE.test(clean)) return clean;
+  return `${clean} LIMIT ${DEFAULT_LIMIT}`;
+}
+
+// Effective row cap for a query: the agent's own top-level LIMIT if it wrote
+// a numeric one, else the auto-injected default. Returned to the agent so it
+// can tell a capped result (`total === limit`) from a complete one. A bare
+// `LIMIT ALL` carries no number, so it reports as the default.
+export function effectiveLimit(sql: string): number {
+  const m = TOP_LIMIT_RE.exec(stripTrailingSemicolon(sql));
+  return m && /^\d+$/.test(m[1]!) ? Number(m[1]) : DEFAULT_LIMIT;
 }
 
 /** The server no longer embeds anything. The per-machine MCP proxy

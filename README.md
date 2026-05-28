@@ -158,7 +158,11 @@ Most LLM and embedder work happens **on the user's machine inside the daemon**, 
 DATABASE_URL=postgresql://...
 MNEME_READER_DATABASE_URL=postgresql://...   # mneme_reader role for /mcp
 
-# Auth root of trust (required)
+# Auth root of trust (required). Use 24+ random chars, e.g.
+# `openssl rand -hex 24` — it bypasses the api_keys table (scope *), so its
+# entropy IS the security. The server rate-limits + locks out repeated
+# admin auth failures per source IP (and a global backstop), but a strong
+# password is the real defense.
 ADMIN_PASSWORD=...
 
 # Digest worker (optional; off by default)

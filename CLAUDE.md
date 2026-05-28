@@ -60,6 +60,7 @@ Prefer `mneme_sql` over `psql` for any read — same scrubbing + reader role + R
 | Server-stamped identity: `machine_id` from token, not body | [`packages/core/src/auth.ts`](./packages/core/src/auth.ts) |
 | Admin password resolution: env → encrypted config → stdin | [`packages/plugin/scripts/admin-secret.ts`](./packages/plugin/scripts/admin-secret.ts) |
 | New env var? add it to `env.ts` with zod validation | [`packages/server/src/infra/env.ts`](./packages/server/src/infra/env.ts) |
+| Daemon trusts every loopback caller (accepted risk) — never run Mneme on a shared-user box | [`docs/capture-pipeline.md`](./docs/capture-pipeline.md) (Trust boundary) |
 
 ## Things to never do
 

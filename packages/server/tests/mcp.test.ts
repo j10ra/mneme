@@ -6,6 +6,8 @@ const {
   extractUuidsFromSql,
   extractRowIds,
   chooseReinforcement,
+  injectLimit,
+  effectiveLimit,
 } = await import("../src/services/mcp.ts");
 
 describe("rejectUnsubstitutedEmbeds — guard for missing daemon substitution", () => {
@@ -27,6 +29,68 @@ describe("rejectUnsubstitutedEmbeds — guard for missing daemon substitution", 
         "SELECT * FROM memories WHERE embedding <=> '[0.1,0.2,0.3]'::vector < 0.1",
       ),
     ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Top-level LIMIT detection (#57). The cap must key off the OUTER query's
+// LIMIT only; an inner CTE/subquery LIMIT must never masquerade as it.
+// ---------------------------------------------------------------------------
+
+describe("injectLimit — only a top-level LIMIT suppresses injection", () => {
+  test("injects the default when there is no LIMIT", () => {
+    expect(injectLimit("SELECT * FROM memories")).toBe("SELECT * FROM memories LIMIT 50");
+  });
+
+  test("leaves a genuine top-level LIMIT alone", () => {
+    expect(injectLimit("SELECT * FROM memories LIMIT 10")).toBe("SELECT * FROM memories LIMIT 10");
+  });
+
+  test("honors a top-level LIMIT with OFFSET", () => {
+    const sql = "SELECT * FROM memories ORDER BY created_at DESC LIMIT 10 OFFSET 5";
+    expect(injectLimit(sql)).toBe(sql);
+  });
+
+  test("strips a trailing semicolon before injecting", () => {
+    expect(injectLimit("SELECT * FROM memories;")).toBe("SELECT * FROM memories LIMIT 50");
+  });
+
+  test("#57: an inner CTE LIMIT does NOT count — default is still injected", () => {
+    const sql = "WITH foo AS (SELECT 1 LIMIT 999999) SELECT * FROM memories";
+    expect(injectLimit(sql)).toBe(`${sql} LIMIT 50`);
+  });
+
+  test("#57: a subquery LIMIT does NOT count — default is still injected", () => {
+    const sql = "SELECT * FROM memories WHERE id IN (SELECT id FROM captures LIMIT 999999)";
+    expect(injectLimit(sql)).toBe(`${sql} LIMIT 50`);
+  });
+
+  test("a LIMIT inside a string literal does NOT count", () => {
+    const sql = "SELECT * FROM memories WHERE content = 'see LIMIT 5'";
+    expect(injectLimit(sql)).toBe(`${sql} LIMIT 50`);
+  });
+
+  test("a top-level LIMIT ALL is left intact (no double-LIMIT syntax error)", () => {
+    const sql = "SELECT * FROM memories LIMIT ALL";
+    expect(injectLimit(sql)).toBe(sql);
+  });
+});
+
+describe("effectiveLimit — reports the outer cap, not an inner one", () => {
+  test("returns the top-level numeric LIMIT", () => {
+    expect(effectiveLimit("SELECT * FROM memories LIMIT 10")).toBe(10);
+  });
+
+  test("returns the default when no LIMIT", () => {
+    expect(effectiveLimit("SELECT * FROM memories")).toBe(50);
+  });
+
+  test("#57: ignores an inner CTE LIMIT and reports the default", () => {
+    expect(effectiveLimit("WITH foo AS (SELECT 1 LIMIT 999999) SELECT * FROM memories")).toBe(50);
+  });
+
+  test("reports the default for a bare LIMIT ALL", () => {
+    expect(effectiveLimit("SELECT * FROM memories LIMIT ALL")).toBe(50);
   });
 });
 

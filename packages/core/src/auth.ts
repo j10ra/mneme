@@ -1,6 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import type postgres from "postgres";
+import {
+  adminLockActive,
+  adminLockRetryAfterSec,
+  clearIpFailures,
+  clientIp,
+  recordAdminFailure,
+} from "./auth-throttle.ts";
 import { storage } from "./context.ts";
 import { Logger } from "./logger.ts";
 
@@ -57,11 +64,20 @@ export function requireAuth(scope: string): MiddlewareHandler {
       return c.json({ error: "unauthorized" }, 401);
     }
 
+    const ip = clientIp((name) => c.req.header(name));
+
     // Admin-password emergency bearer. Bypasses _ops.api_keys lookup so you
     // can recover even if the table is empty / corrupt / all keys revoked.
     // Logs every use loudly so unintended usage is visible in production.
+    //
+    // Brute-force throttle (#53): while this IP (or the global backstop) is
+    // in cooldown we refuse to even compare the password — no online-guessing
+    // oracle. Valid API keys still flow through the lookup below, so a legit
+    // machine sharing a locked IP keeps working.
     const adminPassword = process.env.ADMIN_PASSWORD ?? "";
-    if (adminPassword && safeEqual(key, adminPassword)) {
+    const adminLocked = adminPassword ? adminLockActive(ip) : false;
+    if (adminPassword && !adminLocked && safeEqual(key, adminPassword)) {
+      clearIpFailures(ip);
       Logger.warn(`auth: admin token used directly (scope=${scope})`);
       const ctx = storage.getStore();
       if (ctx) {
@@ -88,11 +104,25 @@ export function requireAuth(scope: string): MiddlewareHandler {
     `;
     const row = rows[0];
     if (!row) {
+      // Terminal miss — neither the admin password nor a valid key. This is
+      // exactly what an admin-password guess looks like, so count it.
+      if (adminPassword) {
+        recordAdminFailure(ip);
+        if (adminLocked) {
+          Logger.warn(`auth: admin path locked, request refused (ip=${ip})`);
+          return c.json({ error: "unauthorized" }, 401, {
+            "Retry-After": String(adminLockRetryAfterSec(ip)),
+          });
+        }
+      }
       return c.json({ error: "unauthorized" }, 401);
     }
     if (!row.scopes.includes(scope)) {
       return c.json({ error: "forbidden", required: scope }, 403);
     }
+
+    // A valid key clears this IP's brute-force suspicion.
+    clearIpFailures(ip);
 
     const ctx = storage.getStore();
     if (ctx) {

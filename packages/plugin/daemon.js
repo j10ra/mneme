@@ -442,6 +442,15 @@ function mnemeFn(name, fn) {
     }
   };
 }
+// packages/core/src/auth-throttle.ts
+function numFromEnv(name, dflt) {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? v : dflt;
+}
+var MAX_FAILS_PER_IP = numFromEnv("MNEME_ADMIN_MAX_FAILS", 5);
+var PER_IP_LOCKOUT_MS = numFromEnv("MNEME_ADMIN_LOCKOUT_MS", 15 * 60000);
+var GLOBAL_MAX_FAILS = numFromEnv("MNEME_ADMIN_GLOBAL_MAX_FAILS", 50);
+var perIp = new Map;
 // packages/daemon/src/index.ts
 import { Hono } from "hono";
 
