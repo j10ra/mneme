@@ -1,6 +1,6 @@
 {
   "name": "@mneme/plugin",
-  "version": "1.1.79",
+  "version": "1.1.80",
   "private": true,
   "type": "module",
   "main": "daemon.js",

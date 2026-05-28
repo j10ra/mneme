@@ -12,9 +12,11 @@
 // outbox files) stays as a tight setInterval since it's polling
 // filesystem state, not a cron-shape job.
 
+import { spawn } from "node:child_process";
+import { existsSync, readdirSync, watch } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Logger, configureLogger, configureTraceStore, getTraceStore, mnemeFn } from "@mneme/core";
 import { Hono } from "hono";
 import { pickAgent } from "./agents/index.ts";
@@ -363,6 +365,15 @@ export async function startDaemon(): Promise<void> {
   });
   await startScheduler();
 
+  // Self-update: watch the plugin cache parent for newer versions
+  // landing via `/plugin update`. When detected, fire the new version's
+  // refresh-daemon script which will SIGTERM us cleanly (releasing any
+  // in-flight dream lock per the shutdown handler below) and start the
+  // new daemon under launchd. Independent of any Claude Code hook —
+  // even sessions stuck on an old plugin can't prevent the daemon
+  // self-upgrading.
+  startCacheWatch();
+
   // Best-effort shutdown: release in-flight dream lock + flush spans.
   // Without the lock release, a refresh-daemon / SIGTERM mid-cycle leaves
   // the _ops.dream_runs row with completed_at = null forever, which the
@@ -397,6 +408,95 @@ export async function startDaemon(): Promise<void> {
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+}
+
+// ── Cache self-watch ────────────────────────────────────────────────
+// The daemon lives at .../plugins/cache/j10ra-mneme/mneme/<version>/daemon.js
+// When `/plugin update` lands a newer <version>/ next to ours, we
+// detect it and spawn that version's refresh-daemon.ts. That script
+// SIGTERMs us (clean shutdown via the handler above) and starts the
+// new daemon under launchd / systemd / Task Scheduler.
+
+const VERSION_RE = /^\d+\.\d+\.\d+$/;
+const CACHE_WATCH_DEBOUNCE_MS = 5000;
+
+function isHigherVersion(candidate: string, baseline: string): boolean {
+  const a = candidate.split(".").map(Number);
+  const b = baseline.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] ?? 0) > (b[i] ?? 0)) return true;
+    if ((a[i] ?? 0) < (b[i] ?? 0)) return false;
+  }
+  return false;
+}
+
+function startCacheWatch(): void {
+  const ownPath = process.argv[1];
+  if (!ownPath || !ownPath.endsWith("daemon.js")) {
+    Logger.info("daemon: cache watch skipped (not running from bundle)");
+    return;
+  }
+  const ownVerDir = dirname(ownPath);
+  const cacheParent = dirname(ownVerDir);
+  const ownVersion = basename(ownVerDir);
+  if (!VERSION_RE.test(ownVersion)) {
+    Logger.info(`daemon: cache watch skipped (not a versioned dir: ${ownVersion})`);
+    return;
+  }
+  if (!existsSync(cacheParent)) {
+    Logger.warn(`daemon: cache watch skipped (parent missing: ${cacheParent})`);
+    return;
+  }
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const checkAndRefresh = (): void => {
+    try {
+      let target: string | null = null;
+      for (const entry of readdirSync(cacheParent)) {
+        if (!VERSION_RE.test(entry)) continue;
+        if (isHigherVersion(entry, ownVersion) && (!target || isHigherVersion(entry, target))) {
+          target = entry;
+        }
+      }
+      if (!target) return;
+      const refreshScript = join(cacheParent, target, "scripts/refresh-daemon.ts");
+      if (!existsSync(refreshScript)) {
+        // /plugin update is mid-download; refresh-daemon.ts hasn't
+        // arrived yet. Next watch event will re-trigger.
+        return;
+      }
+      Logger.info("daemon: newer cache detected — self-refreshing", {
+        from: ownVersion,
+        to: target,
+      });
+      const child = spawn(process.execPath, [refreshScript], {
+        detached: true,
+        stdio: "ignore",
+      });
+      child.unref();
+    } catch (err) {
+      Logger.warn("daemon: cache watch check failed", err);
+    }
+  };
+
+  try {
+    watch(cacheParent, { persistent: false }, (_event, name) => {
+      if (!name || !VERSION_RE.test(name)) return;
+      if (!isHigherVersion(name, ownVersion)) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(checkAndRefresh, CACHE_WATCH_DEBOUNCE_MS);
+    });
+    Logger.info("daemon: cache watch started", {
+      parent: cacheParent,
+      own_version: ownVersion,
+    });
+    // Initial check: if a newer version was installed BEFORE we
+    // started, we wouldn't get a watch event. Fire once at startup.
+    checkAndRefresh();
+  } catch (err) {
+    Logger.warn("daemon: failed to start cache watch", err);
+  }
 }
 
 // When invoked directly (`bun run src/index.ts`), start the daemon.

@@ -634,6 +634,22 @@ async function main(): Promise<void> {
         if (source === "startup") {
           envelope.systemMessage = summaryForUser;
         }
+        // Stale-session banner: the hook running RIGHT NOW lives at
+        // `.../mneme/<ownVer>/scripts/hook.ts`. If the cache has a
+        // higher version, the live Claude Code session is loading the
+        // old hooks + slash commands until the user `/exit`s and
+        // restarts. Daemon self-update (1.1.80+) takes care of the
+        // long-running process; this banner just nudges the user.
+        const ownRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+        const targetRoot = latestCachedPluginRoot();
+        if (targetRoot && targetRoot !== ownRoot) {
+          const ownV = basename(ownRoot);
+          const targetV = basename(targetRoot);
+          const note = `mneme: this session is on plugin ${ownV}; cache has ${targetV}. Exit + restart Claude Code to pick up the new slash commands + hooks.`;
+          envelope.systemMessage = envelope.systemMessage
+            ? `${envelope.systemMessage}\n${note}`
+            : note;
+        }
         process.stdout.write(JSON.stringify(envelope));
       }
       return;

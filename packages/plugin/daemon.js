@@ -2,9 +2,11 @@
 var __require = import.meta.require;
 
 // packages/daemon/src/index.ts
+import { spawn } from "child_process";
+import { existsSync as existsSync6, readdirSync as readdirSync2, watch } from "fs";
 import { readFile as readFile4 } from "fs/promises";
 import { homedir as homedir5 } from "os";
-import { join as join7 } from "path";
+import { basename, dirname as dirname4, join as join7 } from "path";
 
 // packages/core/src/context.ts
 import { AsyncLocalStorage } from "async_hooks";
@@ -3507,6 +3509,7 @@ async function startDaemon() {
     })
   });
   await startScheduler();
+  startCacheWatch();
   const shutdown = async (signal) => {
     Logger.info(`daemon ${signal} \u2014 releasing dream lock + flushing traces`);
     const window = getActiveDreamWindow();
@@ -3538,6 +3541,85 @@ async function startDaemon() {
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+}
+var VERSION_RE = /^\d+\.\d+\.\d+$/;
+var CACHE_WATCH_DEBOUNCE_MS = 5000;
+function isHigherVersion(candidate, baseline) {
+  const a = candidate.split(".").map(Number);
+  const b = baseline.split(".").map(Number);
+  for (let i = 0;i < 3; i++) {
+    if ((a[i] ?? 0) > (b[i] ?? 0))
+      return true;
+    if ((a[i] ?? 0) < (b[i] ?? 0))
+      return false;
+  }
+  return false;
+}
+function startCacheWatch() {
+  const ownPath = process.argv[1];
+  if (!ownPath || !ownPath.endsWith("daemon.js")) {
+    Logger.info("daemon: cache watch skipped (not running from bundle)");
+    return;
+  }
+  const ownVerDir = dirname4(ownPath);
+  const cacheParent = dirname4(ownVerDir);
+  const ownVersion = basename(ownVerDir);
+  if (!VERSION_RE.test(ownVersion)) {
+    Logger.info(`daemon: cache watch skipped (not a versioned dir: ${ownVersion})`);
+    return;
+  }
+  if (!existsSync6(cacheParent)) {
+    Logger.warn(`daemon: cache watch skipped (parent missing: ${cacheParent})`);
+    return;
+  }
+  let timer2 = null;
+  const checkAndRefresh = () => {
+    try {
+      let target = null;
+      for (const entry of readdirSync2(cacheParent)) {
+        if (!VERSION_RE.test(entry))
+          continue;
+        if (isHigherVersion(entry, ownVersion) && (!target || isHigherVersion(entry, target))) {
+          target = entry;
+        }
+      }
+      if (!target)
+        return;
+      const refreshScript = join7(cacheParent, target, "scripts/refresh-daemon.ts");
+      if (!existsSync6(refreshScript)) {
+        return;
+      }
+      Logger.info("daemon: newer cache detected \u2014 self-refreshing", {
+        from: ownVersion,
+        to: target
+      });
+      const child2 = spawn(process.execPath, [refreshScript], {
+        detached: true,
+        stdio: "ignore"
+      });
+      child2.unref();
+    } catch (err) {
+      Logger.warn("daemon: cache watch check failed", err);
+    }
+  };
+  try {
+    watch(cacheParent, { persistent: false }, (_event, name) => {
+      if (!name || !VERSION_RE.test(name))
+        return;
+      if (!isHigherVersion(name, ownVersion))
+        return;
+      if (timer2)
+        clearTimeout(timer2);
+      timer2 = setTimeout(checkAndRefresh, CACHE_WATCH_DEBOUNCE_MS);
+    });
+    Logger.info("daemon: cache watch started", {
+      parent: cacheParent,
+      own_version: ownVersion
+    });
+    checkAndRefresh();
+  } catch (err) {
+    Logger.warn("daemon: failed to start cache watch", err);
+  }
 }
 if (import.meta.main) {
   await startDaemon();
