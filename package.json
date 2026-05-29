@@ -11,7 +11,8 @@
       "packages/plugin/skills"
     ],
     "extensions": [
-      "packages/plugin/pi/register-mneme.ts"
+      "packages/plugin/pi/register-mneme.ts",
+      "packages/plugin/pi/capture-mneme.ts"
     ]
   },
   "scripts": {
