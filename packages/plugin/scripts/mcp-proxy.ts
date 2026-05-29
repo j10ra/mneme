@@ -9,18 +9,11 @@
 
 import { createInterface } from "node:readline";
 import { type MnemeConfig, configPath, loadConfig, serverUrl } from "./config.ts";
-import { scrubData } from "./scrub.ts";
+import { substituteEmbedsViaDaemon } from "./mneme-rpc.ts";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_NAME = "mneme";
 const SERVER_VERSION = "1.0.0";
-
-// The proxy substitutes embed('text') → '[v1,v2,...]'::vector locally
-// by calling the daemon's /embed endpoint (bge-small subprocess) before
-// the SQL is forwarded to the server's /mcp. The server has no
-// embedder; if the proxy can't substitute, the call fails locally with
-// a clear error rather than forwarding doomed SQL.
-const EMBED_RE = /\bembed\(\s*'((?:[^'\\]|\\.)*)'\s*\)/gi;
 
 import { plog as sharedPlog } from "./log.ts";
 
@@ -31,72 +24,6 @@ function plog(msg: string, fields?: Record<string, unknown>): void {
   // when running interactively.
   sharedPlog("INFO", "mcp.proxy", msg, fields);
   process.stderr.write(`mneme-mcp: ${msg}\n`);
-}
-
-type SubstitutionResult =
-  | { kind: "noop"; sql: string } // no embed() macro present, forward sql as-is
-  | { kind: "ok"; sql: string } // embed() macros replaced with vector literals
-  | { kind: "error"; message: string }; // embed() present but couldn't substitute
-
-async function substituteEmbedsViaDaemon(
-  cfg: MnemeConfig,
-  sql: string,
-): Promise<SubstitutionResult> {
-  const matches = Array.from(sql.matchAll(EMBED_RE));
-  if (matches.length === 0) return { kind: "noop", sql };
-
-  if (!cfg.daemon) {
-    return {
-      kind: "error",
-      message:
-        "embed() requires the per-machine mneme daemon to substitute it before SQL is sent. " +
-        "No daemon block in ~/.mneme/config.json — run /mneme:setup to register this machine.",
-    };
-  }
-
-  const rawTexts = Array.from(new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))));
-  const cleanedTexts = rawTexts.map((t) => scrubData(t) as string);
-  plog(`substituteEmbeds: calling daemon with ${cleanedTexts.length} text(s)`);
-
-  let vectors: number[][];
-  try {
-    const resp = await fetch(`http://127.0.0.1:${cfg.daemon.port}/embed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ texts: cleanedTexts, source: "mcp:sql" }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!resp.ok) {
-      const detail = (await resp.text().catch(() => "")).slice(0, 200);
-      return {
-        kind: "error",
-        message: `embed() substitution failed: daemon /embed returned ${resp.status}${detail ? `: ${detail}` : ""}. Check /mneme:status.`,
-      };
-    }
-    const body = (await resp.json()) as { vectors?: number[][] };
-    if (!Array.isArray(body.vectors) || body.vectors.length !== cleanedTexts.length) {
-      return {
-        kind: "error",
-        message: `embed() substitution failed: daemon returned ${body.vectors?.length ?? "no"} vectors for ${cleanedTexts.length} text(s).`,
-      };
-    }
-    vectors = body.vectors;
-    plog(`substituteEmbeds: daemon returned ${vectors.length} vector(s), substituting`);
-  } catch (e) {
-    return {
-      kind: "error",
-      message: `embed() substitution failed: daemon unreachable (${e instanceof Error ? e.message : String(e)}). Is the daemon running? /mneme:status.`,
-    };
-  }
-
-  const embedMap = new Map(rawTexts.map((t, i) => [t, vectors[i]!]));
-  const rewritten = sql.replace(EMBED_RE, (_match, raw: string) => {
-    const text = raw.replace(/\\'/g, "'");
-    const vec = embedMap.get(text);
-    if (!vec) return _match;
-    return `'[${vec.join(",")}]'::vector`;
-  });
-  return { kind: "ok", sql: rewritten };
 }
 
 const TOOL_DEF = {

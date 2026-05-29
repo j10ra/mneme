@@ -6,6 +6,14 @@
   "workspaces": [
     "packages/*"
   ],
+  "pi": {
+    "skills": [
+      "packages/plugin/skills"
+    ],
+    "extensions": [
+      "packages/plugin/pi/register-mneme.ts"
+    ]
+  },
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || true",
     "dev": "bun --hot packages/server/src/index.ts",
