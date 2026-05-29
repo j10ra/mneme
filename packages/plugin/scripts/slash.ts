@@ -613,14 +613,20 @@ function fmtAge(ms: number | null): string {
   return `${Math.round(ms / 86_400_000)}d`;
 }
 
-/** Status: GET /api/_ops/status, render as compact markdown.
- *  Uses the per-machine bearer (cfg.auth.key); `read` scope, so any
- *  registered machine can fetch operational health without holding the
- *  admin password. */
+/** Status: GET /api/_ops/status, render as compact markdown. The _ops
+ *  routes are admin-only (#50), so this resolves the admin password via the
+ *  env → encrypted-config → stdin ladder, same as revoke. On a machine that
+ *  stored its admin secret at setup time the resolve is transparent. */
 async function status(): Promise<void> {
   const cfg = loadConfig();
+  const adminPassword = await resolveAdminPassword(cfg);
+  if (!adminPassword) {
+    throw new Error(
+      "admin password required: /api/_ops/status is admin-only (#50). Set MNEME_ADMIN_PASSWORD or re-run /mneme:setup to store it encrypted.",
+    );
+  }
   const resp = await fetch(serverUrl(cfg, "/api/_ops/status"), {
-    headers: { Authorization: `Bearer ${cfg.auth.key}` },
+    headers: { Authorization: `Bearer ${adminPassword}` },
   });
   if (!resp.ok) {
     throw new Error(
