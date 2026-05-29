@@ -713,7 +713,6 @@ export function mountOpsRoutes(app: Hono): void {
                 AS edge_count
             FROM memories m
             WHERE ${filters}
-              AND m.archived_at IS NULL
           )
           SELECT id::text AS id
           FROM candidates
@@ -739,7 +738,10 @@ export function mountOpsRoutes(app: Hono): void {
           m.meta->>'in_cluster'       AS cluster_id,
           (m.meta ? 'superseded_by')  AS superseded,
           m.machine_id                AS machine_id,
-          k.name                      AS machine_name
+          k.name                      AS machine_name,
+          m.created_at                AS created_at,
+          m.recall_weight             AS recall_weight,
+          (m.archived_at IS NOT NULL) AS archived
         FROM memories m
         LEFT JOIN LATERAL (
           SELECT name FROM _ops.api_keys
@@ -792,7 +794,6 @@ export function mountOpsRoutes(app: Hono): void {
         SELECT count(*)::int AS total
         FROM memories m
         WHERE ${filters}
-          AND m.archived_at IS NULL
       `) as unknown as Array<{ total: number }>;
 
     return c.json({
@@ -827,6 +828,12 @@ type GraphNode = {
   superseded: boolean;
   machine_id: string | null;
   machine_name: string | null;
+  /** ISO timestamp — drives the timeline X position (oldest left, newest right). */
+  created_at: string;
+  /** Activity signal — drives node brightness (most-recalled = brightest). */
+  recall_weight: number | null;
+  /** True when archived_at is set — rendered dimmest ("the archive"). */
+  archived: boolean;
   depth?: number | null;
 };
 type GraphEdge = {

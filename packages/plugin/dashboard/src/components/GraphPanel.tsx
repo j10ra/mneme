@@ -44,7 +44,9 @@ const todayMinus = (days: number) => new Date(Date.now() - days * 86_400_000);
 
 function defaultFilters(): Filters {
   return {
-    since: todayMinus(7).toISOString(),
+    // Wide default so the timeline spans the full corpus (start of memory
+    // → now) rather than just the last week. topN still caps the node set.
+    since: todayMinus(90).toISOString(),
     until: null,
     repo: [],
     machine_id: [],

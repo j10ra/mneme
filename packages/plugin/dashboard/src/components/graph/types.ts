@@ -9,6 +9,12 @@ export type GraphNode = {
   superseded: boolean;
   machine_id: string | null;
   machine_name: string | null;
+  /** ISO timestamp — drives the timeline X position (oldest left, newest right). */
+  created_at: string;
+  /** Activity signal — drives node brightness (most-recalled lights up). */
+  recall_weight: number | null;
+  /** True when the memory is archived — rendered dimmest ("the archive"). */
+  archived: boolean;
   /** Set in focal-mode responses: BFS depth from focal (0 = focal). */
   depth?: number | null;
 };

@@ -1,64 +1,46 @@
-// 3D force graph (react-force-graph-3d, Three.js under the hood) of
-// the memory corpus. Lazy-loaded — only the Graph tab pays the chunk
-// download.
+// Flat timeline canvas of the memory corpus. X axis is time (oldest at
+// the left, "now" at the right); Y is lanes by kind, reusing the legend
+// colours. Node brightness encodes activity (recall_weight) so the most
+// recalled memories light up while cold and archived ones fade — "the
+// archive" sits dim at the left/low-activity end. Edges are static arcs
+// (related faint, supersede amber); no animated particles.
 //
-// Visual: neuron-like point sources. Each node is a tight emissive
-// core with a soft glow sprite around it; UnrealBloomPass blooms the
-// emissive layer for the "synapse firing in the dark" feel. Edges are
-// thin animated particles to read as axonal flow.
+// 2D <canvas> with hit-testing for hover/click — same props as the old
+// 3D component, so GraphPanel is unchanged. The imperative handle is a
+// no-op stub: GraphPanel's camera-zoom depth expansion guards on a
+// missing cameraPosition() and simply doesn't fire here.
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import { Skeleton } from "../ui/skeleton.tsx";
-import { colorForNode } from "./colors.ts";
+import { colorForNode, KIND_COLOR } from "./colors.ts";
 import type { GraphEdge, GraphNode } from "./types.ts";
+
+const PAD = { top: 18, right: 28, bottom: 34, left: 124 };
+
+// Fixed lane order so the timeline doesn't reshuffle between fetches.
+// Kinds not listed fall after these in first-seen order; null → "other".
+const KIND_ORDER = Object.keys(KIND_COLOR);
 
 function hashStr(s: string): number {
   let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (h * 31 + s.charCodeAt(i)) | 0;
-  }
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return Math.abs(h);
 }
 
-function sizeForImportance(imp: number | null): number {
-  const v = imp ?? 0;
-  return 3 + Math.max(0, Math.min(1, v)) * 7;
+function radiusForImportance(imp: number | null): number {
+  return 2.5 + Math.max(0, Math.min(1, imp ?? 0)) * 5.5;
 }
 
-type Force3DNode = GraphNode & { color: string; val: number; dim: boolean };
-type Force3DLink = {
-  source: string;
-  target: string;
-  type: GraphEdge["type"];
+type Placed = {
+  node: GraphNode;
+  x: number;
+  y: number;
+  r: number;
   color: string;
+  bright: number;
 };
 
-/** Build a radial-gradient sprite texture once and cache it.
- *  Used for the soft glow halo around each neuron node. */
-let _glowTextureCache: unknown = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function glowTexture(THREE: any): unknown {
-  if (_glowTextureCache) return _glowTextureCache;
-  const size = 128;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d")!;
-  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  grad.addColorStop(0, "rgba(255,255,255,1)");
-  grad.addColorStop(0.2, "rgba(255,255,255,0.7)");
-  grad.addColorStop(0.5, "rgba(255,255,255,0.15)");
-  grad.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, size, size);
-  const tex = new THREE.CanvasTexture(canvas);
-  _glowTextureCache = tex;
-  return tex;
-}
-
 export const GraphCanvas = forwardRef<
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  any,
+  unknown,
   {
     nodes: GraphNode[];
     edges: GraphEdge[];
@@ -72,403 +54,293 @@ export const GraphCanvas = forwardRef<
   { nodes, edges, query, selectedId, focalId, onSelect, onRefocus },
   externalRef,
 ) {
+  // No camera/layout engine to expose; stub the handle so GraphPanel's
+  // optional cameraPosition?.() call no-ops.
+  useImperativeHandle(externalRef, () => ({}), []);
+
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ForceGraphRef = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const threeRef = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const bloomRef = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const fgRef = useRef<any>(null);
-  useImperativeHandle(externalRef, () => fgRef.current);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-  // Cache node objects by id so the force layout preserves positions
-  // when a refetch arrives (depth bump). Without this, every fetch
-  // hands fresh object references to the layout and it restarts from
-  // a random distribution → flicker.
-  const nodeCacheRef = useRef<Map<string, Force3DNode>>(new Map());
-  // Tracks whether bloom has been attached to the composer; the
-  // bloom-setup effect was running on every resize, stacking passes.
-  const bloomAttachedRef = useRef(false);
-  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [panMode, setPanMode] = useState(false);
+  const [hover, setHover] = useState<{ id: string; x: number; y: number } | null>(null);
 
-  // ── Lazy-load react-force-graph-3d + three + bloom pass ──────────
+  // ── Container resize observer ────────────────────────────────────
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [rfg, three, bloom] = await Promise.all([
-          import("react-force-graph-3d"),
-          import("three"),
-          import("three/examples/jsm/postprocessing/UnrealBloomPass.js"),
-        ]);
-        if (cancelled) return;
-        ForceGraphRef.current = rfg.default;
-        threeRef.current = three;
-        bloomRef.current = bloom.UnrealBloomPass;
-        setLoadState("ready");
-      } catch (err) {
-        if (cancelled) return;
-        setLoadState("error");
-        setLoadError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Container resize observer — bounding-rect-based for fractional
-  // pixel correctness; also listens to window resize as a backstop.
-  // Re-runs when loadState flips to "ready" so the observer attaches
-  // to the real container (which doesn't exist in the DOM during the
-  // loading-state render).
-  useEffect(() => {
-    if (loadState !== "ready") return;
     const el = containerRef.current;
     if (!el) return;
     const update = () => {
       const r = el.getBoundingClientRect();
       const w = Math.floor(r.width);
       const h = Math.floor(r.height);
-      if (w > 0 && h > 0) {
-        setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
-      }
+      if (w > 0 && h > 0) setSize((p) => (p.w === w && p.h === h ? p : { w, h }));
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
-    window.addEventListener("resize", update);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", update);
-    };
-  }, [loadState]);
+    return () => ro.disconnect();
+  }, []);
 
-  // Translate API data to react-force-graph shape, reusing cached
-  // node objects by id so the force simulation keeps existing
-  // positions on refetch. Fresh nodes (those not in the cache) are
-  // pre-seeded with positions near the focal — without this they
-  // get random initial coords from d3-force and "fly in" from
-  // arbitrary spots, which read as a flicker when neighbors land
-  // after a hop.
-  const graphData = useMemo(() => {
+  // ── Lane assignment (kind → row index) ───────────────────────────
+  const lanes = useMemo(() => {
+    const present = new Set<string>();
+    for (const n of nodes) present.add(n.kind ?? "other");
+    const ordered: string[] = [];
+    for (const k of KIND_ORDER) if (present.has(k)) ordered.push(k);
+    for (const k of present) if (!ordered.includes(k)) ordered.push(k);
+    const index = new Map<string, number>();
+    ordered.forEach((k, i) => index.set(k, i));
+    return { ordered, index };
+  }, [nodes]);
+
+  // ── Place every node on the timeline ─────────────────────────────
+  const placed = useMemo(() => {
+    const { w, h } = size;
+    if (w === 0 || h === 0 || nodes.length === 0) return [] as Placed[];
+
+    let minT = Number.POSITIVE_INFINITY;
+    let maxT = Number.NEGATIVE_INFINITY;
+    let maxRW = 0;
+    for (const n of nodes) {
+      const t = Date.parse(n.created_at);
+      if (Number.isFinite(t)) {
+        if (t < minT) minT = t;
+        if (t > maxT) maxT = t;
+      }
+      const rw = n.recall_weight ?? 0;
+      if (rw > maxRW) maxRW = rw;
+    }
+    if (!Number.isFinite(minT)) {
+      minT = Date.now();
+      maxT = Date.now();
+    }
+    const span = maxT - minT || 1;
+
+    const plotW = w - PAD.left - PAD.right;
+    const plotH = h - PAD.top - PAD.bottom;
+    const laneH = plotH / Math.max(1, lanes.ordered.length);
     const q = query.trim().toLowerCase();
-    const cache = nodeCacheRef.current;
-    const seen = new Set<string>();
-    // Anchor for seeding fresh nodes: focal's current position if we
-    // have one cached, else origin (landscape mode tends to centre on
-    // origin anyway).
-    const anchor = focalId ? cache.get(focalId) : null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ax = (anchor as any)?.x ?? 0;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ay = (anchor as any)?.y ?? 0;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const az = (anchor as any)?.z ?? 0;
-    const nodeOut: Force3DNode[] = nodes.map((n) => {
-      const baseColor = colorForNode(n);
-      const dim = q.length > 0 && !n.content_preview.toLowerCase().includes(q);
-      seen.add(n.id);
-      const cached = cache.get(n.id);
-      if (cached) {
-        // Mutate in place so the layout's references stay live.
-        Object.assign(cached, {
-          ...n,
-          color: baseColor,
-          val: sizeForImportance(n.importance),
-          dim,
-        });
-        return cached;
-      }
-      const fresh: Force3DNode = {
-        ...n,
-        color: baseColor,
-        val: sizeForImportance(n.importance),
-        dim,
+
+    return nodes.map<Placed>((n) => {
+      const t = Date.parse(n.created_at);
+      const ft = Number.isFinite(t) ? t : maxT;
+      const x = PAD.left + ((ft - minT) / span) * plotW;
+      const laneIdx = lanes.index.get(n.kind ?? "other") ?? 0;
+      // Deterministic vertical jitter within the lane so same-time,
+      // same-kind nodes don't stack on one pixel.
+      const jitter = ((hashStr(n.id) % 1000) / 1000 - 0.5) * laneH * 0.7;
+      const y = PAD.top + (laneIdx + 0.5) * laneH + jitter;
+
+      const rwN = maxRW > 0 ? (n.recall_weight ?? 0) / maxRW : 0;
+      let bright = n.archived ? 0.12 : 0.4 + 0.6 * rwN;
+      if (q.length > 0 && !n.content_preview.toLowerCase().includes(q)) bright *= 0.15;
+
+      return {
+        node: n,
+        x,
+        y,
+        r: radiusForImportance(n.importance),
+        color: colorForNode(n),
+        bright,
       };
-      // Seed within a small jittered shell around the anchor so the
-      // sim has a non-degenerate starting cloud (avoids overlap on
-      // the same point but stays local to the focal).
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (fresh as any).x = ax + (Math.random() - 0.5) * 30;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (fresh as any).y = ay + (Math.random() - 0.5) * 30;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (fresh as any).z = az + (Math.random() - 0.5) * 30;
-      cache.set(n.id, fresh);
-      return fresh;
     });
-    // Drop stale cached nodes that no longer appear in the response so
-    // the cache doesn't grow unbounded across many filter changes.
-    for (const id of cache.keys()) {
-      if (!seen.has(id)) cache.delete(id);
-    }
-    const linkOut: Force3DLink[] = edges.map((e) => ({
-      source: e.source,
-      target: e.target,
-      type: e.type,
-      color: e.type === "supersede" ? "rgba(251, 191, 36, 0.85)" : "rgba(125, 211, 252, 0.32)",
-    }));
-    return { nodes: nodeOut, links: linkOut };
-  }, [nodes, edges, query]);
+  }, [nodes, size, lanes, query]);
 
-  // Bloom + fog setup — runs once after canvas mounts. Keyed off
-  // `bloomAttachedRef` so multiple renders don't stack passes.
+  // ── Render ───────────────────────────────────────────────────────
   useEffect(() => {
-    if (loadState !== "ready") return;
-    if (bloomAttachedRef.current) return;
-    const fg = fgRef.current;
-    const THREE = threeRef.current;
-    const UnrealBloomPass = bloomRef.current;
-    if (!fg || !THREE || !UnrealBloomPass) return;
+    const canvas = canvasRef.current;
+    const { w, h } = size;
+    if (!canvas || w === 0 || h === 0) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
 
-    const timer = setTimeout(() => {
-      try {
-        const composer = fg.postProcessingComposer?.();
-        if (composer) {
-          const bloomPass = new UnrealBloomPass(
-            new THREE.Vector2(size.w || 800, size.h || 600),
-            0.55,
-            0.4,
-            0.4,
-          );
-          composer.addPass(bloomPass);
-          bloomAttachedRef.current = true;
-        }
-        const scene = fg.scene?.();
-        if (scene) {
-          scene.fog = new THREE.FogExp2(0x05060a, 0.0009);
-        }
-      } catch {
-        /* best-effort polish */
+    // Background
+    const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) / 1.3);
+    bg.addColorStop(0, "rgba(20,28,48,0.55)");
+    bg.addColorStop(1, "rgba(5,6,10,1)");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    const plotH = h - PAD.top - PAD.bottom;
+    const laneH = plotH / Math.max(1, lanes.ordered.length);
+
+    // Lane bands + labels
+    ctx.textBaseline = "middle";
+    ctx.font = "11px ui-monospace, monospace";
+    lanes.ordered.forEach((kind, i) => {
+      const yTop = PAD.top + i * laneH;
+      const yc = yTop + laneH / 2;
+      if (i % 2 === 1) {
+        ctx.fillStyle = "rgba(255,255,255,0.018)";
+        ctx.fillRect(PAD.left, yTop, w - PAD.left - PAD.right, laneH);
       }
-    }, 100);
-    return () => clearTimeout(timer);
-  }, [loadState]);
-
-  // Hold-space-to-pan: swap OrbitControls' left-mouse binding from
-  // ROTATE to PAN while space is held. Cursor switches to grab/grabbing
-  // for visual feedback. Right-mouse-drag still pans regardless (the
-  // OrbitControls default), this is just the DCC-style modifier.
-  useEffect(() => {
-    if (loadState !== "ready") return;
-    const THREE = threeRef.current;
-    if (!THREE) return;
-
-    const isTypingTarget = (el: EventTarget | null): boolean => {
-      if (!(el instanceof HTMLElement)) return false;
-      const tag = el.tagName;
-      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
-    };
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code !== "Space" || e.repeat) return;
-      if (isTypingTarget(e.target)) return;
-      e.preventDefault();
-      const fg = fgRef.current;
-      const ctrls = fg?.controls?.();
-      if (ctrls?.mouseButtons) {
-        ctrls.mouseButtons.LEFT = THREE.MOUSE.PAN;
-      }
-      setPanMode(true);
-    };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code !== "Space") return;
-      const fg = fgRef.current;
-      const ctrls = fg?.controls?.();
-      if (ctrls?.mouseButtons) {
-        ctrls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
-      }
-      setPanMode(false);
-    };
-    // Releasing focus (e.g., switching window) shouldn't strand us in
-    // pan mode — reset on blur as a safety net.
-    const onBlur = () => {
-      const fg = fgRef.current;
-      const ctrls = fg?.controls?.();
-      if (ctrls?.mouseButtons) {
-        ctrls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
-      }
-      setPanMode(false);
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("blur", onBlur);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("blur", onBlur);
-    };
-  }, [loadState]);
-
-  // Camera focus on selection change. The effect lists graphData.nodes
-  // as a dep so we can wait for a freshly-fetched node to land in the
-  // dataset before flying — but we gate on `prevFlownIdRef` so we only
-  // fly ONCE per actual selection change. Without the gate, every
-  // refetch (which produces a fresh graphData.nodes reference) re-fires
-  // the fly, even when the user's selectedId didn't change. That
-  // double-fly looked like a flicker mid-transition.
-  const prevFlownIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!selectedId) {
-      prevFlownIdRef.current = null;
-      return;
-    }
-    if (prevFlownIdRef.current === selectedId) return;
-    const fg = fgRef.current;
-    if (!fg) return;
-    const node = graphData.nodes.find((n) => n.id === selectedId);
-    if (!node) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const n = node as any;
-    if (typeof n.x !== "number") return;
-    prevFlownIdRef.current = selectedId;
-    const distance = 90;
-    const distRatio = 1 + distance / Math.hypot(n.x, n.y, n.z);
-    fg.cameraPosition(
-      { x: n.x * distRatio, y: n.y * distRatio, z: n.z * distRatio },
-      { x: n.x, y: n.y, z: n.z },
-      900,
-    );
-  }, [selectedId, graphData.nodes]);
-
-  if (loadState === "loading") {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-3">
-        <Skeleton className="h-32 w-32 rounded-full" />
-        <span className="text-xs text-muted-foreground">Loading 3D visualization…</span>
-      </div>
-    );
-  }
-  if (loadState === "error") {
-    return (
-      <div className="flex h-full items-center justify-center p-6">
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <strong className="font-medium">Failed to load 3D graph</strong>
-          <p className="mt-1 text-xs opacity-80">{loadError}</p>
-        </div>
-      </div>
-    );
-  }
-
-  const ForceGraph = ForceGraphRef.current;
-  const THREE = threeRef.current;
-  const w = size.w > 0 ? size.w : 800;
-  const h = size.h > 0 ? size.h : 600;
-
-  // Neuron node: tight bright core sphere wrapped in a soft glow
-  // sprite. Bloom amplifies the pair into the firing-synapse feel.
-  // No labels on the canvas — the floating legend identifies colors,
-  // and hover/drawer surface per-node detail.
-  function makeNodeMesh(node: Force3DNode) {
-    if (!THREE) return undefined;
-    const isSelected = node.id === selectedId;
-    const isFocal = focalId != null && node.id === focalId;
-    const color = new THREE.Color(node.color);
-    const group = new THREE.Group();
-
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(node.val * 0.35, 12, 12),
-      new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: node.dim ? 0.25 : 1,
-      }),
-    );
-    group.add(core);
-
-    const glowTex = glowTexture(THREE) as unknown;
-    const haloMat = new THREE.SpriteMaterial({
-      map: glowTex,
-      color,
-      transparent: true,
-      opacity: node.dim ? 0.04 : isFocal ? 0.55 : isSelected ? 0.4 : 0.2,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      ctx.fillStyle = KIND_COLOR[kind] ?? "#94a3b8";
+      ctx.globalAlpha = 0.85;
+      ctx.textAlign = "right";
+      ctx.fillText(kind, PAD.left - 12, yc);
+      ctx.globalAlpha = 1;
     });
-    const halo = new THREE.Sprite(haloMat);
-    const haloScale = node.val * (isFocal ? 3.6 : isSelected ? 3 : 2);
-    halo.scale.set(haloScale, haloScale, 1);
-    group.add(halo);
 
-    return group;
+    // Time axis ticks
+    const tNodes = placed;
+    if (tNodes.length > 0) {
+      let minT = Number.POSITIVE_INFINITY;
+      let maxT = Number.NEGATIVE_INFINITY;
+      for (const p of tNodes) {
+        const t = Date.parse(p.node.created_at);
+        if (Number.isFinite(t)) {
+          if (t < minT) minT = t;
+          if (t > maxT) maxT = t;
+        }
+      }
+      const span = maxT - minT || 1;
+      const plotW = w - PAD.left - PAD.right;
+      const TICKS = 5;
+      ctx.textAlign = "center";
+      ctx.font = "10px ui-monospace, monospace";
+      for (let i = 0; i < TICKS; i++) {
+        const t = minT + (i / (TICKS - 1)) * span;
+        const x = PAD.left + ((t - minT) / span) * plotW;
+        ctx.strokeStyle = "rgba(255,255,255,0.05)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, PAD.top);
+        ctx.lineTo(x, h - PAD.bottom);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(148,163,184,0.7)";
+        const label = new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        ctx.fillText(i === TICKS - 1 ? "now" : label, x, h - PAD.bottom + 14);
+      }
+    }
+
+    // Index for edge endpoints
+    const byId = new Map<string, Placed>();
+    for (const p of placed) byId.set(p.node.id, p);
+
+    // Edges (under nodes), static arcs
+    for (const e of edges) {
+      const s = byId.get(e.source);
+      const tgt = byId.get(e.target);
+      if (!s || !tgt) continue;
+      const avg = (s.bright + tgt.bright) / 2;
+      const mx = (s.x + tgt.x) / 2;
+      const my = (s.y + tgt.y) / 2 - Math.min(60, Math.abs(tgt.x - s.x) * 0.18);
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.quadraticCurveTo(mx, my, tgt.x, tgt.y);
+      if (e.type === "supersede") {
+        ctx.strokeStyle = `rgba(251,191,36,${0.45 * Math.max(0.3, avg)})`;
+        ctx.lineWidth = 1.3;
+      } else {
+        ctx.strokeStyle = `rgba(125,211,252,${0.18 * Math.max(0.2, avg)})`;
+        ctx.lineWidth = 0.7;
+      }
+      ctx.stroke();
+    }
+
+    // Nodes — glow then core
+    for (const p of placed) {
+      const isSel = p.node.id === selectedId;
+      const isFocal = focalId != null && p.node.id === focalId;
+      const glowR = p.r * (isFocal ? 5 : isSel ? 4 : 3) * (0.5 + p.bright);
+      ctx.globalCompositeOperation = "lighter";
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowR);
+      g.addColorStop(0, hexToRgba(p.color, 0.55 * p.bright));
+      g.addColorStop(1, hexToRgba(p.color, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, glowR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalCompositeOperation = "source-over";
+
+      ctx.fillStyle = hexToRgba(p.color, Math.min(1, 0.45 + 0.55 * p.bright));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (isSel || isFocal) {
+        ctx.strokeStyle = isFocal ? "#ffffff" : "rgba(255,255,255,0.8)";
+        ctx.lineWidth = isFocal ? 2 : 1.5;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r + 3, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  }, [placed, size, lanes, selectedId, focalId, hover]);
+
+  // ── Hit testing ──────────────────────────────────────────────────
+  function hit(clientX: number, clientY: number): Placed | null {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const mx = clientX - rect.left;
+    const my = clientY - rect.top;
+    let best: Placed | null = null;
+    let bestD = Number.POSITIVE_INFINITY;
+    for (const p of placed) {
+      const d = Math.hypot(p.x - mx, p.y - my);
+      if (d <= p.r + 5 && d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    return best;
   }
 
   return (
-    <div
-      ref={containerRef}
-      className={`absolute inset-0 overflow-hidden ${panMode ? "cursor-grab active:cursor-grabbing" : ""}`}
-      style={{
-        background:
-          "radial-gradient(ellipse at center, rgba(20,28,48,0.95) 0%, rgba(5,6,10,1) 70%)",
-      }}
-    >
-      {ForceGraph && (
-        <ForceGraph
-          ref={fgRef}
-          graphData={graphData}
-          width={w}
-          height={h}
-          backgroundColor="rgba(0,0,0,0)"
-          nodeId="id"
-          nodeVal="val"
-          nodeLabel={(n: Force3DNode) =>
-            `<div style="font: 11px ui-monospace,monospace; color:#e5e7eb; max-width:280px; padding:4px 6px; background:rgba(15,23,42,0.92); border:1px solid rgba(96,165,250,0.4); border-radius:4px"><strong style="color:#7dd3fc">${escapeHtml(n.kind ?? "memory")}</strong><br/>${escapeHtml(n.content_preview.slice(0, 200))}</div>`
+    <div ref={containerRef} className="absolute inset-0 overflow-hidden">
+      <canvas
+        ref={canvasRef}
+        style={{ width: size.w || "100%", height: size.h || "100%", display: "block" }}
+        onMouseMove={(e) => {
+          const p = hit(e.clientX, e.clientY);
+          if (p) {
+            if (hover?.id !== p.node.id) setHover({ id: p.node.id, x: p.x, y: p.y });
+            e.currentTarget.style.cursor = "pointer";
+          } else {
+            if (hover) setHover(null);
+            e.currentTarget.style.cursor = "default";
           }
-          nodeThreeObject={makeNodeMesh}
-          nodeThreeObjectExtend={false}
-          linkColor={(l: Force3DLink) => l.color}
-          linkOpacity={0.5}
-          linkWidth={(l: Force3DLink) => (l.type === "supersede" ? 1.5 : 0.4)}
-          // Curve every edge so they read as axonal arcs in 3D rather
-          // than ruler lines. Supersede edges arc more sharply so the
-          // "newer truth" flow stands out from related neighbours.
-          linkCurvature={(l: Force3DLink) => (l.type === "supersede" ? 0.4 : 0.25)}
-          // Rotate each curve's plane around the edge axis by a hash
-          // of the endpoint pair, so curves between dense clusters
-          // don't all twist in the same plane and visually overlap.
-          linkCurveRotation={(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            l: any,
-          ) => {
-            const sId = typeof l.source === "string" ? l.source : l.source?.id;
-            const tId = typeof l.target === "string" ? l.target : l.target?.id;
-            return ((hashStr(`${sId}-${tId}`) % 360) * Math.PI) / 180;
-          }}
-          linkDirectionalArrowLength={(l: Force3DLink) => (l.type === "supersede" ? 5 : 0)}
-          linkDirectionalArrowRelPos={1}
-          linkDirectionalArrowColor={(l: Force3DLink) => l.color}
-          linkDirectionalParticles={0}
-          enableNodeDrag={false}
-          enableNavigationControls={true}
-          showNavInfo={true}
-          controlType="orbit"
-          onNodeClick={(n: Force3DNode) => {
-            // Click = hop. Refocus on this memory and open its drawer.
-            // Right-click does the same; both are wired in case of OS
-            // / trackpad quirks where right-click is awkward.
-            if (onRefocus) onRefocus(n.id);
-            else onSelect(n.id);
-          }}
-          onNodeRightClick={(n: Force3DNode) => {
-            if (onRefocus) onRefocus(n.id);
-          }}
-          onBackgroundClick={() => onSelect(null)}
-        />
-      )}
+        }}
+        onMouseLeave={() => setHover(null)}
+        onClick={(e) => {
+          const p = hit(e.clientX, e.clientY);
+          if (p) (onRefocus ? onRefocus : onSelect)(p.node.id);
+          else onSelect(null);
+        }}
+      />
+      {hover &&
+        (() => {
+          const p = placed.find((x) => x.node.id === hover.id);
+          if (!p) return null;
+          const left = Math.min(size.w - 290, Math.max(8, p.x + 12));
+          const top = Math.max(8, p.y - 8);
+          return (
+            <div
+              className="pointer-events-none absolute z-20 max-w-[280px] rounded-md border border-sky-400/40 bg-slate-900/95 px-2 py-1.5 font-mono text-[11px] text-slate-200 shadow-lg"
+              style={{ left, top }}
+            >
+              <strong className="text-sky-300">{p.node.kind ?? "memory"}</strong>
+              {p.node.archived && <span className="ml-1 text-slate-500">· archived</span>}
+              <br />
+              {p.node.content_preview.slice(0, 200)}
+            </div>
+          );
+        })()}
     </div>
   );
 });
 
-function escapeHtml(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+// "#rrggbb" → "rgba(r,g,b,a)". Falls back to the input for non-hex.
+function hexToRgba(hex: string, a: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const int = Number.parseInt(m[1], 16);
+  const r = (int >> 16) & 255;
+  const g = (int >> 8) & 255;
+  const b = int & 255;
+  return `rgba(${r},${g},${b},${a})`;
 }
