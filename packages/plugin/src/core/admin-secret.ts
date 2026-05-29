@@ -32,9 +32,11 @@ const KEY_LEN = 32;
  *  to plaintext stdin / env-var rather than persist anything. */
 function deriveKey(): Buffer {
   const fp = machineFingerprint();
+
   if (!fp) {
     throw new Error("admin secret: no hardware fingerprint on this platform");
   }
+
   return scryptSync(fp, SALT, KEY_LEN);
 }
 
@@ -44,6 +46,7 @@ export function encryptAdminPassword(plaintext: string): string {
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
+
   return Buffer.concat([iv, tag, ct]).toString("base64");
 }
 
@@ -53,14 +56,19 @@ export function encryptAdminPassword(plaintext: string): string {
 export function decryptAdminPassword(blob: string): string | null {
   try {
     const buf = Buffer.from(blob, "base64");
+
     if (buf.length < IV_LEN + TAG_LEN + 1) return null;
+
     const iv = buf.subarray(0, IV_LEN);
     const tag = buf.subarray(IV_LEN, IV_LEN + TAG_LEN);
     const ct = buf.subarray(IV_LEN + TAG_LEN);
     const key = deriveKey();
     const decipher = createDecipheriv("aes-256-gcm", key, iv);
+
     decipher.setAuthTag(tag);
+
     const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+
     return pt.toString("utf8");
   } catch {
     return null;

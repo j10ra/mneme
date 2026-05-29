@@ -26,7 +26,7 @@ Resolve $ARGUMENTS to the **exact text** to save before invoking the slash. The 
 **Once confirmed**, invoke the slash with the resolved text (NOT $ARGUMENTS literally — pass the synthesised sentence). Pipe via stdin if the text could contain shell metacharacters; or pass as argv if it's safe:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" pin "<resolved text or uuid>"
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" pin "<resolved text or uuid>"
 ```
 
 After it runs, briefly report: the memory id, whether it was newly created or re-pinned. Don't re-summarise the content — the user just confirmed it.

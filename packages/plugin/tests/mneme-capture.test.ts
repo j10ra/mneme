@@ -6,14 +6,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MnemeConfig } from "../scripts/config.ts";
+import type { MnemeConfig } from "../src/core/config.ts";
 import {
   buildToolObservation,
   MAX_CAPTURE_BYTES,
   shouldSkipTool,
   truncate,
   writeCapture,
-} from "../scripts/mneme-capture.ts";
+} from "../src/core/capture.ts";
 
 const cfg = (over: Partial<MnemeConfig> = {}): MnemeConfig =>
   ({

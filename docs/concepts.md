@@ -16,7 +16,7 @@ The vocabulary used everywhere else. Read this first if other docs use a term yo
 | **Scope** | The `(machine, repo, harness, agent, topics[])` tuple on every capture and memory. Repo is the cross-machine join key. |
 | **Importance** | Salience score in `[0, 1]`. Decays each nap cycle. Floors at `FLOOR=0.05` for unpinned, `PIN_FLOOR=0.5` for pinned. |
 | **Pinned** | `meta.pinned = true`. Surfaces in every session, never decays below `PIN_FLOOR`, exempt from clustering and supersede. |
-| **Archived** | `archived_at IS NOT NULL`. Set by nap's auto-archive phase on memories that decayed to irrelevance (importance ≤ 0.1, recall_weight = 0, age ≥ 30 days, not pinned/clustered/superseded). Stays queryable via `mneme_sql`; excluded from surface. Restore by calling `bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" unarchive "<uuid>"`. |
+| **Archived** | `archived_at IS NOT NULL`. Set by nap's auto-archive phase on memories that decayed to irrelevance (importance ≤ 0.1, recall_weight = 0, age ≥ 30 days, not pinned/clustered/superseded). Stays queryable via `mneme_sql`; excluded from surface. Restore by calling `bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" unarchive "<uuid>"`. |
 | **Superseded** | Older memory replaced by a newer one. `meta.superseded_by = <newer_id>`. Not deleted; rank-down × 0.3 in recall, filtered from surface. |
 | **Cluster / Theme** | A `kind='cluster'` memory written by the dream worker. `meta.member_ids[]` lists the constituents; `meta.cluster_title` is the short label. Member memories get `meta.in_cluster = <cluster_id>` (sticky). |
 | **In-cluster** | `meta.in_cluster IS NOT NULL` — this memory belongs to a cluster, dream's skip-list excludes it from re-clustering. |

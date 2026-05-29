@@ -7,7 +7,7 @@ allowed-tools: Bash
 The user wants a quick reminder of available Mneme slash commands. Run:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" help
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" help
 ```
 
 The output is a markdown table grouped by scope (User / Admin). It auto-updates as new slashes land — each `commands/*.md` declares its own `description` + `scope` in frontmatter, and the help script walks the directory.

@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isBlacklistedPath } from "../scripts/config.ts";
+import { isBlacklistedPath } from "../src/core/config.ts";
 
 describe("isBlacklistedPath", () => {
   test("blocks the user's global .claude config dir", () => {
@@ -64,7 +64,7 @@ describe("loadConfig self-healing migration (claudeOauthToken strip)", () => {
     );
     chmodSync(cfgPath, 0o600);
 
-    const cfgModule = join(import.meta.dir, "..", "scripts", "config.ts");
+    const cfgModule = join(import.meta.dir, "..", "src", "core", "config.ts");
     const proc = Bun.spawnSync({
       cmd: [
         "bun",
@@ -106,7 +106,7 @@ describe("loadConfig self-healing migration (claudeOauthToken strip)", () => {
     chmodSync(cfgPath, 0o600);
     const beforeMtime = readFileSync(cfgPath);
 
-    const cfgModule = join(import.meta.dir, "..", "scripts", "config.ts");
+    const cfgModule = join(import.meta.dir, "..", "src", "core", "config.ts");
     const proc = Bun.spawnSync({
       cmd: ["bun", "-e", `import { loadConfig } from "${cfgModule}"; loadConfig();`],
       env: { ...process.env, HOME: fakeHome },

@@ -26,7 +26,7 @@ If the user's intent is clearly "this exact sentence matters and must surface fo
 **Invoke the slash** with the resolved text. Use a heredoc with single-quoted delimiter to preserve special characters:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" memory <<'MNEME_EOF'
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" memory <<'MNEME_EOF'
 <resolved text>
 MNEME_EOF
 ```

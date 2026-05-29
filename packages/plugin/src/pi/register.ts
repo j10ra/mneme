@@ -7,7 +7,7 @@
 // `mneme_sql` as a native tool with no manual config and no pi-mcp adapter.
 //
 // Recall logic is NOT duplicated here: it reuses the shared core in
-// ../scripts/mneme-rpc.ts, the same module the Claude Code stdio proxy
+// ../core/recall.ts, the same module the Claude Code stdio proxy
 // uses. This file is the harness adapter; the core is harness-neutral.
 //
 // Pi loads this under its own toolchain (it provides @earendil-works/* and
@@ -16,8 +16,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { loadConfig } from "../scripts/config.ts";
-import { callMnemeSql } from "../scripts/mneme-rpc.ts";
+import { loadConfig } from "../core/config.ts";
+import { callMnemeSql } from "../core/recall.ts";
 
 export default function mneme(pi: ExtensionAPI) {
   pi.registerTool({

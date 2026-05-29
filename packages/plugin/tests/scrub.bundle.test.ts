@@ -1,4 +1,4 @@
-// Asserts the committed plugin scrub bundle (packages/plugin/scripts/scrub.ts)
+// Asserts the committed plugin scrub bundle (packages/plugin/src/core/scrub.ts)
 // matches a fresh `bun build` of packages/shared/src/scrub.ts. The plugin
 // is shipped as-is via /plugin install — no bun install at the destination
 // — so the bundle MUST be in the repo and MUST be current. A drift here
@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 describe("plugin scrub bundle", () => {
   test("committed bundle matches fresh build of shared/src/scrub.ts", () => {
     const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
-    const committed = readFileSync(join(repoRoot, "packages/plugin/scripts/scrub.ts"), "utf8");
+    const committed = readFileSync(join(repoRoot, "packages/plugin/src/core/scrub.ts"), "utf8");
 
     const tmp = mkdtempSync(join(tmpdir(), "mneme-bundle-"));
     try {

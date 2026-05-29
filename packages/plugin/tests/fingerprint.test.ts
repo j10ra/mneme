@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { platform } from "node:os";
-import { machineFingerprint } from "../scripts/config.ts";
+import { machineFingerprint } from "../src/core/config.ts";
 
 describe("machineFingerprint", () => {
   test("returns a stable id on the host platform", () => {

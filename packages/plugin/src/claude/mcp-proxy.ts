@@ -8,14 +8,14 @@
 // response. We forward bytes faithfully to /mcp.
 
 import { createInterface } from "node:readline";
-import { type MnemeConfig, configPath, loadConfig, serverUrl } from "./config.ts";
-import { substituteEmbedsViaDaemon } from "./mneme-rpc.ts";
+import { type MnemeConfig, configPath, loadConfig, serverUrl } from "../core/config.ts";
+import { substituteEmbedsViaDaemon } from "../core/recall.ts";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_NAME = "mneme";
 const SERVER_VERSION = "1.0.0";
 
-import { plog as sharedPlog } from "./log.ts";
+import { plog as sharedPlog } from "../core/log.ts";
 
 function plog(msg: string, fields?: Record<string, unknown>): void {
   // stdout is reserved for JSON-RPC; diagnostics go to the shared log

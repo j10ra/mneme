@@ -2,7 +2,7 @@
   "mcpServers": {
     "mneme": {
       "type": "stdio",
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-proxy.ts",
+      "command": "${CLAUDE_PLUGIN_ROOT}/src/claude/mcp-proxy.ts",
       "args": [],
       "env": {}
     }

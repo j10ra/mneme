@@ -7,7 +7,7 @@ allowed-tools: Bash
 The user wants to see registered machines. Run:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" machines
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" machines
 ```
 
 The slash uses the per-machine bearer from `~/.mneme/config.json` — no admin password needed. If the server returns 401, the per-machine token is invalid; suggest re-running `/mneme:setup`.

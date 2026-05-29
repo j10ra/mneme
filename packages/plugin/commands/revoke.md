@@ -18,7 +18,7 @@ The user wants to revoke: $ARGUMENTS
 4. **Run.** The slash resolves the admin password via env → encrypted config → stdin ladder, so on operator machines no prompt is needed:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" revoke "<machine-id>"
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" revoke "<machine-id>"
 ```
 
 If it exits with `admin password required`, ask the user for it (do NOT echo) and re-run with it piped: `echo -n "<pw>" | bun ".../slash.ts" revoke "<machine-id>"`.

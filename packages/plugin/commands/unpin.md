@@ -41,7 +41,7 @@ Resolve $ARGUMENTS to a specific memory UUID before invoking the slash.
 **Invoke the slash** with the resolved UUID:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" unpin "<uuid>"
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" unpin "<uuid>"
 ```
 
 After it runs, confirm to the user. Unpinning lets the memory's importance decay normally (still kept; just stops surfacing in every session).

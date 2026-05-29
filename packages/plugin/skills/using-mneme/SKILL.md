@@ -123,7 +123,7 @@ If you can't verify a claim from this session, **say so explicitly** — "this f
 When something the user states **this session** plainly contradicts a memory that was surfaced at SessionStart or recalled via `mneme_sql`, treat the user's statement as an authoritative correction, not a question.
 
 1. Archive the contradicted memory immediately:
-   `bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" archive "<uuid>"` (or the `/mneme:archive` command). **Do not ask for confirmation.** The user already stated the correcting fact; the confirmation step in `commands/archive.md` exists to stop *you* from guessing, and an explicit user contradiction is not a guess, so it does not apply here.
+   `bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" archive "<uuid>"` (or the `/mneme:archive` command). **Do not ask for confirmation.** The user already stated the correcting fact; the confirmation step in `commands/archive.md` exists to stop *you* from guessing, and an explicit user contradiction is not a guess, so it does not apply here.
 2. Report it in one line: `archived <uuid> (contradicted by "<what the user said>")`.
 3. The corrected fact enters the corpus through normal capture; no manual step is needed.
 

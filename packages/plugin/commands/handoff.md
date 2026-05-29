@@ -36,7 +36,7 @@ If the user passed a slug hint in `$ARGUMENTS`, prefer it (adjust to match the r
 Pass the slug as arg, the synthesis on stdin via heredoc:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" handoff <slug> <<'MNEME_EOF'
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" handoff <slug> <<'MNEME_EOF'
 <the synthesis>
 MNEME_EOF
 ```

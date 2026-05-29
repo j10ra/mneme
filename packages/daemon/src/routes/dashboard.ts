@@ -610,7 +610,7 @@ async function readDaemonConfig(): Promise<DaemonProxyConfig | null> {
 }
 
 // Decrypt the AES-GCM-encrypted admin password from ~/.mneme/config.json.
-// Mirrors packages/plugin/scripts/admin-secret.ts; duplicated here so the
+// Mirrors packages/plugin/src/core/admin-secret.ts; duplicated here so the
 // daemon is self-contained and doesn't reach across package boundaries.
 // Returns null when no admin block is present, when the fingerprint is
 // unavailable on this platform, or on auth-tag failure.
@@ -644,7 +644,7 @@ function decryptAdminPassword(blob: string | null): string | null {
   }
 }
 
-// Mirrors packages/plugin/scripts/config.ts:machineFingerprint. Pure
+// Mirrors packages/plugin/src/core/config.ts:machineFingerprint. Pure
 // function, probes platform-canonical hardware ids. Same constraint:
 // daemon stays self-contained.
 function machineFingerprint(

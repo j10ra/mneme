@@ -20,17 +20,17 @@ Optional:
 Run (positional form is the default; flag form is also accepted):
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" setup <server-url> <admin-password> [machine-name]
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" setup <server-url> <admin-password> [machine-name]
 ```
 
 Examples (substitute real values):
 
 ```bash
 # Positional — recommended:
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" setup https://mneme.example.com s3cr3t-pw
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" setup https://mneme.example.com s3cr3t-pw
 
 # Flag form (also works since v1.0.19):
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" setup \
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" setup \
   --server-url https://mneme.example.com \
   --admin-password s3cr3t-pw \
   --name laptop
@@ -40,7 +40,7 @@ If `$ARGUMENTS` already contains both values in a recognised order, you can
 pass it through verbatim:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" setup $ARGUMENTS
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" setup $ARGUMENTS
 ```
 
 What the script does: POSTs `/api/auth/register` with the admin password as a

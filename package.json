@@ -11,8 +11,9 @@
       "packages/plugin/skills"
     ],
     "extensions": [
-      "packages/plugin/pi/register-mneme.ts",
-      "packages/plugin/pi/capture-mneme.ts"
+      "packages/plugin/src/pi/register.ts",
+      "packages/plugin/src/pi/capture.ts",
+      "packages/plugin/src/pi/commands.ts"
     ]
   },
   "scripts": {
@@ -27,7 +28,7 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "check": "biome check .",
-    "build:plugin-scrub": "bun build packages/shared/src/scrub.ts --outfile packages/plugin/scripts/scrub.ts --format esm --target bun --banner '// @ts-nocheck'"
+    "build:plugin-scrub": "bun build packages/shared/src/scrub.ts --outfile packages/plugin/src/core/scrub.ts --format esm --target bun --banner '// @ts-nocheck'"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",

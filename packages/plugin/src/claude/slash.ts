@@ -21,12 +21,12 @@ import {
   machineFingerprint,
   saveConfig,
   serverUrl,
-} from "./config.ts";
-import { decryptAdminPassword, encryptAdminPassword } from "./admin-secret.ts";
-import { installDaemonService, pickFreePortDeterministic } from "./daemon-install.ts";
-import { EMBEDDER_MODEL, embedViaDaemon } from "./embedder.ts";
-import { plog } from "./log.ts";
-import { baseScope } from "./scope.ts";
+} from "../core/config.ts";
+import { decryptAdminPassword, encryptAdminPassword } from "../core/admin-secret.ts";
+import { installDaemonService, pickFreePortDeterministic } from "../daemon/daemon-install.ts";
+import { EMBEDDER_MODEL, embedViaDaemon } from "../daemon/embedder.ts";
+import { plog } from "../core/log.ts";
+import { baseScope } from "../core/scope.ts";
 
 async function readStdin(): Promise<string> {
   let buf = "";
@@ -395,16 +395,16 @@ async function setup(url: string, adminPassword: string, name?: string): Promise
     console.log("  admin:   stored encrypted (AES-GCM, machine-fingerprint-derived key)");
   }
 
-  // Daemon install. Plugin root is the parent of this script's
-  // directory: slash.ts lives at <pluginRoot>/scripts/slash.ts, so
-  // pluginRoot = dirname(dirname(script-path)). We derive it from
+  // Daemon install. Plugin root is the grandparent of this script's
+  // directory: slash.ts lives at <pluginRoot>/src/claude/slash.ts, so
+  // pluginRoot = dirname×3(script-path). We derive it from
   // import.meta.url instead of process.env.CLAUDE_PLUGIN_ROOT because
   // Claude Code's slash command machinery substitutes
   // ${CLAUDE_PLUGIN_ROOT} into the command string but does NOT set
   // it as an environment variable for the spawned process — so
   // reading the env was making the whole install path skip silently.
   const pluginRoot =
-    process.env.CLAUDE_PLUGIN_ROOT ?? dirname(dirname(fileURLToPath(import.meta.url)));
+    process.env.CLAUDE_PLUGIN_ROOT ?? dirname(dirname(dirname(fileURLToPath(import.meta.url))));
   if (pluginRoot) {
     const installResult = await installDaemonService({
       pluginRoot,
@@ -457,7 +457,9 @@ type SlashEntry = {
 };
 
 function pluginRoot(): string {
-  return process.env.CLAUDE_PLUGIN_ROOT ?? dirname(dirname(fileURLToPath(import.meta.url)));
+  return (
+    process.env.CLAUDE_PLUGIN_ROOT ?? dirname(dirname(dirname(fileURLToPath(import.meta.url))))
+  );
 }
 
 function parseFrontmatter(raw: string): Record<string, string> {

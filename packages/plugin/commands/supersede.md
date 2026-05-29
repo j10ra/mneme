@@ -38,13 +38,13 @@ Supersede links an OLD memory to the NEW memory that replaces it. The old memory
 **Invoke the slash** with the two resolved UUIDs (old first, then new):
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" supersede "<old-uuid>" "<new-uuid>"
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" supersede "<old-uuid>" "<new-uuid>"
 ```
 
 To reverse a supersede (rare), use the unsupersede subcommand directly:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" unsupersede "<old-uuid>"
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" unsupersede "<old-uuid>"
 ```
 
 After it runs, briefly confirm. Don't re-summarise the content — the user just confirmed it.

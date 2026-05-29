@@ -22,7 +22,7 @@ Six phases, each its own SQL call (not one transaction — a slow phase fails in
    - `created_at` older than `NAP_ARCHIVE_MIN_AGE_DAYS` (30 days) — fair shot at being useful
    - NOT pinned, NOT in_cluster, NOT superseded
 
-   Capped at `NAP_ARCHIVE_PER_CYCLE_CAP = 200` so a one-time eligibility bloom doesn't dump thousands at once. Archived rows stay in the table and are still queryable via `mneme_sql` — they just stop appearing on the SessionStart surface. Restore by calling `bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" unarchive "<uuid>"`.
+   Capped at `NAP_ARCHIVE_PER_CYCLE_CAP = 200` so a one-time eligibility bloom doesn't dump thousands at once. Archived rows stay in the table and are still queryable via `mneme_sql` — they just stop appearing on the SessionStart surface. Restore by calling `bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" unarchive "<uuid>"`.
 
 4. **Archive dead clusters (`napArchiveDeadClusters`).** Sets `archived_at = now()` on `kind='cluster'` rows that are either already superseded OR have decayed (mirrors the orphan criteria above) — but with `NAP_CLUSTER_ARCHIVE_MIN_AGE_DAYS = 60` instead of 30. Same per-cycle cap.
 

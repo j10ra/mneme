@@ -111,7 +111,7 @@ export function effectiveLimit(sql: string): number {
 }
 
 /** The server no longer embeds anything. The per-machine MCP proxy
- *  (`packages/plugin/scripts/mcp-proxy.ts`) substitutes embed('text')
+ *  (`packages/plugin/src/claude/mcp-proxy.ts`) substitutes embed('text')
  *  → '[v1,v2,...]'::vector locally via the daemon's bge-small subprocess
  *  before the SQL hits this server. If we see an embed() macro here it
  *  means either (a) the proxy is missing/old, or (b) someone is calling

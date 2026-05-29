@@ -5,16 +5,7 @@
 // Fail-open: errors never block the harness.
 
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -24,12 +15,16 @@ import {
   loadConfig,
   registerProject,
   serverUrl,
-} from "./config.ts";
-import { isDaemonConfigStale } from "./daemon-install.ts";
-import { baseScope as buildScope, discoverRepos, repoForFile } from "./scope.ts";
-import { scrubData } from "./scrub.ts";
-import { decryptAdminPassword } from "./admin-secret.ts";
-import { plog } from "./log.ts";
+} from "../core/config.ts";
+import { isDaemonConfigStale } from "../daemon/daemon-install.ts";
+import {
+  buildToolObservation,
+  isRecursiveTool,
+  scrubAndRedact,
+  writeToOutbox,
+} from "../core/capture.ts";
+import { baseScope as buildScope, discoverRepos, repoForFile } from "../core/scope.ts";
+import { plog } from "../core/log.ts";
 
 const event = process.argv[2] ?? "unknown";
 
@@ -65,7 +60,9 @@ async function readStdin(): Promise<Record<string, unknown>> {
 // what the daemon SHOULD be pinned to — not the version that happens to
 // be loaded by this hook, which may lag the cache after /plugin update.
 function latestCachedPluginRoot(): string | null {
-  const ownRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  // This file lives at <version>/src/claude/hook.ts — three dirname() hops up
+  // to the plugin version root (…/cache/j10ra-mneme/mneme/<version>/).
+  const ownRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
   // Walk up to the cache root: …/cache/j10ra-mneme/mneme/<version>/
   const cacheRoot = dirname(ownRoot);
   if (!existsSync(cacheRoot)) return ownRoot;
@@ -86,10 +83,11 @@ function refreshDaemonIfStale(): void {
   // loaded from the prior version until /reload-plugins fires; that's
   // fine — the daemon refresh path is independent of the hook's own
   // location, so we can still update the plist + daemon.
-  const targetRoot = latestCachedPluginRoot() ?? dirname(dirname(fileURLToPath(import.meta.url)));
+  const targetRoot =
+    latestCachedPluginRoot() ?? dirname(dirname(dirname(fileURLToPath(import.meta.url))));
   if (!isDaemonConfigStale(targetRoot)) return;
 
-  const ownRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const ownRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
   const ownVersion = basename(ownRoot);
   const targetVersion = basename(targetRoot);
   process.stderr.write(
@@ -103,7 +101,7 @@ function refreshDaemonIfStale(): void {
   try {
     // Run refresh-daemon from the TARGET version so the new daemon is
     // what gets installed into the plist.
-    const refreshScript = join(targetRoot, "scripts/refresh-daemon.ts");
+    const refreshScript = join(targetRoot, "src/daemon/refresh-daemon.ts");
     if (!existsSync(refreshScript)) return;
     const child = spawn(process.execPath, [refreshScript], {
       detached: true,
@@ -132,99 +130,11 @@ async function pingDaemonFlush(cfg: MnemeConfig): Promise<void> {
   }
 }
 
-// Sync SHA via node:crypto. Bun's WebCrypto can fail to resolve the
-// awaited Promise when the hook is spawned with payload piped to stdin
-// (CC's standard hook invocation): stdin EOF drains the loop before
-// the digest microtask fires. node:crypto.createHash is synchronous
-// and sidesteps the issue entirely.
-function sha256Hex(input: string): string {
-  return createHash("sha256").update(input).digest("hex");
-}
-
-// Write directly into the daemon's captured/ queue. Used when the daemon
-// HTTP listener is briefly unreachable (restart gap, crash). The daemon
-// picks up files on its very next tick.
-//
-// Hook is intentionally dumb: no dedup, no ledger checks. The daemon's
-// runDedup() worker drops byte-and-uuid duplicates at the captured/
-// boundary, mirroring the server's intake constraint.
-//
-// Id format matches handleCapture: `<ms-timestamp>-<8-char-sha-prefix>`.
-async function writeToDaemonOutbox(cleaned: Record<string, unknown>): Promise<boolean> {
-  try {
-    const content = typeof cleaned.content === "string" ? cleaned.content : "";
-    const hash = sha256Hex(content);
-    const id = `${Date.now()}-${hash.slice(0, 8)}`;
-    const dir = join(homedir(), ".mneme", "outbox", "capture", "captured");
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const tmp = join(dir, `.${id}.json.tmp`);
-    const final = join(dir, `${id}.json`);
-    writeFileSync(tmp, JSON.stringify(cleaned));
-    renameSync(tmp, final);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Build a per-machine literal redactor: any time one of THIS machine's
- *  secrets (per-machine bearer + admin password, when stored) appears
- *  verbatim in capture content, strip it. Belt for the shared scrubber's
- *  pattern braces — admin passwords are arbitrary user-chosen strings
- *  with no fixed shape, so they'd otherwise sail past every regex.
- *
- *  Run AFTER scrubData so we operate on already-pattern-redacted text.
- *  Sort longest-first to handle prefix-collision cases safely. Skip
- *  secrets shorter than 8 chars to avoid pathological replaces against
- *  common substrings. */
-function buildLocalRedactor(cfg: MnemeConfig): (s: string) => string {
-  const secrets = new Set<string>();
-  if (cfg.auth?.key) secrets.add(cfg.auth.key);
-  const fromEnv = process.env.MNEME_ADMIN_PASSWORD;
-  if (fromEnv) secrets.add(fromEnv);
-  if (cfg.admin?.secret) {
-    const pw = decryptAdminPassword(cfg.admin.secret);
-    if (pw) secrets.add(pw);
-  }
-  const list = [...secrets].filter((s) => s.length >= 8).sort((a, b) => b.length - a.length);
-  if (list.length === 0) return (s) => s;
-  return (s) => {
-    let out = s;
-    for (const sec of list) {
-      if (out.includes(sec)) {
-        out = out.split(sec).join("[REDACTED:mneme_secret]");
-      }
-    }
-    return out;
-  };
-}
-
-function redactInPlace(obj: Record<string, unknown>, redact: (s: string) => string): void {
-  for (const [k, v] of Object.entries(obj)) {
-    if (typeof v === "string") {
-      obj[k] = redact(v);
-    } else if (v && typeof v === "object" && !Array.isArray(v)) {
-      redactInPlace(v as Record<string, unknown>, redact);
-    } else if (Array.isArray(v)) {
-      obj[k] = v.map((item) =>
-        typeof item === "string"
-          ? redact(item)
-          : item && typeof item === "object"
-            ? (redactInPlace(item as Record<string, unknown>, redact), item)
-            : item,
-      );
-    }
-  }
-}
-
 async function postCapture(cfg: MnemeConfig, body: Record<string, unknown>): Promise<boolean> {
-  // Scrub here so every event funnels through one redaction point.
-  const cleaned = scrubData(body) as Record<string, unknown>;
-  // Second pass: machine-specific literal secrets (admin password,
-  // per-machine token). The shared scrubber catches well-shaped tokens;
-  // this catches user-chosen passwords that have no fixed pattern.
-  const redact = buildLocalRedactor(cfg);
-  redactInPlace(cleaned, redact);
+  // One redaction point for every event: shared scrub + machine-local
+  // literal-secret redaction (admin password, per-machine token) — the
+  // same path the Pi harness uses. See core/capture.ts.
+  const cleaned = scrubAndRedact(cfg, body);
 
   // Hook is a dumb writer. Dedup happens daemon-side at the captured/
   // boundary (runDedup()) so all dedup logic lives in one place and
@@ -252,7 +162,9 @@ async function postCapture(cfg: MnemeConfig, body: Record<string, unknown>): Pro
   } catch {
     // Daemon unreachable; fall through to direct outbox write.
   }
-  return await writeToDaemonOutbox(cleaned);
+  // Fallback when the daemon HTTP listener is briefly unreachable (restart
+  // gap, crash): write straight into captured/, drained on the next tick.
+  return writeToOutbox(cleaned);
 }
 
 async function fetchSurface(
@@ -526,9 +438,8 @@ const SKIP_TOOLS = new Set<string>([
 function shouldSkipTool(toolName: unknown): boolean {
   if (typeof toolName !== "string") return false;
   if (SKIP_TOOLS.has(toolName)) return true;
-  // Recursive: own MCP tools + claude-mem MCP tools.
-  if (/mneme/i.test(toolName) || /claude[-_]?mem/i.test(toolName)) return true;
-  return false;
+  // Recursive guard (own MCP tools + claude-mem) is shared across harnesses.
+  return isRecursiveTool(toolName);
 }
 
 async function main(): Promise<void> {
@@ -637,12 +548,12 @@ async function main(): Promise<void> {
           envelope.systemMessage = summaryForUser;
         }
         // Stale-session banner: the hook running RIGHT NOW lives at
-        // `.../mneme/<ownVer>/scripts/hook.ts`. If the cache has a
+        // `.../mneme/<ownVer>/src/claude/hook.ts`. If the cache has a
         // higher version, the live Claude Code session is loading the
         // old hooks + slash commands until the user `/exit`s and
         // restarts. Daemon self-update (1.1.80+) takes care of the
         // long-running process; this banner just nudges the user.
-        const ownRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+        const ownRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
         const targetRoot = latestCachedPluginRoot();
         if (targetRoot && targetRoot !== ownRoot) {
           const ownV = basename(ownRoot);
@@ -818,22 +729,12 @@ async function main(): Promise<void> {
       const fileRepo = filePath ? repoForFile(filePath) : null;
       const scope = fileRepo ? { ...baseScope, repo: fileRepo } : baseScope;
 
-      // Scrub tool data BEFORE serializing so the 64KB size cap below
-      // reflects real text content, not bloated binary. Without this, a
-      // single ~50KB inline base64 screenshot sails just under the cap,
-      // lands in the queue, then chokes Claude's batch extract API with
-      // `invalid_request` once the daemon ships a batch of 20 captures.
-      // scrubData detects Anthropic image/document content blocks and
-      // replaces the base64 `data` field with a `[redacted: N base64 chars]`
-      // stub while preserving the surrounding shape.
-      const cleanedInput = scrubData(toolInput);
-      const cleanedResp = scrubData(toolResp);
-      const observation = JSON.stringify({
-        tool: toolName,
-        input: cleanedInput,
-        result: cleanedResp,
-      });
-      if (observation.length > 64 * 1024) return;
+      // buildToolObservation scrubs the structured input/result (stubbing
+      // inline base64) BEFORE measuring the size cap, so a screenshot can't
+      // sail under the cap un-stubbed and later choke the batch extract API.
+      // Returns null when the scrubbed observation is still oversize.
+      const observation = buildToolObservation(toolName as string, toolInput, toolResp);
+      if (!observation) return;
       const body = {
         ...scope,
         content: observation,

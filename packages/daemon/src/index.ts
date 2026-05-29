@@ -43,7 +43,7 @@ export type DaemonConfig = {
   agent_provider: string;
 };
 
-// Schema written by the plugin's setup flow (packages/plugin/scripts/
+// Schema written by the plugin's setup flow (packages/plugin/src/core/
 // config.ts MnemeConfig). The daemon flattens it into the local shape.
 type PluginShapedConfig = {
   server: { url: string };
@@ -460,7 +460,7 @@ function startCacheWatch(): void {
         }
       }
       if (!target) return;
-      const refreshScript = join(cacheParent, target, "scripts/refresh-daemon.ts");
+      const refreshScript = join(cacheParent, target, "src/daemon/refresh-daemon.ts");
       if (!existsSync(refreshScript)) {
         // /plugin update is mid-download; refresh-daemon.ts hasn't
         // arrived yet. Next watch event will re-trigger.

@@ -19,7 +19,7 @@ import {
   pluginDepsStoreDir,
   serviceConfigPath,
   startCommandsFor,
-} from "../scripts/daemon-install.ts";
+} from "../src/daemon/daemon-install.ts";
 
 const cfg = {
   pluginRoot: "/Users/jetz/.claude/plugins/cache/j10ra-mneme/mneme/1.0.45",

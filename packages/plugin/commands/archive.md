@@ -42,13 +42,13 @@ Resolve $ARGUMENTS to a specific memory UUID before invoking the slash. Archivin
 **Invoke the slash** with the resolved UUID:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" archive "<uuid>"
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" archive "<uuid>"
 ```
 
 To reverse an archive (rare), use the unarchive subcommand directly:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" unarchive "<uuid>"
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" unarchive "<uuid>"
 ```
 
 After it runs, briefly confirm. Don't re-summarise the content — the user just confirmed it.

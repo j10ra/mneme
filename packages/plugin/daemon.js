@@ -3594,7 +3594,7 @@ function startCacheWatch() {
       }
       if (!target)
         return;
-      const refreshScript = join7(cacheParent, target, "scripts/refresh-daemon.ts");
+      const refreshScript = join7(cacheParent, target, "src/daemon/refresh-daemon.ts");
       if (!existsSync6(refreshScript)) {
         return;
       }

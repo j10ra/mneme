@@ -21,8 +21,8 @@ const FORMATTABLE = new Set([
 
 const SKIP_PREFIXES = [
   "packages/plugin/dashboard/dist/",
-  "packages/plugin/scripts/scrub.ts",
-  "packages/plugin/scripts/embed-worker.js",
+  "packages/plugin/src/core/scrub.ts",
+  "packages/plugin/embed-worker.js",
   "packages/plugin/daemon.js",
   "migrations/",
   "node_modules/",

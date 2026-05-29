@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook.ts SessionStart",
+            "command": "${CLAUDE_PLUGIN_ROOT}/src/claude/hook.ts SessionStart",
             "timeout": 8
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook.ts UserPromptSubmit",
+            "command": "${CLAUDE_PLUGIN_ROOT}/src/claude/hook.ts UserPromptSubmit",
             "timeout": 3
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook.ts PostToolUse",
+            "command": "${CLAUDE_PLUGIN_ROOT}/src/claude/hook.ts PostToolUse",
             "timeout": 5
           }
         ]
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook.ts Stop",
+            "command": "${CLAUDE_PLUGIN_ROOT}/src/claude/hook.ts Stop",
             "timeout": 5
           }
         ]
@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook.ts PreCompact",
+            "command": "${CLAUDE_PLUGIN_ROOT}/src/claude/hook.ts PreCompact",
             "timeout": 5
           }
         ]
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook.ts SessionEnd",
+            "command": "${CLAUDE_PLUGIN_ROOT}/src/claude/hook.ts SessionEnd",
             "timeout": 5
           }
         ]

@@ -1,8 +1,8 @@
 // Shared Mneme recall core: embed('text') substitution via the local
 // daemon and JSON-RPC forwarding to the server's /mcp. Both harness edges
 // use this so the recall path has a single source of truth:
-//   - Claude Code: scripts/mcp-proxy.ts (stdio MCP server)
-//   - Pi:          pi/register-mneme.ts (native tool)
+//   - Claude Code: src/claude/mcp-proxy.ts (stdio MCP server)
+//   - Pi:          src/pi/register.ts (native tool)
 
 import { type MnemeConfig, serverUrl } from "./config.ts";
 import { plog as sharedPlog } from "./log.ts";

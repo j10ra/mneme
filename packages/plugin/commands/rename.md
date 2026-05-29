@@ -16,7 +16,7 @@ This is a self-rename: it can only rename the machine the slash is run from. Ren
 3. **Run.** No admin password needed — the per-machine token in `~/.mneme/config.json` is the identity. Server stamps the rename target from the bearer:
 
 ```bash
-bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" rename "<new-name>"
+bun "${CLAUDE_PLUGIN_ROOT}/src/claude/slash.ts" rename "<new-name>"
 ```
 
 The slash hits `POST /api/auth/rename`, the server updates `_ops.api_keys.name` for the calling token's `machine_id`, and the slash writes the new label back into `~/.mneme/config.json` so server and local stay in sync. Same `machine_id`, same token, same captures and memories — only the label changes.

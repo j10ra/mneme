@@ -58,7 +58,7 @@ Prefer `mneme_sql` over `psql` for any read — same scrubbing + reader role + R
 | `meta.last_napped_at` drives nap pagination — don't bypass | [`docs/workers/nap.md`](./docs/workers/nap.md) |
 | Captures are immutable; never DELETE — use flags | [`docs/data-model.md`](./docs/data-model.md) |
 | Server-stamped identity: `machine_id` from token, not body | [`packages/core/src/auth.ts`](./packages/core/src/auth.ts) |
-| Admin password resolution: env → encrypted config → stdin | [`packages/plugin/scripts/admin-secret.ts`](./packages/plugin/scripts/admin-secret.ts) |
+| Admin password resolution: env → encrypted config → stdin | [`packages/plugin/src/core/admin-secret.ts`](./packages/plugin/src/core/admin-secret.ts) |
 | New env var? add it to `env.ts` with zod validation | [`packages/server/src/infra/env.ts`](./packages/server/src/infra/env.ts) |
 | Daemon trusts every loopback caller (accepted risk) — never run Mneme on a shared-user box | [`docs/capture-pipeline.md`](./docs/capture-pipeline.md) (Trust boundary) |
 

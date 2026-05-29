@@ -131,5 +131,5 @@ SELECT * FROM memories WHERE id::text = ANY(
 
 - [`surface.md`](./surface.md) — the other read path; runs at SessionStart and pre-loads context without an explicit tool call.
 - [`/packages/server/src/routes/mcp.ts`](../packages/server/src/routes/mcp.ts) — the `/mcp` route handler.
-- [`/packages/plugin/scripts/mcp-proxy.ts`](../packages/plugin/scripts/mcp-proxy.ts) — the bundled stdio MCP proxy that translates JSON-RPC → `POST /mcp`.
+- [`/packages/plugin/src/claude/mcp-proxy.ts`](../packages/plugin/src/claude/mcp-proxy.ts) — the bundled stdio MCP proxy that translates JSON-RPC → `POST /mcp`.
 - [`/packages/plugin/skills/using-mneme/SKILL.md`](../packages/plugin/skills/using-mneme/SKILL.md) — the canonical, agent-facing recall guide.

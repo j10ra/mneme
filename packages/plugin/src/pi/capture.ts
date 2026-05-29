@@ -1,12 +1,12 @@
 // @ts-nocheck — compiled by Pi's toolchain (which supplies @earendil-works/*
 // and typebox), not by this repo's tsc. Kept outside tsconfig include globs
-// for the same reason as register-mneme.ts.
+// for the same reason as register.ts.
 //
 // Pi-side capture (write path) — the analog of the Claude Code plugin's
-// capture hooks (scripts/hook.ts). Maps Pi's extension events to Mneme
+// capture hooks (src/claude/hook.ts). Maps Pi's extension events to Mneme
 // capture bodies and drops them into the harness-agnostic daemon outbox via
-// the shared core in ../scripts/mneme-capture.ts. Recall (read path) lives in
-// register-mneme.ts; this file is write-only. Declared alongside it under
+// the shared core in ../core/capture.ts. Recall (read path) lives in
+// register.ts; this file is write-only. Declared alongside it under
 // `pi.extensions` in the repo-root package.json so `pi install` auto-wires it.
 //
 // Event mapping (Pi event → Mneme capture source):
@@ -17,15 +17,15 @@
 //
 // Fail-open throughout: a capture failure must never break the agent loop.
 
-import { isBlacklistedPath, loadConfig, registerProject } from "../scripts/config.ts";
+import { isBlacklistedPath, loadConfig, registerProject } from "../core/config.ts";
 import {
   buildToolObservation,
   MAX_CAPTURE_BYTES,
   shouldSkipTool,
   truncate,
   writeCapture,
-} from "../scripts/mneme-capture.ts";
-import { baseScope } from "../scripts/scope.ts";
+} from "../core/capture.ts";
+import { baseScope } from "../core/scope.ts";
 
 // Skip short assistant replies ("ok", "got it") — not memorable. Mirrors the
 // Claude Code hook's transcript filter.

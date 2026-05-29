@@ -143,8 +143,9 @@ async function runRefresh(): Promise<void> {
   const daemonPort = cfg.daemon?.port ?? pickFreePortDeterministic(cfg.machine.id);
 
   // Derive the current plugin root from this script's own location.
-  // refresh-daemon.ts lives at <pluginRoot>/scripts/refresh-daemon.ts.
-  const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  // refresh-daemon.ts lives at <pluginRoot>/src/daemon/refresh-daemon.ts,
+  // so the plugin root is three dirname() hops up.
+  const pluginRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
   logLine(`refresh: starting — pluginRoot=${pluginRoot} port=${daemonPort}`);
   try {

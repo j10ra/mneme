@@ -19,7 +19,7 @@ Non-`SessionStart` events (UserPromptSubmit, PostToolUse, Stop, PreCompact) skip
 
 ## `cwd` → repos[] discovery
 
-`discoverRepos(cwd)` (in [`/packages/plugin/scripts/scope.ts`](../packages/plugin/scripts/scope.ts)) walks one level deep and returns the union of:
+`discoverRepos(cwd)` (in [`/packages/plugin/src/core/scope.ts`](../packages/plugin/src/core/scope.ts)) walks one level deep and returns the union of:
 
 | Source | Rule |
 |---|---|
