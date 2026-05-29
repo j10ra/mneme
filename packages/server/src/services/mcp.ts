@@ -126,18 +126,41 @@ export function rejectUnsubstitutedEmbeds(sql: string): void {
   }
 }
 
+// Columns the agent never needs back: the raw 384-dim embedding vector and
+// the tsvector. Both exist only to drive WHERE/ORDER BY expressions
+// (`embedding <=> embed('…')`, `ts_rank(tsv, …)`); returning them floods the
+// caller's context (one embedding is ~4-6KB of JSON) and burns the byte cap
+// on noise — the same bloat we already removed from the dream candidate
+// query (commit c9fe8ec). Stripped by exact column name, so computed values
+// (e.g. `(embedding <=> embed('x')) AS dist`) keep their alias and survive;
+// `embedding_model` (a small text column) is untouched.
+const INTERNAL_COLUMNS = ["embedding", "tsv"];
+
+export function stripInternalColumns(rows: unknown[]): unknown[] {
+  return rows.map((r) => {
+    if (!r || typeof r !== "object") return r;
+    const row = r as Record<string, unknown>;
+    if (!INTERNAL_COLUMNS.some((c) => c in row)) return r;
+    const copy = { ...row };
+    for (const c of INTERNAL_COLUMNS) delete copy[c];
+    return copy;
+  });
+}
+
 function capResult(rows: unknown[]): {
   rows: unknown[];
   truncated: boolean;
   total: number;
 } {
-  const text = JSON.stringify(rows);
+  // Strip before measuring so a fat vector can't push useful rows past the cap.
+  const clean = stripInternalColumns(rows);
+  const text = JSON.stringify(clean);
   if (text.length <= RESULT_BYTE_CAP) {
-    return { rows, truncated: false, total: rows.length };
+    return { rows: clean, truncated: false, total: clean.length };
   }
   const ratio = RESULT_BYTE_CAP / text.length;
-  const keep = Math.max(1, Math.floor(rows.length * ratio));
-  return { rows: rows.slice(0, keep), truncated: true, total: rows.length };
+  const keep = Math.max(1, Math.floor(clean.length * ratio));
+  return { rows: clean.slice(0, keep), truncated: true, total: clean.length };
 }
 
 // ---------------------------------------------------------------------------

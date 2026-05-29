@@ -8,6 +8,7 @@ const {
   chooseReinforcement,
   injectLimit,
   effectiveLimit,
+  stripInternalColumns,
 } = await import("../src/services/mcp.ts");
 
 describe("rejectUnsubstitutedEmbeds — guard for missing daemon substitution", () => {
@@ -333,6 +334,33 @@ describe("chooseReinforcement", () => {
       total: 30,
     });
     expect(r).toBeNull();
+  });
+});
+
+describe("stripInternalColumns", () => {
+  test("removes raw embedding and tsv, keeps everything else", () => {
+    const out = stripInternalColumns([
+      {
+        id: "x",
+        content: "hello",
+        embedding: [0.1, 0.2, 0.3],
+        tsv: "'hello':1",
+        embedding_model: "BAAI/bge-small-en-v1.5",
+        dist: 0.42,
+      },
+    ]);
+    expect(out).toEqual([
+      { id: "x", content: "hello", embedding_model: "BAAI/bge-small-en-v1.5", dist: 0.42 },
+    ]);
+  });
+
+  test("returns rows untouched when neither column is present", () => {
+    const rows = [{ id: "a", n: 7 }];
+    expect(stripInternalColumns(rows)).toEqual(rows);
+  });
+
+  test("tolerates non-object rows", () => {
+    expect(stripInternalColumns([null, 3, "x"])).toEqual([null, 3, "x"]);
   });
 });
 
