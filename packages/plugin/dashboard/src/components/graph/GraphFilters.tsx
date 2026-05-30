@@ -5,13 +5,12 @@ import { Search, X } from "lucide-react";
 import { cn } from "../../lib/cn.ts";
 import type { GraphFilters as Filters } from "./types.ts";
 
-// These size the zoom WINDOW (not the data fetch); the timeline always holds
-// the full corpus and the window scrolls across it.
-const TIME_CHIPS: Array<{ label: string; days: number | null }> = [
+// These size the zoom WINDOW (capped at 30 days); the timeline always holds
+// the full corpus and the window scrolls across it (first → last memory).
+const TIME_CHIPS: Array<{ label: string; days: number }> = [
   { label: "24h", days: 1 },
   { label: "7d", days: 7 },
   { label: "30d", days: 30 },
-  { label: "all", days: null },
 ];
 
 export function GraphFilters({
@@ -31,8 +30,7 @@ export function GraphFilters({
   viewDays: number | null;
   onViewDays: (days: number | null) => void;
 }) {
-  const activeTime =
-    viewDays === 1 ? "24h" : viewDays === 7 ? "7d" : viewDays === 30 ? "30d" : "all";
+  const activeTime = viewDays === 1 ? "24h" : viewDays === 7 ? "7d" : "30d";
 
   function toggleKind(k: string) {
     const cur = filters.kind;

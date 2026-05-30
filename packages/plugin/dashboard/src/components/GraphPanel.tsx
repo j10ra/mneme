@@ -59,9 +59,9 @@ export function GraphPanel() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focalId, setFocalId] = useState<string | null>(null);
   const [depth, setDepth] = useState(1);
-  // Zoom-window size in days (24h/7d/30d chips); null = "all" (full span).
+  // Zoom-window size in days (24h/7d/30d chips); 30 = max (the load cap).
   // Client-side only — does not refetch.
-  const [viewDays, setViewDays] = useState<number | null>(null);
+  const [viewDays, setViewDays] = useState<number | null>(30);
   // Two data sources (no flicker, viewport controls unchanged):
   //   overview — sparse top-N across ALL time: feeds the scrubber's full-
   //              timeline mini-map + the domain extent. Fetched on filters.
@@ -470,7 +470,18 @@ export function GraphPanel() {
       </div>
 
       <GraphFooter
-        stats={data?.stats ?? null}
+        // Cache totals (everything loaded so far), not the last fetch — these
+        // grow as you explore. Each window fetch caps at 1000; the cache
+        // accumulates across windows.
+        stats={
+          mergedNodes.length
+            ? {
+                node_count: mergedNodes.length,
+                edge_count: mergedEdges.length,
+                total_in_window: data?.stats?.total_in_window ?? mergedNodes.length,
+              }
+            : null
+        }
         depth={depth}
         focalId={focalId}
         onResetFocus={handleFocusClick}
