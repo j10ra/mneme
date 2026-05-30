@@ -59,9 +59,6 @@ export function GraphPanel() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focalId, setFocalId] = useState<string | null>(null);
   const [depth, setDepth] = useState(1);
-  // Zoom-window size in days (24h/7d/30d chips); 30 = max (the load cap).
-  // Client-side only — does not refetch.
-  const [viewDays, setViewDays] = useState<number | null>(30);
   // Two data sources (no flicker, viewport controls unchanged):
   //   overview — sparse top-N across ALL time: feeds the scrubber's full-
   //              timeline mini-map + the domain extent. Fetched on filters.
@@ -401,8 +398,6 @@ export function GraphPanel() {
         query={query}
         onQuery={setQuery}
         knownKinds={knownKinds}
-        viewDays={viewDays}
-        onViewDays={setViewDays}
       />
 
       <div className="relative h-full w-full min-h-0 flex-1">
@@ -443,7 +438,6 @@ export function GraphPanel() {
               query={debouncedQuery}
               selectedId={selectedId}
               focalId={focalId}
-              viewDays={viewDays}
               onSelect={handleNodeSelect}
               onRefocus={handleNodeRefocus}
               onWindowChange={handleWindowChange}

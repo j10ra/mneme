@@ -242,13 +242,25 @@ function CaptureTab({ data }: { data: MemoryRowData }) {
               {capture.capture.source} · {new Date(capture.capture.captured_at).toLocaleString()}
             </div>
             <pre className="whitespace-pre-wrap break-words text-[11px] font-mono text-foreground/85 leading-snug">
-              {capture.capture.content}
+              {prettyJson(capture.capture.content)}
             </pre>
           </div>
         )}
       </div>
     </div>
   );
+}
+
+// Capture content is often a JSON tool observation; pretty-print it when it
+// parses, else show it as-is (prompts/assistant text are plain).
+function prettyJson(s: string): string {
+  const t = s.trim();
+  if (!(t.startsWith("{") || t.startsWith("["))) return s;
+  try {
+    return JSON.stringify(JSON.parse(t), null, 2);
+  } catch {
+    return s;
+  }
 }
 
 function Pending({ children }: { children: React.ReactNode }) {

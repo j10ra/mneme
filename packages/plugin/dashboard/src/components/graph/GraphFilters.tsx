@@ -1,17 +1,9 @@
-// Filter strip for the Graph view. Search + time chips + kind chips.
-// Drops the layout dropdown — 3D force is the only mode now.
+// Filter strip for the Graph view. Search + kind chips. The window size/range
+// is controlled entirely by the bottom scrubber (no time chips).
 
 import { Search, X } from "lucide-react";
 import { cn } from "../../lib/cn.ts";
 import type { GraphFilters as Filters } from "./types.ts";
-
-// These size the zoom WINDOW (capped at 30 days); the timeline always holds
-// the full corpus and the window scrolls across it (first → last memory).
-const TIME_CHIPS: Array<{ label: string; days: number }> = [
-  { label: "24h", days: 1 },
-  { label: "7d", days: 7 },
-  { label: "30d", days: 30 },
-];
 
 export function GraphFilters({
   filters,
@@ -19,19 +11,13 @@ export function GraphFilters({
   query,
   onQuery,
   knownKinds,
-  viewDays,
-  onViewDays,
 }: {
   filters: Filters;
   onFilters: (next: Filters) => void;
   query: string;
   onQuery: (q: string) => void;
   knownKinds: string[];
-  viewDays: number | null;
-  onViewDays: (days: number | null) => void;
 }) {
-  const activeTime = viewDays === 1 ? "24h" : viewDays === 7 ? "7d" : "30d";
-
   function toggleKind(k: string) {
     const cur = filters.kind;
     const next = cur.includes(k) ? cur.filter((v) => v !== k) : cur.concat(k);
@@ -58,14 +44,6 @@ export function GraphFilters({
             <X className="h-3 w-3" />
           </button>
         )}
-      </div>
-
-      <div className="flex items-center gap-0.5">
-        {TIME_CHIPS.map((t) => (
-          <Chip key={t.label} active={activeTime === t.label} onClick={() => onViewDays(t.days)}>
-            {t.label}
-          </Chip>
-        ))}
       </div>
 
       {knownKinds.length > 0 && (

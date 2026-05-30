@@ -573,6 +573,54 @@ export function mountOpsRoutes(app: Hono): void {
   );
 
   // -------------------------------------------------------------------
+  // GET /api/_ops/memories/:id — the full memory row (every column except
+  // the embedding vector + tsv), for the detail drawer's "all fields" view.
+  // Content is already scrubbed at ingest, and _ops is admin-only.
+  // -------------------------------------------------------------------
+  app.get(
+    "/api/_ops/memories/:id",
+    mnemeRoute("api._ops.memories.get"),
+    requireAuth("admin"),
+    async (c) => {
+      const id = c.req.param("id");
+      const rows = (await sql<Array<Record<string, unknown>>>`
+        SELECT
+          m.id::text          AS id,
+          m.capture_id::text  AS capture_id,
+          m.chunk_id,
+          m.content,
+          m.content_hash,
+          m.embedding_model,
+          m.kind,
+          m.importance,
+          m.recall_weight,
+          m.machine_id,
+          k.name              AS machine_name,
+          m.repo,
+          m.harness,
+          m.agent,
+          m.topics,
+          m.private,
+          m.meta,
+          m.created_at,
+          m.archived_at
+        FROM memories m
+        LEFT JOIN LATERAL (
+          SELECT name FROM _ops.api_keys
+          WHERE machine_id = m.machine_id AND revoked_at IS NULL
+          ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+          LIMIT 1
+        ) k ON TRUE
+        WHERE m.id = ${id}::uuid
+        LIMIT 1
+      `) as unknown as Array<Record<string, unknown>>;
+      const row = rows[0];
+      if (!row) return c.json({ error: "memory not found" }, 404);
+      return c.json({ memory: row });
+    },
+  );
+
+  // -------------------------------------------------------------------
   // GET /api/_ops/clusters — cluster summaries derived from
   // memories.meta->>'in_cluster'. There's no _ops.clusters table; the
   // cluster_id IS itself a memory id (the "theme" memory acting as

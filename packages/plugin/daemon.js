@@ -1973,6 +1973,10 @@ function mountDashboardRoutes(app, forceDream) {
     const id = c.req.param("id");
     return forwardPath(`/api/_ops/memories/${id}/capture`, "dashboard.memories.capture")(c);
   });
+  app.get("/dashboard/api/memories/:id", mnemeRoute("daemon.dashboard.memories.get"), async (c) => {
+    const id = c.req.param("id");
+    return forwardPath(`/api/_ops/memories/${id}`, "dashboard.memories.get")(c);
+  });
   app.get("/dashboard/api/clusters", mnemeRoute("daemon.dashboard.clusters"), forwardQuery("/api/_ops/clusters", "dashboard.clusters"));
   app.get("/dashboard/api/graph", mnemeRoute("daemon.dashboard.graph"), forwardQuery("/api/_ops/graph", "dashboard.graph"));
   app.get("/dashboard/api/logs/stream", mnemeRoute("daemon.dashboard.logs.stream"), (c) => {

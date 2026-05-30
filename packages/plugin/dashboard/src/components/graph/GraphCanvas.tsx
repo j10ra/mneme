@@ -92,29 +92,15 @@ export const GraphCanvas = forwardRef<
     query: string;
     selectedId: string | null;
     focalId?: string | null;
-    /** Viewport window SIZE in days (24h=1, 7d=7, 30d=30 chips); null = "all"
-     *  (whole data span). The scrubber's domain is always the full data span;
-     *  this only sizes the zoom window, which can scroll across all history. */
-    viewDays: number | null;
     onSelect: (id: string | null) => void;
     onRefocus?: (id: string) => void;
     /** Reports the visible window (already debounced) so the parent can
-     *  paginate the detail fetch against it. */
+     *  paginate the detail fetch against it. The window is controlled entirely
+     *  by the scrubber / pan / zoom (capped at 30 days). */
     onWindowChange?: (minT: number, maxT: number) => void;
   }
 >(function GraphCanvas(
-  {
-    nodes,
-    edges,
-    overviewNodes,
-    query,
-    selectedId,
-    focalId,
-    viewDays,
-    onSelect,
-    onRefocus,
-    onWindowChange,
-  },
+  { nodes, edges, overviewNodes, query, selectedId, focalId, onSelect, onRefocus, onWindowChange },
   externalRef,
 ) {
   useImperativeHandle(externalRef, () => ({}), []);
@@ -258,14 +244,6 @@ export const GraphCanvas = forwardRef<
       if (v) onWindowChangeRef.current?.(v.minT, v.maxT);
     }, 240);
   }
-  function tweenTo(to: View) {
-    const from = viewRef.current;
-    if (!from) {
-      viewRef.current = to;
-      return;
-    }
-    tweenRef.current = { from: { ...from }, to, start: performance.now() };
-  }
 
   // ── resize observer ──────────────────────────────────────────────
   useEffect(() => {
@@ -306,24 +284,14 @@ export const GraphCanvas = forwardRef<
       maxT = now;
     }
     // The scrubber domain is ALWAYS the full data span (start of data → now),
-    // so the window can scroll across all history. The chip only sizes the
-    // zoom window: 24h/7d/30d → a span ending at "now" (clamped to the domain),
-    // "all" → the whole domain. Refit the window on first load, chip change, or
-    // focal change; plain refetches keep the user's pan/zoom.
+    // so the window can scroll across all history. The visible window is
+    // controlled entirely by the scrubber / pan / zoom (capped at 30 days).
     const domain: View = { minT, maxT: maxT > minT ? maxT : now };
     fullRef.current = domain;
-    const windowFor = (): View => {
-      // "all" = whole domain when it fits the 30-day cap; for a larger corpus,
-      // the most-recent 30 days (pan back for older).
-      if (viewDays == null) return clampView({ minT: now - MAX_SPAN_MS, maxT: now });
-      const span = viewDays * 86_400_000;
-      return clampView({ minT: now - span, maxT: now });
-    };
-    const chipChanged = viewDays !== prevViewDaysRef.current;
-    if (!viewRef.current) viewRef.current = windowFor();
-    else if (chipChanged || focalRef.current !== prevFocalRef.current) tweenTo(windowFor());
-    prevViewDaysRef.current = viewDays;
-    prevFocalRef.current = focalRef.current;
+    // First load only: default the window to the most-recent 30 days (or the
+    // whole corpus if it's shorter). After that the user owns it; refetches
+    // keep their pan/zoom.
+    if (!viewRef.current) viewRef.current = clampView({ minT: now - MAX_SPAN_MS, maxT: now });
 
     const q = query.trim().toLowerCase();
     const nowPerf = performance.now();
@@ -436,10 +404,7 @@ export const GraphCanvas = forwardRef<
           .iterations(4),
       );
     applyWindow(0.7);
-  }, [nodes, overviewNodes, size, query, lanes, viewDays, edges]);
-
-  const prevFocalRef = useRef<string | null | undefined>(focalId);
-  const prevViewDaysRef = useRef<number | null>(viewDays);
+  }, [nodes, overviewNodes, size, query, lanes, edges]);
 
   // Build the scrubber mini-map point list from the overview (size-independent
   // fields; x derived per-frame). Kept off the rAF hot path.
