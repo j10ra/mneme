@@ -28,7 +28,10 @@ const KIND_ORDER = Object.keys(KIND_COLOR);
 const TWEEN_MS = 550;
 const FADE_MS = 380; // node enter/exit fade on detail refetch
 const MIN_SPAN_MS = 60 * 60 * 1000; // 1h — max zoom-in
-const MAX_SPAN_MS = 10 * 365 * 86_400_000; // 10y — max zoom-out
+// Cap the loaded/viewable detail window to 30 days so we never page in too
+// much at once. The scrubber still spans all history (sparse overview); you
+// pan this ≤30d window across it to go further back/forward.
+const MAX_SPAN_MS = 30 * 86_400_000; // 30d — max zoom-out / load span
 // Bottom scrubber: a full-width overview of the entire timeline with a
 // draggable window that sets the main chart's zoom (shrink window = zoom in).
 const BRUSH_H = 38;
@@ -310,7 +313,9 @@ export const GraphCanvas = forwardRef<
     const domain: View = { minT, maxT: maxT > minT ? maxT : now };
     fullRef.current = domain;
     const windowFor = (): View => {
-      if (viewDays == null) return domain;
+      // "all" = whole domain when it fits the 30-day cap; for a larger corpus,
+      // the most-recent 30 days (pan back for older).
+      if (viewDays == null) return clampView({ minT: now - MAX_SPAN_MS, maxT: now });
       const span = viewDays * 86_400_000;
       return clampView({ minT: now - span, maxT: now });
     };
@@ -724,9 +729,18 @@ export const GraphCanvas = forwardRef<
   function clampView(v: View): View {
     const f = fullRef.current;
     if (!f) return v;
-    const span = v.maxT - v.minT;
-    if (span >= f.maxT - f.minT) return { minT: f.minT, maxT: f.maxT };
-    let { minT, maxT } = v;
+    const domainSpan = f.maxT - f.minT;
+    // Cap the window at 30 days (and never wider than the data).
+    const maxAllowed = Math.min(MAX_SPAN_MS, domainSpan);
+    let minT = v.minT;
+    let maxT = v.maxT;
+    let span = maxT - minT;
+    if (span > maxAllowed) {
+      const c = (minT + maxT) / 2;
+      minT = c - maxAllowed / 2;
+      maxT = c + maxAllowed / 2;
+      span = maxAllowed;
+    }
     if (minT < f.minT) (minT = f.minT), (maxT = f.minT + span);
     if (maxT > f.maxT) (maxT = f.maxT), (minT = f.maxT - span);
     return { minT, maxT };

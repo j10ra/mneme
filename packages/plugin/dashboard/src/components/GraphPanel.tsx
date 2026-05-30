@@ -82,6 +82,15 @@ export function GraphPanel() {
     edges: [],
   });
   const [knownKinds, setKnownKinds] = useState<string[]>([]);
+  // Detail cache: every window fetch accumulates here and is never dropped, so
+  // panning back to an already-loaded region is instant (no refetch, no
+  // re-removal). Cleared only when the non-time filters change. cacheVersion
+  // bumps to recompute the merged node/edge lists.
+  const cacheRef = useRef<{
+    nodes: Map<string, GraphNode>;
+    edges: Map<string, GraphResponse["edges"][number]>;
+  }>({ nodes: new Map(), edges: new Map() });
+  const [cacheVersion, setCacheVersion] = useState(0);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
 
@@ -93,10 +102,12 @@ export function GraphPanel() {
     return () => clearTimeout(t);
   }, [query]);
 
-  // Filter changes drop focal — start over in landscape mode.
+  // Filter changes drop focal AND the detail cache — it's a different pool.
   useEffect(() => {
     setFocalId(null);
     setDepth(1);
+    cacheRef.current = { nodes: new Map(), edges: new Map() };
+    setCacheVersion((v) => v + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
@@ -181,7 +192,12 @@ export function GraphPanel() {
       const data = await apiGet<GraphResponse>(`/graph?${params.toString()}`, {
         signal: ac.signal,
       });
+      // Accumulate into the cache (never drop) so panning is free.
+      for (const n of data.nodes) cacheRef.current.nodes.set(n.id, n);
+      for (const e of data.edges)
+        cacheRef.current.edges.set(`${e.source}|${e.target}|${e.type}`, e);
       setState({ kind: "ok", data, fetchedAt: Date.now() });
+      setCacheVersion((v) => v + 1);
     } catch (err) {
       if ((err as { name?: string })?.name === "AbortError") return;
       const msg =
@@ -345,19 +361,19 @@ export function GraphPanel() {
         ? state.previous
         : null;
 
-  // Timeline detail + focus connections (deduped). The ego extras are freed
-  // from time by the canvas; everything else stays on the timeline.
+  // Cached timeline detail + focus connections (deduped). The ego extras are
+  // freed from time by the canvas; everything else stays on the timeline.
   const mergedNodes = useMemo(() => {
-    const m = new Map<string, GraphNode>();
-    for (const n of data?.nodes ?? []) m.set(n.id, n);
+    const m = new Map<string, GraphNode>(cacheRef.current.nodes);
     for (const n of egoExtra.nodes) if (!m.has(n.id)) m.set(n.id, n);
     return [...m.values()];
-  }, [data, egoExtra]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheVersion, egoExtra]);
 
   const mergedEdges = useMemo(() => {
-    const seen = new Set<string>();
-    const out: GraphResponse["edges"] = [];
-    for (const e of [...(data?.edges ?? []), ...egoExtra.edges]) {
+    const seen = new Set<string>(cacheRef.current.edges.keys());
+    const out: GraphResponse["edges"] = [...cacheRef.current.edges.values()];
+    for (const e of egoExtra.edges) {
       const k = `${e.source}|${e.target}|${e.type}`;
       if (!seen.has(k)) {
         seen.add(k);
@@ -365,7 +381,8 @@ export function GraphPanel() {
       }
     }
     return out;
-  }, [data, egoExtra]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheVersion, egoExtra]);
 
   const selectedNode = useMemo(() => {
     if (!selectedId) return null;
