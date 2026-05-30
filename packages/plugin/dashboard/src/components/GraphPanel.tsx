@@ -12,14 +12,14 @@
 // Spec: docs/superpowers/specs/2026-05-10-graph-view-design.md
 
 import { ArrowLeft } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiGet } from "../lib/api.ts";
 import { GraphCanvas } from "./graph/GraphCanvas.tsx";
 import { GraphDetailDrawer } from "./graph/GraphDetailDrawer.tsx";
 import { GraphFilters } from "./graph/GraphFilters.tsx";
 import { GraphFooter } from "./graph/GraphFooter.tsx";
 import { GraphLegend } from "./graph/GraphLegend.tsx";
-import type { GraphFilters as Filters, GraphResponse } from "./graph/types.ts";
+import type { GraphFilters as Filters, GraphNode, GraphResponse } from "./graph/types.ts";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert.tsx";
 import { Skeleton } from "./ui/skeleton.tsx";
 
@@ -40,13 +40,11 @@ type FetchState =
   | { kind: "stale"; data: GraphResponse; fetchedAt: number; error: string }
   | { kind: "error"; error: string };
 
-const todayMinus = (days: number) => new Date(Date.now() - days * 86_400_000);
-
 function defaultFilters(): Filters {
   return {
-    // Wide default so the timeline spans the full corpus (start of memory
-    // → now) rather than just the last week. topN still caps the node set.
-    since: todayMinus(90).toISOString(),
+    // Default "all": the timeline spans the full loaded corpus. The 24h/7d/
+    // 30d chips set an explicit viewport span (see GraphCanvas domain).
+    since: null,
     until: null,
     repo: [],
     machine_id: [],
@@ -61,15 +59,34 @@ export function GraphPanel() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focalId, setFocalId] = useState<string | null>(null);
   const [depth, setDepth] = useState(1);
+  // Zoom-window size in days (24h/7d/30d chips); null = "all" (full span).
+  // Client-side only — does not refetch.
+  const [viewDays, setViewDays] = useState<number | null>(null);
+  // Two data sources (no flicker, viewport controls unchanged):
+  //   overview — sparse top-N across ALL time: feeds the scrubber's full-
+  //              timeline mini-map + the domain extent. Fetched on filters.
+  //   state    — DETAIL: top-N paginated by the visible viewport window, so
+  //              zooming in loads more of what's actually on screen.
+  const [overview, setOverview] = useState<GraphResponse | null>(null);
   const [state, setState] = useState<FetchState>({
     kind: "loading",
     previous: null,
+  });
+  // Visible window [minT, maxT] reported (debounced) by the canvas; the detail
+  // fetch is paginated against it.
+  const [win, setWin] = useState<{ minT: number; maxT: number } | null>(null);
+  // Focus connections: the focused node's embedding nearest-neighbours, merged
+  // into the scene so out-of-window connections appear (freed from time).
+  const [egoExtra, setEgoExtra] = useState<{ nodes: GraphNode[]; edges: GraphResponse["edges"] }>({
+    nodes: [],
+    edges: [],
   });
   const [knownKinds, setKnownKinds] = useState<string[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
 
   const abortRef = useRef<AbortController | null>(null);
+  const overviewAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query.trim()), SEARCH_DEBOUNCE_MS);
@@ -93,13 +110,54 @@ export function GraphPanel() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Refetch on filter / focal / depth change.
-  useEffect(() => {
-    void fetchGraph();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, focalId, depth]);
+  function filterParams(): URLSearchParams {
+    const p = new URLSearchParams();
+    if (filters.repo.length) p.set("repo", filters.repo.join(","));
+    if (filters.machine_id.length) p.set("machine_id", filters.machine_id.join(","));
+    if (filters.kind.length) p.set("kind", filters.kind.join(","));
+    return p;
+  }
 
-  async function fetchGraph() {
+  // Overview: sparse all-time set for the scrubber mini-map + domain extent.
+  // Refetched only when non-time filters change (not on pan/zoom).
+  useEffect(() => {
+    void fetchOverview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.repo, filters.machine_id, filters.kind]);
+
+  async function fetchOverview() {
+    overviewAbortRef.current?.abort();
+    const ac = new AbortController();
+    overviewAbortRef.current = ac;
+    try {
+      const params = filterParams();
+      params.set("since", new Date(0).toISOString());
+      params.set("top_n", "300");
+      const data = await apiGet<GraphResponse>(`/graph?${params.toString()}`, {
+        signal: ac.signal,
+      });
+      setOverview(data);
+      setKnownKinds(() => {
+        const set = new Set<string>();
+        for (const n of data.nodes) if (n.kind) set.add(n.kind);
+        return [...set].sort();
+      });
+    } catch {
+      // Overview failure is non-fatal — scrubber/domain degrade gracefully.
+    }
+  }
+
+  // Detail: paginated by the visible viewport window. Always the timeline
+  // slice; focus (ego) connections are merged in separately (egoExtra below),
+  // so focusing keeps the timeline behind it rather than replacing it.
+  useEffect(() => {
+    void fetchDetail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters, win]);
+
+  async function fetchDetail() {
+    // The canvas reports the window post-mount; nothing to paginate until then.
+    if (!win) return;
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
@@ -114,30 +172,14 @@ export function GraphPanel() {
     });
 
     try {
-      const params = new URLSearchParams();
-      if (filters.since) params.set("since", filters.since);
-      if (filters.until) params.set("until", filters.until);
-      if (filters.repo.length) params.set("repo", filters.repo.join(","));
-      if (filters.machine_id.length) params.set("machine_id", filters.machine_id.join(","));
-      if (filters.kind.length) params.set("kind", filters.kind.join(","));
-      if (focalId) {
-        params.set("focal", focalId);
-        params.set("hops", String(depth));
-      } else {
-        // Landscape mode: top-N most-connected memories within the
-        // filter pool. Right-click a node to enter focused mode.
-        params.set("top_n", "300");
-      }
-
+      const params = filterParams();
+      // Paginate detail by the visible window — zoom in loads more of what's on
+      // screen rather than a global top-N. 1000 = server cap.
+      params.set("since", new Date(win.minT).toISOString());
+      params.set("until", new Date(win.maxT).toISOString());
+      params.set("top_n", "1000");
       const data = await apiGet<GraphResponse>(`/graph?${params.toString()}`, {
         signal: ac.signal,
-      });
-      setKnownKinds((prev) => {
-        const set = new Set<string>(prev);
-        for (const n of data.nodes) {
-          if (n.kind) set.add(n.kind);
-        }
-        return [...set].sort();
       });
       setState({ kind: "ok", data, fetchedAt: Date.now() });
     } catch (err) {
@@ -160,6 +202,56 @@ export function GraphPanel() {
       );
     }
   }
+
+  // Focus connections: when a node is focused, fetch its embedding nearest-
+  // neighbours (same as the drawer's "related") and merge them into the scene.
+  // These are freed from the timeline by the canvas, so out-of-window
+  // connections still appear.
+  useEffect(() => {
+    if (!focalId) {
+      setEgoExtra({ nodes: [], edges: [] });
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiGet<{
+          related: Array<{
+            id: string;
+            content_preview: string;
+            distance: number;
+            kind: string | null;
+          }>;
+        }>(`/memories/${focalId}/related?k=12`);
+        if (cancelled) return;
+        const nodes: GraphNode[] = r.related.map((x) => ({
+          id: x.id,
+          content_preview: x.content_preview,
+          kind: x.kind,
+          importance: Math.max(0, Math.min(1, 1 - x.distance)), // similarity → prominence
+          cluster_id: null,
+          superseded: false,
+          machine_id: null,
+          machine_name: null,
+          created_at: new Date().toISOString(),
+          recall_weight: null,
+          archived: false,
+          depth: 1,
+        }));
+        const edges = r.related.map((x) => ({
+          source: focalId,
+          target: x.id,
+          type: "related" as const,
+        }));
+        setEgoExtra({ nodes, edges });
+      } catch {
+        if (!cancelled) setEgoExtra({ nodes: [], edges: [] });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [focalId]);
 
   // ── Camera-driven depth expansion ────────────────────────────────
   //
@@ -219,7 +311,18 @@ export function GraphPanel() {
 
   function handleNodeSelect(id: string | null) {
     setSelectedId(id);
+    // Background click (id=null) also exits focus.
+    if (id === null && focalId) {
+      setFocalId(null);
+      setDepth(1);
+    }
   }
+
+  // Canvas reports its visible window (already debounced there); it paginates
+  // the detail fetch. Stable identity so it doesn't churn the canvas.
+  const handleWindowChange = useCallback((minT: number, maxT: number) => {
+    setWin((prev) => (prev && prev.minT === minT && prev.maxT === maxT ? prev : { minT, maxT }));
+  }, []);
 
   function handleFocusClick() {
     // Clear focal → triggers fresh top-N fetch + auto-pick.
@@ -242,10 +345,36 @@ export function GraphPanel() {
         ? state.previous
         : null;
 
+  // Timeline detail + focus connections (deduped). The ego extras are freed
+  // from time by the canvas; everything else stays on the timeline.
+  const mergedNodes = useMemo(() => {
+    const m = new Map<string, GraphNode>();
+    for (const n of data?.nodes ?? []) m.set(n.id, n);
+    for (const n of egoExtra.nodes) if (!m.has(n.id)) m.set(n.id, n);
+    return [...m.values()];
+  }, [data, egoExtra]);
+
+  const mergedEdges = useMemo(() => {
+    const seen = new Set<string>();
+    const out: GraphResponse["edges"] = [];
+    for (const e of [...(data?.edges ?? []), ...egoExtra.edges]) {
+      const k = `${e.source}|${e.target}|${e.type}`;
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(e);
+      }
+    }
+    return out;
+  }, [data, egoExtra]);
+
   const selectedNode = useMemo(() => {
-    if (!selectedId || !data) return null;
-    return data.nodes.find((n) => n.id === selectedId) ?? null;
-  }, [selectedId, data]);
+    if (!selectedId) return null;
+    return (
+      mergedNodes.find((n) => n.id === selectedId) ??
+      overview?.nodes.find((n) => n.id === selectedId) ??
+      null
+    );
+  }, [selectedId, mergedNodes, overview]);
 
   return (
     <div className="flex h-full flex-col">
@@ -255,10 +384,12 @@ export function GraphPanel() {
         query={query}
         onQuery={setQuery}
         knownKinds={knownKinds}
+        viewDays={viewDays}
+        onViewDays={setViewDays}
       />
 
       <div className="relative h-full w-full min-h-0 flex-1">
-        {state.kind === "loading" && !data && (
+        {!overview && state.kind !== "error" && (
           <div className="flex h-full items-center justify-center p-6">
             <div className="flex flex-col items-center gap-3">
               <Skeleton className="h-32 w-32 rounded-full" />
@@ -267,7 +398,7 @@ export function GraphPanel() {
           </div>
         )}
 
-        {state.kind === "error" && (
+        {state.kind === "error" && !overview && (
           <div className="flex h-full items-center justify-center p-6">
             <Alert variant="destructive" className="max-w-md">
               <AlertTitle>Failed to load graph</AlertTitle>
@@ -276,7 +407,7 @@ export function GraphPanel() {
           </div>
         )}
 
-        {data && (
+        {overview && (
           <>
             {state.kind === "stale" && (
               <Alert variant="warning" className="absolute left-3 top-3 z-10 max-w-md">
@@ -284,24 +415,22 @@ export function GraphPanel() {
                 <AlertDescription>{state.error}</AlertDescription>
               </Alert>
             )}
-            {data.nodes.length === 0 ? (
-              <div className="flex h-full items-center justify-center p-6">
-                <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-3 text-center text-xs text-muted-foreground">
-                  No memories match the current filters.
-                </div>
-              </div>
-            ) : (
-              <GraphCanvas
-                ref={fgRef}
-                nodes={data.nodes}
-                edges={data.edges}
-                query={debouncedQuery}
-                selectedId={selectedId}
-                focalId={focalId}
-                onSelect={handleNodeSelect}
-                onRefocus={handleNodeRefocus}
-              />
-            )}
+            {/* Canvas stays mounted so it keeps reporting the viewport window
+                that paginates the detail fetch. Detail nodes may be empty for a
+                beat on first load / a sparse window. */}
+            <GraphCanvas
+              ref={fgRef}
+              nodes={mergedNodes}
+              edges={mergedEdges}
+              overviewNodes={overview.nodes}
+              query={debouncedQuery}
+              selectedId={selectedId}
+              focalId={focalId}
+              viewDays={viewDays}
+              onSelect={handleNodeSelect}
+              onRefocus={handleNodeRefocus}
+              onWindowChange={handleWindowChange}
+            />
             <GraphDetailDrawer
               node={selectedNode}
               onClose={() => setSelectedId(null)}
@@ -318,7 +447,7 @@ export function GraphPanel() {
                 <span>back to overview</span>
               </button>
             )}
-            <GraphLegend nodes={data.nodes} />
+            <GraphLegend nodes={overview.nodes} />
           </>
         )}
       </div>

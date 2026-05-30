@@ -5,6 +5,8 @@ import { Search, X } from "lucide-react";
 import { cn } from "../../lib/cn.ts";
 import type { GraphFilters as Filters } from "./types.ts";
 
+// These size the zoom WINDOW (not the data fetch); the timeline always holds
+// the full corpus and the window scrolls across it.
 const TIME_CHIPS: Array<{ label: string; days: number | null }> = [
   { label: "24h", days: 1 },
   { label: "7d", days: 7 },
@@ -18,29 +20,19 @@ export function GraphFilters({
   query,
   onQuery,
   knownKinds,
+  viewDays,
+  onViewDays,
 }: {
   filters: Filters;
   onFilters: (next: Filters) => void;
   query: string;
   onQuery: (q: string) => void;
   knownKinds: string[];
+  viewDays: number | null;
+  onViewDays: (days: number | null) => void;
 }) {
-  const activeTime = (() => {
-    if (!filters.since) return "all";
-    const ms = Date.now() - new Date(filters.since).getTime();
-    const days = Math.round(ms / 86_400_000);
-    if (days <= 1) return "24h";
-    if (days <= 7) return "7d";
-    if (days <= 30) return "30d";
-    return "all";
-  })();
-
-  function setTime(days: number | null) {
-    onFilters({
-      ...filters,
-      since: days === null ? null : new Date(Date.now() - days * 86_400_000).toISOString(),
-    });
-  }
+  const activeTime =
+    viewDays === 1 ? "24h" : viewDays === 7 ? "7d" : viewDays === 30 ? "30d" : "all";
 
   function toggleKind(k: string) {
     const cur = filters.kind;
@@ -72,7 +64,7 @@ export function GraphFilters({
 
       <div className="flex items-center gap-0.5">
         {TIME_CHIPS.map((t) => (
-          <Chip key={t.label} active={activeTime === t.label} onClick={() => setTime(t.days)}>
+          <Chip key={t.label} active={activeTime === t.label} onClick={() => onViewDays(t.days)}>
             {t.label}
           </Chip>
         ))}

@@ -12,6 +12,7 @@
     "clsx": "^2.1.1",
     "cytoscape": "^3.33.3",
     "cytoscape-fcose": "^2.2.0",
+    "d3-force": "^3.0.0",
     "lucide-react": "^1.14.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -19,6 +20,7 @@
     "tailwind-merge": "^2.5.5"
   },
   "devDependencies": {
+    "@types/d3-force": "^3.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "tailwindcss": "^4.0.0",
