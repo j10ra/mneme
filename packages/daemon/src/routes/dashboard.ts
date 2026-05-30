@@ -230,6 +230,17 @@ export function mountDashboardRoutes(app: Hono, forceDream: () => Promise<DreamC
     },
   );
   app.get(
+    "/dashboard/api/memories/:id/neighborhood",
+    mnemeRoute("daemon.dashboard.memories.neighborhood"),
+    async (c) => {
+      const id = c.req.param("id");
+      return forwardPath(
+        `/api/_ops/memories/${id}/neighborhood`,
+        "dashboard.memories.neighborhood",
+      )(c);
+    },
+  );
+  app.get(
     "/dashboard/api/memories/:id/capture",
     mnemeRoute("daemon.dashboard.memories.capture"),
     async (c) => {

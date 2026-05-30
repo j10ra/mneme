@@ -1969,6 +1969,10 @@ function mountDashboardRoutes(app, forceDream) {
     const id = c.req.param("id");
     return forwardPath(`/api/_ops/memories/${id}/supersede-chain`, "dashboard.memories.supersede_chain")(c);
   });
+  app.get("/dashboard/api/memories/:id/neighborhood", mnemeRoute("daemon.dashboard.memories.neighborhood"), async (c) => {
+    const id = c.req.param("id");
+    return forwardPath(`/api/_ops/memories/${id}/neighborhood`, "dashboard.memories.neighborhood")(c);
+  });
   app.get("/dashboard/api/memories/:id/capture", mnemeRoute("daemon.dashboard.memories.capture"), async (c) => {
     const id = c.req.param("id");
     return forwardPath(`/api/_ops/memories/${id}/capture`, "dashboard.memories.capture")(c);

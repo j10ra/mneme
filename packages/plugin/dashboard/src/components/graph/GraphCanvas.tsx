@@ -90,6 +90,11 @@ export const GraphCanvas = forwardRef<
      *  lanes, and the full-timeline domain (so the scrubber spans everything
      *  even though the main chart only loads the window). */
     overviewNodes: GraphNode[];
+    /** The focus set, computed by the parent: the focal node + its fetched
+     *  connections (embedding neighbours). null when not focused. Passed
+     *  explicitly so the focus layout never has to race-derive it from the
+     *  async `edges` prop. */
+    egoIds: string[] | null;
     query: string;
     selectedId: string | null;
     focalId?: string | null;
@@ -101,7 +106,18 @@ export const GraphCanvas = forwardRef<
     onWindowChange?: (minT: number, maxT: number) => void;
   }
 >(function GraphCanvas(
-  { nodes, edges, overviewNodes, query, selectedId, focalId, onSelect, onRefocus, onWindowChange },
+  {
+    nodes,
+    edges,
+    overviewNodes,
+    egoIds: egoIdsProp,
+    query,
+    selectedId,
+    focalId,
+    onSelect,
+    onRefocus,
+    onWindowChange,
+  },
   externalRef,
 ) {
   useImperativeHandle(externalRef, () => ({}), []);
@@ -131,6 +147,11 @@ export const GraphCanvas = forwardRef<
   const edgesRef = useRef<GraphEdge[]>(edges);
   const selectedRef = useRef<string | null>(selectedId);
   const focalRef = useRef<string | null | undefined>(focalId);
+  // The parent-supplied focus set as a Set for O(1) membership. Single source
+  // of truth for "is this node in the ego stage" — used by both the build
+  // effect and applyWindow.
+  const egoIdsRef = useRef<Set<string> | null>(null);
+  egoIdsRef.current = egoIdsProp ? new Set(egoIdsProp) : null;
   const queryRef = useRef(query);
   const rafRef = useRef<number | null>(null);
   const onWindowChangeRef = useRef(onWindowChange);
@@ -204,17 +225,13 @@ export const GraphCanvas = forwardRef<
     const m = (v.maxT - v.minT) * 0.03; // small margin so edge nodes show
     return t >= v.minT - m && t <= v.maxT + m;
   }
-  // The focused node + its directly-connected neighbours. On focus these are
-  // freed from the timeline (shown regardless of window, pulled toward centre).
+  // The focused node + its connections. On focus these are freed from the
+  // timeline (shown regardless of window). The parent computes the set from the
+  // focal node's fetched neighbours and passes it in — we never derive it from
+  // the async `edges` prop (that races the focal change and breaks the layout).
   function egoIds(): Set<string> | null {
-    const id = focalRef.current;
-    if (!id) return null;
-    const s = new Set<string>([id]);
-    for (const e of edgesRef.current) {
-      if (e.source === id) s.add(e.target);
-      else if (e.target === id) s.add(e.source);
-    }
-    return s;
+    if (!focalRef.current) return null;
+    return egoIdsRef.current;
   }
   // The visible viewport = the nodes inside the scrubber window. Re-seeding
   // sim.nodes() to that subset both (a) makes the chart show exactly the
@@ -354,14 +371,7 @@ export const GraphCanvas = forwardRef<
     // connections are freed from time and pushed apart (charge) so they spread
     // out and fill the space — each still held to its kind lane.
     const focusId = focalRef.current;
-    const egoSet = new Set<string>();
-    if (focusId) {
-      egoSet.add(focusId);
-      for (const e of edges) {
-        if (e.source === focusId) egoSet.add(e.target);
-        else if (e.target === focusId) egoSet.add(e.source);
-      }
-    }
+    const egoSet = focusId ? (egoIdsRef.current ?? new Set<string>([focusId])) : new Set<string>();
     // Focus-stage X targets: spread the focused set EVENLY ACROSS THE WIDTH
     // within each kind lane, so it fills the viewport while staying organised
     // by lane (charge-repulsion scattered the lanes — don't use it here).
@@ -405,7 +415,7 @@ export const GraphCanvas = forwardRef<
           .iterations(4),
       );
     applyWindow(0.7);
-  }, [nodes, overviewNodes, size, query, lanes, edges]);
+  }, [nodes, overviewNodes, size, query, lanes, edges, egoIdsProp]);
 
   // Build the scrubber mini-map point list from the overview (size-independent
   // fields; x derived per-frame). Kept off the rAF hot path.
@@ -564,9 +574,15 @@ export const GraphCanvas = forwardRef<
       ctx.moveTo(s.x, sy);
       ctx.quadraticCurveTo(mx, my, tgt.x, ty);
       if (e.type === "supersede") {
+        // yellow — version history
         ctx.strokeStyle = `rgba(251,191,36,${0.45 * Math.max(0.3, avg) * eDim})`;
         ctx.lineWidth = 1.3;
+      } else if (e.type === "cluster") {
+        // violet — membership hub edge to the theme node
+        ctx.strokeStyle = `rgba(167,139,250,${0.3 * Math.max(0.25, avg) * eDim})`;
+        ctx.lineWidth = 0.9;
       } else {
+        // blue — related_to link
         ctx.strokeStyle = `rgba(125,211,252,${0.18 * Math.max(0.2, avg) * eDim})`;
         ctx.lineWidth = 0.7;
       }

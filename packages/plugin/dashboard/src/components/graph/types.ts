@@ -22,7 +22,7 @@ export type GraphNode = {
 export type GraphEdge = {
   source: string;
   target: string;
-  type: "related" | "supersede";
+  type: "related" | "supersede" | "cluster";
 };
 
 export type GraphResponse = {

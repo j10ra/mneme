@@ -20,12 +20,12 @@ export function MemoryExpand({ data }: { data: MemoryRowData }) {
 
   return (
     <div className="border-t border-border bg-background/50">
-      <div className="flex items-center gap-1 px-3 py-1.5 text-[10px] uppercase tracking-wider border-b border-border/60">
+      <div className="flex items-center gap-0.5 px-2 py-1.5 text-[10px] uppercase tracking-wide border-b border-border/60">
         <TabBtn active={tab === "content"} onClick={() => setTab("content")}>
           content
         </TabBtn>
         <TabBtn active={tab === "fields"} onClick={() => setTab("fields")}>
-          all fields
+          fields
         </TabBtn>
         <TabBtn active={tab === "related"} onClick={() => setTab("related")}>
           related
@@ -34,7 +34,7 @@ export function MemoryExpand({ data }: { data: MemoryRowData }) {
           chain
         </TabBtn>
         <TabBtn active={tab === "capture"} onClick={() => setTab("capture")}>
-          cluster + capture
+          capture
         </TabBtn>
       </div>
 
@@ -142,7 +142,7 @@ function TabBtn({
       type="button"
       onClick={onClick}
       className={cn(
-        "rounded-sm border px-2 py-0.5 transition-colors",
+        "shrink-0 whitespace-nowrap rounded-sm border px-1.5 py-0.5 transition-colors",
         active
           ? "border-foreground/30 bg-foreground/10 text-foreground"
           : "border-transparent text-muted-foreground hover:text-foreground",

@@ -19,7 +19,12 @@ import { GraphDetailDrawer } from "./graph/GraphDetailDrawer.tsx";
 import { GraphFilters } from "./graph/GraphFilters.tsx";
 import { GraphFooter } from "./graph/GraphFooter.tsx";
 import { GraphLegend } from "./graph/GraphLegend.tsx";
-import type { GraphFilters as Filters, GraphNode, GraphResponse } from "./graph/types.ts";
+import type {
+  GraphEdge,
+  GraphFilters as Filters,
+  GraphNode,
+  GraphResponse,
+} from "./graph/types.ts";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert.tsx";
 import { Skeleton } from "./ui/skeleton.tsx";
 
@@ -58,6 +63,11 @@ export function GraphPanel() {
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focalId, setFocalId] = useState<string | null>(null);
+  // The focal node's own data, captured at refocus time. The focal may have
+  // come from the previous focus's egoExtra (not in the detail cache), so we
+  // must keep it ourselves — otherwise replacing egoExtra drops the focal from
+  // the scene (no node, no edges, drawer can't resolve it).
+  const [focalNode, setFocalNode] = useState<GraphNode | null>(null);
   const [depth, setDepth] = useState(1);
   // Two data sources (no flicker, viewport controls unchanged):
   //   overview — sparse top-N across ALL time: feeds the scrubber's full-
@@ -102,6 +112,7 @@ export function GraphPanel() {
   // Filter changes drop focal AND the detail cache — it's a different pool.
   useEffect(() => {
     setFocalId(null);
+    setFocalNode(null);
     setDepth(1);
     cacheRef.current = { nodes: new Map(), edges: new Map() };
     setCacheVersion((v) => v + 1);
@@ -216,10 +227,10 @@ export function GraphPanel() {
     }
   }
 
-  // Focus connections: when a node is focused, fetch its embedding nearest-
-  // neighbours (same as the drawer's "related") and merge them into the scene.
-  // These are freed from the timeline by the canvas, so out-of-window
-  // connections still appear.
+  // Focus neighbourhood: when a node is focused, fetch its REAL relationship
+  // structure — cluster siblings (hub edges to the theme node), related_to
+  // links, and supersede chain — and merge it into the scene. These are freed
+  // from the timeline by the canvas, so out-of-window connections still appear.
   useEffect(() => {
     // Clear immediately so the previous focal's connections never linger while
     // the new fetch is in flight (caused stale nodes-without-edges on refocus).
@@ -228,35 +239,15 @@ export function GraphPanel() {
     let cancelled = false;
     (async () => {
       try {
-        const r = await apiGet<{
-          related: Array<{
-            id: string;
-            content_preview: string;
-            distance: number;
-            kind: string | null;
-          }>;
-        }>(`/memories/${focalId}/related?k=12`);
+        const r = await apiGet<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
+          `/memories/${focalId}/neighborhood`,
+        );
         if (cancelled) return;
-        const nodes: GraphNode[] = r.related.map((x) => ({
-          id: x.id,
-          content_preview: x.content_preview,
-          kind: x.kind,
-          importance: Math.max(0, Math.min(1, 1 - x.distance)), // similarity → prominence
-          cluster_id: null,
-          superseded: false,
-          machine_id: null,
-          machine_name: null,
-          created_at: new Date().toISOString(),
-          recall_weight: null,
-          archived: false,
-          depth: 1,
-        }));
-        const edges = r.related.map((x) => ({
-          source: focalId,
-          target: x.id,
-          type: "related" as const,
-        }));
-        setEgoExtra({ nodes, edges });
+        // Drop the focal itself — it's kept separately as focalNode.
+        setEgoExtra({
+          nodes: r.nodes.filter((n) => n.id !== focalId),
+          edges: r.edges,
+        });
       } catch {
         if (!cancelled) setEgoExtra({ nodes: [], edges: [] });
       }
@@ -327,6 +318,7 @@ export function GraphPanel() {
     // Background click (id=null) also exits focus.
     if (id === null && focalId) {
       setFocalId(null);
+      setFocalNode(null);
       setDepth(1);
     }
   }
@@ -340,12 +332,17 @@ export function GraphPanel() {
   function handleFocusClick() {
     // Clear focal → triggers fresh top-N fetch + auto-pick.
     setFocalId(null);
+    setFocalNode(null);
     setDepth(1);
     setSelectedId(null);
   }
 
-  // Recenter on a selected node — promote it to focal.
+  // Recenter on a selected node — promote it to focal. Capture its data now
+  // (it's a currently-rendered node) so it survives the egoExtra swap.
   function handleNodeRefocus(id: string) {
+    const n =
+      mergedNodes.find((m) => m.id === id) ?? overview?.nodes.find((m) => m.id === id) ?? null;
+    setFocalNode(n);
     setFocalId(id);
     setDepth(1);
     setSelectedId(id);
@@ -362,10 +359,13 @@ export function GraphPanel() {
   // freed from time by the canvas; everything else stays on the timeline.
   const mergedNodes = useMemo(() => {
     const m = new Map<string, GraphNode>(cacheRef.current.nodes);
+    // The focal must always be in the scene (it anchors every ego edge and the
+    // drawer). It may not be in the cache if it came from a prior egoExtra.
+    if (focalNode && !m.has(focalNode.id)) m.set(focalNode.id, focalNode);
     for (const n of egoExtra.nodes) if (!m.has(n.id)) m.set(n.id, n);
     return [...m.values()];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cacheVersion, egoExtra]);
+  }, [cacheVersion, egoExtra, focalNode]);
 
   const mergedEdges = useMemo(() => {
     const seen = new Set<string>(cacheRef.current.edges.keys());
@@ -380,6 +380,13 @@ export function GraphPanel() {
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cacheVersion, egoExtra]);
+
+  // Explicit focus set: the focal node + its fetched connections. Passed to
+  // the canvas so the focus layout doesn't have to race-derive it from edges.
+  const egoIds = useMemo<string[] | null>(() => {
+    if (!focalId) return null;
+    return [focalId, ...egoExtra.nodes.map((n) => n.id)];
+  }, [focalId, egoExtra]);
 
   const selectedNode = useMemo(() => {
     if (!selectedId) return null;
@@ -435,6 +442,7 @@ export function GraphPanel() {
               nodes={mergedNodes}
               edges={mergedEdges}
               overviewNodes={overview.nodes}
+              egoIds={egoIds}
               query={debouncedQuery}
               selectedId={selectedId}
               focalId={focalId}
@@ -442,11 +450,7 @@ export function GraphPanel() {
               onRefocus={handleNodeRefocus}
               onWindowChange={handleWindowChange}
             />
-            <GraphDetailDrawer
-              node={selectedNode}
-              onClose={() => setSelectedId(null)}
-              onRefocus={selectedNode ? () => handleNodeRefocus(selectedNode.id) : undefined}
-            />
+            <GraphDetailDrawer node={selectedNode} onClose={() => setSelectedId(null)} />
             {focalId && (
               <button
                 type="button"

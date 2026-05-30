@@ -529,6 +529,116 @@ export function mountOpsRoutes(app: Hono): void {
   );
 
   // -------------------------------------------------------------------
+  // GET /api/_ops/memories/:id/neighborhood — the focal's REAL relationship
+  // neighborhood for the graph focus stage (replaces embedding-NN). Returns:
+  //   - cluster siblings sharing the focal's meta->'in_cluster', with hub
+  //     edges from each member → the theme node (type "cluster")
+  //   - related_to links             (type "related")
+  //   - supersede parents/children   (type "supersede")
+  // Nodes carry the full GraphNode shape so the canvas can render them.
+  // -------------------------------------------------------------------
+  app.get(
+    "/api/_ops/memories/:id/neighborhood",
+    mnemeRoute("api._ops.memories.neighborhood"),
+    requireAuth("admin"),
+    async (c) => {
+      const id = c.req.param("id");
+      const SIBLING_CAP = 40;
+
+      const [focal] = await sql<{ cluster_id: string | null }[]>`
+        SELECT meta->>'in_cluster' AS cluster_id
+        FROM memories WHERE id = ${id}::uuid
+      `;
+      if (!focal) return c.json({ nodes: [], edges: [], cluster_id: null });
+      const clusterId = focal.cluster_id;
+
+      // Cluster siblings (theme members), capped by importance. The theme node
+      // itself (id = clusterId) is the hub, fetched with the rest below.
+      const siblings = clusterId
+        ? ((await sql<{ id: string }[]>`
+            SELECT id::text AS id
+            FROM memories
+            WHERE meta->>'in_cluster' = ${clusterId}
+              AND id <> ${id}::uuid
+              AND archived_at IS NULL
+            ORDER BY importance DESC NULLS LAST, created_at DESC
+            LIMIT ${SIBLING_CAP}
+          `) as unknown as Array<{ id: string }>)
+        : [];
+
+      // related_to targets of the focal.
+      const related = (await sql<{ target: string }[]>`
+        SELECT (rel)::text AS target
+        FROM memories m, jsonb_array_elements_text(m.meta->'related_to') AS rel
+        WHERE m.id = ${id}::uuid
+      `) as unknown as Array<{ target: string }>;
+
+      // supersede neighbors: the focal's replacement (child) + anything the
+      // focal itself replaced (parents).
+      const supersede = (await sql<{ id: string | null; dir: string }[]>`
+        SELECT (m.meta->>'superseded_by') AS id, 'child' AS dir
+        FROM memories m WHERE m.id = ${id}::uuid AND m.meta ? 'superseded_by'
+        UNION
+        SELECT p.id::text AS id, 'parent' AS dir
+        FROM memories p WHERE p.meta->>'superseded_by' = ${id}::text
+      `) as unknown as Array<{ id: string | null; dir: string }>;
+
+      // Collect every referenced id (deduped) and fetch full node rows.
+      const ids = new Set<string>([id]);
+      if (clusterId) ids.add(clusterId);
+      for (const s of siblings) ids.add(s.id);
+      for (const r of related) ids.add(r.target);
+      for (const s of supersede) if (s.id) ids.add(s.id);
+      const idArr = [...ids];
+
+      const nodes = (await sql<Array<GraphNode>>`
+        SELECT
+          m.id::text                  AS id,
+          left(m.content, 200)        AS content_preview,
+          m.kind                      AS kind,
+          m.importance                AS importance,
+          m.meta->>'in_cluster'       AS cluster_id,
+          (m.meta ? 'superseded_by')  AS superseded,
+          m.machine_id                AS machine_id,
+          k.name                      AS machine_name,
+          m.created_at                AS created_at,
+          m.recall_weight             AS recall_weight,
+          (m.archived_at IS NOT NULL) AS archived
+        FROM memories m
+        LEFT JOIN LATERAL (
+          SELECT name FROM _ops.api_keys
+          WHERE machine_id = m.machine_id AND revoked_at IS NULL
+          ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+          LIMIT 1
+        ) k ON TRUE
+        WHERE m.id = ANY(${idArr}::uuid[])
+      `) as unknown as Array<GraphNode>;
+
+      const present = new Set(nodes.map((n) => n.id));
+      const edges: GraphEdge[] = [];
+      // Cluster hub edges: focal + each sibling → theme node.
+      if (clusterId && present.has(clusterId)) {
+        for (const memberId of [id, ...siblings.map((s) => s.id)]) {
+          if (memberId !== clusterId && present.has(memberId)) {
+            edges.push({ source: memberId, target: clusterId, type: "cluster" });
+          }
+        }
+      }
+      for (const r of related) {
+        if (present.has(r.target)) edges.push({ source: id, target: r.target, type: "related" });
+      }
+      for (const s of supersede) {
+        if (!s.id || !present.has(s.id)) continue;
+        // Direction is always old → new (source superseded_by target).
+        if (s.dir === "child") edges.push({ source: id, target: s.id, type: "supersede" });
+        else edges.push({ source: s.id, target: id, type: "supersede" });
+      }
+
+      return c.json({ nodes, edges, cluster_id: clusterId });
+    },
+  );
+
+  // -------------------------------------------------------------------
   // GET /api/_ops/memories/:id/capture — the raw capture body that
   // produced this memory. Used by the "Cluster + capture" expand tab.
   // -------------------------------------------------------------------
@@ -887,7 +997,7 @@ type GraphNode = {
 type GraphEdge = {
   source: string;
   target: string;
-  type: "related" | "supersede";
+  type: "related" | "supersede" | "cluster";
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
