@@ -13,7 +13,7 @@ import { ApiError, apiGet } from "../../lib/api.ts";
 import { cn } from "../../lib/cn.ts";
 import type { CaptureBody, ChainRow, MemoryRowData, RelatedRow } from "./types.ts";
 
-type Tab = "content" | "related" | "chain" | "capture";
+type Tab = "content" | "fields" | "related" | "chain" | "capture";
 
 export function MemoryExpand({ data }: { data: MemoryRowData }) {
   const [tab, setTab] = useState<Tab>("content");
@@ -23,6 +23,9 @@ export function MemoryExpand({ data }: { data: MemoryRowData }) {
       <div className="flex items-center gap-1 px-3 py-1.5 text-[10px] uppercase tracking-wider border-b border-border/60">
         <TabBtn active={tab === "content"} onClick={() => setTab("content")}>
           content
+        </TabBtn>
+        <TabBtn active={tab === "fields"} onClick={() => setTab("fields")}>
+          all fields
         </TabBtn>
         <TabBtn active={tab === "related"} onClick={() => setTab("related")}>
           related
@@ -37,10 +40,90 @@ export function MemoryExpand({ data }: { data: MemoryRowData }) {
 
       <div className="px-3 py-2.5">
         {tab === "content" && <ContentMetaTab data={data} />}
+        {tab === "fields" && <FieldsTab id={data.id} />}
         {tab === "related" && <RelatedTab id={data.id} />}
         {tab === "chain" && <ChainTab id={data.id} />}
         {tab === "capture" && <CaptureTab data={data} />}
       </div>
+    </div>
+  );
+}
+
+// Every column of the memory row (fetched on demand). Shared by the Memories
+// table and the Graph detail drawer.
+const FIELD_ORDER = [
+  "kind",
+  "importance",
+  "recall_weight",
+  "repo",
+  "machine_name",
+  "machine_id",
+  "harness",
+  "agent",
+  "topics",
+  "private",
+  "created_at",
+  "archived_at",
+  "embedding_model",
+  "content_hash",
+  "capture_id",
+  "chunk_id",
+  "id",
+];
+
+function fmtField(v: unknown): string {
+  if (v == null) return "—";
+  if (Array.isArray(v)) return v.length ? v.join(", ") : "—";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function FieldsTab({ id }: { id: string }) {
+  const { data, error, loading } = useLazy(
+    () => apiGet<{ memory: Record<string, unknown> }>(`/memories/${id}`),
+    [id],
+  );
+  if (loading) return <Pending>Loading row…</Pending>;
+  if (error) return <Failed message={error} />;
+  if (!data) return null;
+  const row = data.memory;
+  const keys = [
+    ...FIELD_ORDER.filter((k) => k in row),
+    ...Object.keys(row).filter((k) => k !== "content" && k !== "meta" && !FIELD_ORDER.includes(k)),
+  ];
+  const meta = row.meta;
+  return (
+    <div className="space-y-3 text-[12px]">
+      {typeof row.content === "string" && (
+        <div>
+          <div className="mb-1 text-[9px] uppercase tracking-wider text-muted-foreground">
+            content
+          </div>
+          <pre className="whitespace-pre-wrap break-words font-sans text-foreground/90 leading-relaxed">
+            {row.content}
+          </pre>
+        </div>
+      )}
+      <dl className="grid grid-cols-[120px_1fr] gap-x-2 gap-y-1">
+        {keys.map((k) => (
+          <div key={k} className="contents">
+            <dt className="truncate text-[9px] uppercase tracking-wider text-muted-foreground">
+              {k}
+            </dt>
+            <dd className="break-words font-mono text-[10px] text-foreground/90">
+              {fmtField(row[k])}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {meta != null && typeof meta === "object" && Object.keys(meta).length > 0 && (
+        <div>
+          <div className="mb-1 text-[9px] uppercase tracking-wider text-muted-foreground">meta</div>
+          <pre className="overflow-x-auto rounded bg-muted/30 p-2 font-mono text-[10px] text-foreground/80">
+            {JSON.stringify(meta, null, 2)}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }

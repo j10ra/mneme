@@ -221,10 +221,10 @@ export function GraphPanel() {
   // These are freed from the timeline by the canvas, so out-of-window
   // connections still appear.
   useEffect(() => {
-    if (!focalId) {
-      setEgoExtra({ nodes: [], edges: [] });
-      return;
-    }
+    // Clear immediately so the previous focal's connections never linger while
+    // the new fetch is in flight (caused stale nodes-without-edges on refocus).
+    setEgoExtra({ nodes: [], edges: [] });
+    if (!focalId) return;
     let cancelled = false;
     (async () => {
       try {

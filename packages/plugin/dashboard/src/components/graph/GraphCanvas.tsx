@@ -32,6 +32,7 @@ const MIN_SPAN_MS = 60 * 60 * 1000; // 1h — max zoom-in
 // much at once. The scrubber still spans all history (sparse overview); you
 // pan this ≤30d window across it to go further back/forward.
 const MAX_SPAN_MS = 30 * 86_400_000; // 30d — max zoom-out / load span
+const DEFAULT_VIEW_MS = 7 * 86_400_000; // initial window on load: last 7 days
 // Bottom scrubber: a full-width overview of the entire timeline with a
 // draggable window that sets the main chart's zoom (shrink window = zoom in).
 const BRUSH_H = 38;
@@ -288,10 +289,10 @@ export const GraphCanvas = forwardRef<
     // controlled entirely by the scrubber / pan / zoom (capped at 30 days).
     const domain: View = { minT, maxT: maxT > minT ? maxT : now };
     fullRef.current = domain;
-    // First load only: default the window to the most-recent 30 days (or the
-    // whole corpus if it's shorter). After that the user owns it; refetches
-    // keep their pan/zoom.
-    if (!viewRef.current) viewRef.current = clampView({ minT: now - MAX_SPAN_MS, maxT: now });
+    // First load only: default the window to the most-recent 7 days (capped at
+    // the data span). After that the user owns it; refetches keep their
+    // pan/zoom.
+    if (!viewRef.current) viewRef.current = clampView({ minT: now - DEFAULT_VIEW_MS, maxT: now });
 
     const q = query.trim().toLowerCase();
     const nowPerf = performance.now();
