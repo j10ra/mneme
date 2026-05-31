@@ -49,9 +49,16 @@ const secured = secureHeaders({
 app.use("*", async (c, next) => {
   if (c.req.path === "/authorize") {
     await next();
+    // No `form-action`: the login form POSTs to /authorize and the server
+    // 302s to the client's redirect_uri (claude.ai, a localhost port, or a
+    // native custom scheme). `form-action 'self'` blocks that cross-origin
+    // redirect in the browser. Omitting it leaves submission unrestricted —
+    // form-action does NOT fall back to default-src — while default-src
+    // 'none' still locks scripts/images/etc. The page is static, server-
+    // rendered, with every dynamic value attribute-escaped.
     c.header(
       "Content-Security-Policy",
-      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'",
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'",
     );
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
