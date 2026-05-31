@@ -14,16 +14,19 @@ import {
   isProjectRegistered,
   loadConfig,
   registerProject,
-  serverUrl,
 } from "../core/config.ts";
 import { isDaemonConfigStale } from "../daemon/daemon-install.ts";
 import {
   buildToolObservation,
+  isAdminSlashBashCommand,
   isRecursiveTool,
   scrubAndRedact,
   writeToOutbox,
 } from "../core/capture.ts";
 import { baseScope as buildScope, discoverRepos, repoForFile } from "../core/scope.ts";
+import { fetchSurface, renderSurfaceForLLM, summariseSurfaceForUser } from "../core/surface.ts";
+import { pingDaemonFlush } from "../core/daemon-client.ts";
+import { formatCurrentTime } from "../core/time.ts";
 import { plog } from "../core/log.ts";
 
 const event = process.argv[2] ?? "unknown";
@@ -128,24 +131,6 @@ function refreshDaemonIfStale(): void {
   }
 }
 
-// Fire-and-forget ping to the local daemon's /flush endpoint. Used at
-// natural session boundaries (Stop, PreCompact, SessionEnd) to skip
-// the daemon's idle window and process pending captures immediately.
-// Returns void: a flush failure (daemon down, server error) doesn't
-// matter because the daemon's idle gate is the safety net.
-async function pingDaemonFlush(cfg: MnemeConfig): Promise<void> {
-  if (!cfg.daemon) return;
-
-  try {
-    await fetch(`http://127.0.0.1:${cfg.daemon.port}/flush`, {
-      method: "POST",
-      signal: AbortSignal.timeout(1500),
-    });
-  } catch {
-    // Daemon unreachable; idle gate will eventually fire.
-  }
-}
-
 async function postCapture(cfg: MnemeConfig, body: Record<string, unknown>): Promise<boolean> {
   // One redaction point for every event: shared scrub + machine-local
   // literal-secret redaction (admin password, per-machine token) — the
@@ -185,230 +170,8 @@ async function postCapture(cfg: MnemeConfig, body: Record<string, unknown>): Pro
   return writeToOutbox(cleaned);
 }
 
-async function fetchSurface(
-  cfg: MnemeConfig,
-  payload: Record<string, unknown>,
-  repos: string[],
-): Promise<string> {
-  try {
-    const resp = await fetch(serverUrl(cfg, "/api/session/start"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.auth.key}`,
-        "X-Mneme-Source": "hook",
-      },
-      body: JSON.stringify({
-        machine_id: cfg.machine.id,
-        repos,
-        session_id: payload.session_id ?? null,
-      }),
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!resp.ok) return "";
-    const data = (await resp.json()) as { rendered?: string };
-
-    return data.rendered ?? "";
-  } catch {
-    return "";
-  }
-}
-
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…[truncated ${s.length - max}b]` : s;
-}
-
-/** Plain-text the markdown surface for terminal rendering. Claude Code
- *  prints SessionStart hook output verbatim in the transcript — `##`,
- *  `**`, and `_..._` don't render, they show as literal characters.
- *  Strip them so the surface reads cleanly in a monospace shell. */
-function formatSurfaceForTerminal(surface: string): string {
-  return (
-    surface
-      .replace(/^#{1,6}\s+/gm, "") // `# Title` / `## Section` → `Title` / `Section`
-      .replace(/^_(.+)_$/gm, "$1") // `_subtitle_` (whole-line italic) → `subtitle`
-      .replace(/\*\*([^*]+)\*\*/g, "$1") // `**bold**` (inline) → `bold`
-      // Section emoji anchors. "Recent sessions" must run before "Recent"
-      // (date-range subsection) so the more specific match wins.
-      .replace(/^Rules \(/gm, "📌 Rules (")
-      .replace(/^Themes \(/gm, "🧩 Themes (")
-      .replace(/^Recent sessions \(/gm, "💬 Recent sessions (")
-      .replace(/^Recent \(last/gm, "⏱️  Recent (last")
-  );
-}
-
-/** Parse the markdown surface header + per-section counts into a single
- *  struct that both the user-visible summary and the LLM-side reminder
- *  consume. Returns null if the surface format drifts. */
-type SurfaceParse = {
-  repo: string;
-  machineCount: string;
-  sinceAgo?: string;
-  captures?: string;
-  memories?: string;
-  superseded?: string;
-  sections: { name: string; total: string }[];
-};
-
-function parseSurface(surface: string): SurfaceParse | null {
-  const header = surface.match(/^#\s+Mneme\s+·\s+(\S+)\s+·\s+across\s+(\d+)\s+machine/m);
-
-  if (!header) return null;
-  const stats = surface.match(
-    /^_Since last session \(([^)]+)\s+ago\):\s+(\d+)\s+captures,\s+(\d+)\s+memories(?:\s+·\s+(\d+)\s+superseded[^_]*)?_/m,
-  );
-  const sectionPatterns: Array<[string, RegExp]> = [
-    ["rules", /^##\s+Rules\s+\(\d+\s+of\s+(\d+)\)/m],
-    ["themes", /^##\s+Themes\s+\(\d+\s+of\s+(\d+)\)/m],
-    ["recent", /^##\s+Recent\s+\(last[^)]+\)\s+\(\d+\s+of\s+(\d+)\)/m],
-    ["sessions", /^##\s+Recent\s+sessions\s+\(\d+\s+of\s+(\d+)\)/m],
-  ];
-  const sections = sectionPatterns
-    .map(([name, pattern]) => {
-      const m = surface.match(pattern);
-      const total = m?.[1];
-
-      return total ? { name, total } : null;
-    })
-    .filter((s): s is { name: string; total: string } => s !== null);
-
-  const repo = header[1];
-  const machineCount = header[2];
-
-  if (!repo || !machineCount) return null;
-
-  return {
-    repo,
-    machineCount,
-    sinceAgo: stats?.[1],
-    captures: stats?.[2],
-    memories: stats?.[3],
-    superseded: stats?.[4],
-    sections,
-  };
-}
-
-/** Pull the rendered rows of one section out of the full surface markdown
- *  for the user-visible banner. Strips UUID brackets — those are for the
- *  LLM to dereference via mneme_sql, the user just wants to see what's
- *  loaded. Returns up to `limit` lines, each starting with "- ". */
-function extractSectionForUser(surface: string, section: string, limit: number): string[] {
-  const re = new RegExp(`^##\\s+${section}\\b[^\\n]*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, "m");
-  const match = surface.match(re);
-
-  if (!match?.[1]) return [];
-
-  return match[1]
-    .split("\n")
-    .filter((l) => l.startsWith("- ["))
-    .slice(0, limit)
-    .map((l) => l.replace(/^-\s+\[[0-9a-f-]+\]\s*/, "- "));
-}
-
-/** UTF-8 byte size, rendered as B / KB / MB. The LLM-injected surface
- *  is a string, so byteLength of its UTF-8 encoding is the actual cost
- *  going into context. Kept terse — this lands in the user banner. */
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/** User-visible status banner for the systemMessage channel. Header +
- *  corpus totals + top pinned rows (stripped of UUIDs) + a flavor
- *  line that also reports how many bytes the surface is injecting into
- *  the LLM context. The LLM gets the full surface separately via
- *  additionalContext — including the auto-derived Rules section, which
- *  stays LLM-only; the banner shows only deliberately pinned rows. */
-function summariseSurfaceForUser(surface: string, injectedBytes: number): string {
-  const p = parseSurface(surface);
-
-  if (!p) return "Mneme memory loaded.";
-  const lines: string[] = [`Mneme · ${p.repo} · ${p.machineCount} machines`];
-
-  if (p.sinceAgo && p.memories && p.captures) {
-    const supText = p.superseded ? ` · ${p.superseded} superseded` : "";
-
-    lines.push(
-      `Since last session (${p.sinceAgo} ago): ${p.memories} memories · ${p.captures} captures${supText}`,
-    );
-  }
-
-  const pinned = extractSectionForUser(surface, "Pinned", 5);
-
-  if (pinned.length > 0) {
-    lines.push("");
-    lines.push("📍 Pinned");
-    lines.push(...pinned);
-  }
-
-  lines.push("");
-  lines.push(
-    `🧠 Memory loaded with decisions, bug fixes, discoveries, and prior sessions. Unfold any of it on demand. (~${formatBytes(injectedBytes)} context)`,
-  );
-
-  return lines.join("\n");
-}
-
-/** Kind glyph legend embedded into the LLM reminder so the agent can
- *  interpret row symbols on first read, without needing to load the
- *  using-mneme skill's references. Must stay in sync with KIND_GLYPH
- *  in packages/server/src/services/surface.ts. */
-const KIND_LEGEND =
-  "🔴 bugfix · 🟣 feature · ⚖️ decision · 🔵 discovery · 💬 preference · " +
-  "🚧 constraint · 🚨 security_alert · 📎 reference · 🎯 summary · " +
-  "🧩 cluster · 🧠 claude_memory · 📝 note";
-
-/** LLM-side reminder prepended to the full surface. Tells the agent
- *  what's in the corpus, how to reach the rest, and what every glyph
- *  on the row means. Skipped if parsing failed or no sections matched. */
-function prefixSurfaceForLLM(surface: string, strippedSurface: string): string {
-  const p = parseSurface(surface);
-
-  if (!p || p.sections.length === 0) return strippedSurface;
-  const totals = p.sections.map((s) => `${s.total} ${s.name}`).join(" · ");
-  const reminder =
-    `Mneme corpus: ${totals}. The surface below is a relevance-ranked slice. ` +
-    `Unfold any [id] or query mneme_sql to access the rest. The using-mneme ` +
-    `skill has the full recall workflow (3-layer search → walk → unfold), ` +
-    `live-state verification, and self-correcting recall — load it when ` +
-    `working with memory beyond what the surface already gave you.\n\n` +
-    `Glyph legend (the symbol after each [id]):\n${KIND_LEGEND}\n\n` +
-    `Memory split: Mneme = cross-machine project knowledge (decisions, fixes, ` +
-    "references, postmortems). Local auto-memory at `~/.claude/projects/.../memory/` " +
-    `= per-machine behavioral preferences (tone, response style, harness quirks).\n\n` +
-    `Writing memories: hooks auto-capture conversation + tool use, so most ` +
-    `memories land without intervention. Beyond that, use agent discretion to ` +
-    "invoke `/mneme:memory <text>` (crystallize a synthesised finding the auto- " +
-    "capture would miss), `/mneme:supersede <old> <new>` (a newer fact replaces " +
-    "an old one), and `/mneme:archive <uuid>` (the user contradicts a memory " +
-    "this session). `/mneme:pin` is reserved for the user — never invoke it. " +
-    `Act on clear signal; ask the user first only when which memory to ` +
-    `supersede/archive is genuinely ambiguous.\n\n`;
-
-  return reminder + strippedSurface;
-}
-
-/** Compact "now" stamp injected on every UserPromptSubmit so the agent
- *  always has fresh wall-clock context (debugging, long sessions, any
- *  "yesterday"/"earlier today" reasoning). Format: `2026-05-12 (Tue) 10:25 AM PST`. */
-function formatCurrentTime(): string {
-  const d = new Date();
-  const isoDate = d.toISOString().slice(0, 10);
-  const dayTime = d.toLocaleString("en-US", {
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZoneName: "short",
-  });
-  // dayTime renders as "Tue, 10:25 AM PST" — promote the comma to parens
-  // around the weekday so the line reads cleaner alongside the ISO date.
-  const [weekday, ...rest] = dayTime.split(", ");
-
-  return `${isoDate} (${weekday}) ${rest.join(", ")}`;
 }
 
 /** Extract concatenated text blocks from a Claude Code transcript JSONL
@@ -569,7 +332,11 @@ async function main(): Promise<void> {
       const repos = discovered.length > 0 ? discovered : repo ? [repo] : [];
 
       const source = typeof payload.source === "string" ? payload.source : "startup";
-      const surface = await fetchSurface(cfg, payload, repos);
+      const surface = await fetchSurface(cfg, {
+        repos,
+        sessionId: typeof payload.session_id === "string" ? payload.session_id : null,
+        source: "hook",
+      });
 
       if (surface) {
         // Two channels, two purposes — not duplicated content:
@@ -582,7 +349,7 @@ async function main(): Promise<void> {
         // Banner on startup + clear: both are moments the user is looking
         // at a fresh context and wants confirmation the surface re-injected.
         // resume/compact stay quiet (they're mid-flow, not fresh starts).
-        const fullForLlm = prefixSurfaceForLLM(surface, formatSurfaceForTerminal(surface));
+        const fullForLlm = renderSurfaceForLLM(surface);
         const injectedBytes = Buffer.byteLength(fullForLlm, "utf8");
         const summaryForUser = summariseSurfaceForUser(surface, injectedBytes);
         const envelope: Record<string, unknown> = {
@@ -745,23 +512,10 @@ async function main(): Promise<void> {
 
       if (shouldSkipTool(toolName)) return;
 
-      // Skip bash invocations of our own admin slash subcommands. Their
-      // command lines tend to carry the admin password verbatim (passed
-      // on argv at first /mneme:setup, or via `echo -n <pw> |` on
-      // legacy admin slashes), and these calls produce zero project
-      // signal. Layer A's literal-redactor catches the password AFTER
-      // the first setup; this skip is the protection FOR that first
-      // setup and a belt against accidental capture afterward.
-      if (
-        toolName === "Bash" &&
-        toolInput &&
-        typeof (toolInput as Record<string, unknown>).command === "string" &&
-        /scripts\/slash\.ts["']?\s+(setup|status|machines|revoke)\b/.test(
-          (toolInput as Record<string, unknown>).command as string,
-        )
-      ) {
-        return;
-      }
+      // Skip bash invocations of our own admin slash subcommands — their
+      // command lines carry the admin password verbatim. Shared predicate
+      // (see core/capture.ts) so every harness applies the same belt.
+      if (isAdminSlashBashCommand(toolName, toolInput)) return;
 
       const memPath = memoryWritePath(toolName, toolInput);
 

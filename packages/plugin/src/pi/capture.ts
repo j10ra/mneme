@@ -20,12 +20,14 @@
 import { isBlacklistedPath, loadConfig, registerProject } from "../core/config.ts";
 import {
   buildToolObservation,
+  isAdminSlashBashCommand,
   MAX_CAPTURE_BYTES,
   shouldSkipTool,
   truncate,
   writeCapture,
 } from "../core/capture.ts";
-import { baseScope } from "../core/scope.ts";
+import { pingDaemonFlush } from "../core/daemon-client.ts";
+import { baseScope, repoForFile } from "../core/scope.ts";
 
 // Skip short assistant replies ("ok", "got it") — not memorable. Mirrors the
 // Claude Code hook's transcript filter.
@@ -93,6 +95,10 @@ export default function mnemeCapture(pi) {
 
   pi.on("tool_result", (event, ctx) => {
     if (blocked(ctx) || shouldSkipTool(event?.toolName)) return;
+    // Belt: never capture a Bash line invoking our own admin slash subcommands
+    // (carries the admin password on argv). Shared with the Claude hook.
+    if (isAdminSlashBashCommand(event?.toolName, event?.input)) return;
+
     const observation = buildToolObservation(
       event.toolName,
       event.input,
@@ -101,11 +107,34 @@ export default function mnemeCapture(pi) {
     );
 
     if (!observation) return; // oversize even after scrubbing — drop.
+
+    // Per-sub-repo tagging: when the tool touched a file, walk up to its
+    // containing git repo and tag with that repo's canonical URL. Without
+    // this, a multi-repo workspace tags everything with the workspace cwd and
+    // loses provenance (mirrors the Claude hook's repoForFile path).
+    const filePath =
+      event?.input && typeof (event.input as Record<string, unknown>).file_path === "string"
+        ? ((event.input as Record<string, unknown>).file_path as string)
+        : null;
+    const fileRepo = filePath ? repoForFile(filePath) : null;
+    const scope = scopeFor(ctx);
+
     writeCapture(cfg, {
       source: "pi_tool",
-      ...scopeFor(ctx),
+      ...scope,
+      ...(fileRepo ? { repo: fileRepo } : {}),
       content: observation,
       raw_meta: { event: "tool_result", tool: event.toolName },
     });
   });
+
+  // Session boundaries: drain the outbox immediately instead of waiting for the
+  // daemon's idle tick — the Pi analog of the Claude hook's PreCompact/
+  // SessionEnd flush. Fire-and-forget; fail-open.
+  const flush = () => {
+    void pingDaemonFlush(cfg);
+  };
+
+  pi.on("session_compact", flush);
+  pi.on("session_shutdown", flush);
 }

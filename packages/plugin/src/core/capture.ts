@@ -37,6 +37,21 @@ export function shouldSkipTool(toolName: unknown): boolean {
   return isRecursiveTool(toolName);
 }
 
+/** Skip a Bash tool call that invokes Mneme's own admin slash subcommands
+ *  (setup/status/machines/revoke). Their command lines carry the admin
+ *  password verbatim on argv (first /mneme:setup, or `echo -n <pw> |` legacy
+ *  forms) and produce zero project signal. The scrubber's literal-redactor
+ *  catches the password only AFTER the first setup seeds it; this skip is the
+ *  belt for that first setup and afterward. Shared by every harness. */
+export function isAdminSlashBashCommand(toolName: unknown, toolInput: unknown): boolean {
+  if (toolName !== "Bash" || !toolInput || typeof toolInput !== "object") return false;
+  const command = (toolInput as Record<string, unknown>).command;
+
+  return (
+    typeof command === "string" && /slash\.ts["']?\s+(setup|status|machines|revoke)\b/.test(command)
+  );
+}
+
 // Sync SHA via node:crypto: Bun's WebCrypto can fail to resolve the awaited
 // digest when a hook is spawned with payload piped to stdin (stdin EOF drains
 // the loop before the digest microtask fires). createHash is synchronous and

@@ -16,10 +16,105 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { loadConfig } from "../core/config.ts";
+import { isBlacklistedPath, loadConfig } from "../core/config.ts";
 import { callMnemeSql } from "../core/recall.ts";
+import { discoverRepos } from "../core/scope.ts";
+import {
+  fetchSurface,
+  renderSurfaceForLLM,
+  summariseSurfaceForUser,
+  utf8Bytes,
+} from "../core/surface.ts";
+import { formatCurrentTime } from "../core/time.ts";
 
 export default function mneme(pi: ExtensionAPI) {
+  // NOTE: Pi intentionally does NOT self-heal the daemon (no refreshDaemonIfStale
+  // analog). The daemon is one-per-machine and Claude-owned (it runs from the
+  // Claude plugin cache); Claude Code is the first-class harness for daemon
+  // lifecycle. A Pi-only machine refreshes it via Claude or /mneme:setup. Don't
+  // add daemon self-heal here — that divergence is deliberate.
+  //
+  // Read-path PUSH: on session start, hand the agent its relevance-ranked
+  // memory corpus — the Pi analog of Claude Code's SessionStart surface
+  // injection (src/claude/hook.ts). Uses the same harness-neutral fetchSurface
+  // + renderers, so the surface is identical across harnesses.
+  //
+  // Two channels, same split as the Claude hook (additionalContext vs
+  // systemMessage), expressed via the custom-message `display` flag:
+  //   - FULL surface → display:false: the model reads it, the user doesn't see
+  //     the raw dump.
+  //   - COMPACT banner → display:true: the user sees repo/machines/since-last
+  //     counts in the transcript.
+  // Both use triggerTurn:false so they land as background context without
+  // kicking off an agent turn. Fail-open: a surface miss must never block the
+  // session.
+  pi.on("session_start", async (event, ctx) => {
+    const cwd = ctx?.cwd;
+
+    if (!cwd || isBlacklistedPath(cwd)) return;
+
+    let cfg: ReturnType<typeof loadConfig>;
+
+    try {
+      cfg = loadConfig();
+    } catch {
+      return; // not configured on this machine — nothing to surface
+    }
+
+    try {
+      const repos = discoverRepos(cwd);
+      const sessionId = ctx?.sessionManager?.getSessionId?.() ?? null;
+      const surface = await fetchSurface(cfg, { repos, sessionId, source: "pi" });
+
+      if (!surface) return;
+
+      const fullForLlm = renderSurfaceForLLM(surface);
+      const banner = summariseSurfaceForUser(surface, utf8Bytes(fullForLlm));
+
+      // Model-only: the full surface, injected into the next turn's context
+      // (deliverAs:"nextTurn") and hidden from the transcript (display:false).
+      await pi.sendMessage(
+        { customType: "mneme_surface", content: fullForLlm, display: false },
+        { triggerTurn: false, deliverAs: "nextTurn" },
+      );
+      // User-facing: the compact banner, shown in the transcript — but only on
+      // fresh starts (the Claude hook shows its banner on startup|clear; here
+      // startup|new). resume/reload/fork are mid-flow, so stay quiet.
+      const reason = event?.reason;
+
+      if (reason === "startup" || reason === "new") {
+        await pi.sendMessage(
+          { customType: "mneme", content: banner, display: true },
+          { triggerTurn: false },
+        );
+      }
+    } catch {
+      // best-effort; the recall tool still works without the surface push.
+    }
+  });
+
+  // Per-turn wall-clock time: ground the agent's "now" on every user input so a
+  // long session never reasons against a stale session-start date. The Pi
+  // analog of the Claude hook's UserPromptSubmit time injection. Model-only
+  // (display:false) and attached to the imminent turn (deliverAs:"nextTurn").
+  pi.on("input", async (event, ctx) => {
+    if (event?.source !== "interactive") return;
+    if (!ctx?.cwd || isBlacklistedPath(ctx.cwd)) return;
+
+    try {
+      await pi.sendMessage(
+        {
+          customType: "mneme_time",
+          content: `Current time: ${formatCurrentTime()}`,
+          display: false,
+        },
+        { triggerTurn: false, deliverAs: "nextTurn" },
+      );
+    } catch {
+      // best-effort; never block the turn.
+    }
+  });
+
   pi.registerTool({
     name: "mneme_sql",
     label: "Mneme: recall",
