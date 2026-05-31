@@ -42,6 +42,9 @@ jobs:
           # Surface the review on the PR: one updating comment + the report
           # body. Without these (and pull-requests: write above) a clean
           # review posts nothing and looks like it did nothing.
+          # track_progress forces tag mode so the review posts as a PR comment;
+          # prompt mode alone only writes the report to the step summary.
+          track_progress: true
           use_sticky_comment: true
           display_report: true
           # Headless CI replaces the default tool set with --allowedTools, so
