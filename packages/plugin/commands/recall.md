@@ -50,8 +50,8 @@ Length: match the question. A specific question gets 1-3 sentences. A broader "w
 
 ```sql
 -- mneme:source=recall
--- Step 1: resolve name → UUID
-SELECT machine_id FROM _ops.machines
+-- Step 1: resolve name → UUID (use the public `machines` view; the reader role has no access to `_ops.*`)
+SELECT machine_id FROM machines
 WHERE name = 'macbook-air-bc' AND revoked_at IS NULL;
 
 -- mneme:source=recall

@@ -87,6 +87,16 @@ const COALESCE_WINDOW_MS = 5 * 60 * 1000;
 // chunk into back-to-back Haiku calls.
 const MAX_BATCH_SIZE = 20;
 
+// Second bound: a batch fills toward MAX_BATCH_SIZE but stops early once
+// its combined content crosses this cap, so a code-heavy session (big
+// Read/Edit/Bash captures) can't balloon a 20-member batch past what the
+// extract turn timeout can chew — the dead-letter failure mode from the
+// ph-money screenshot incident, minus the screenshots. Light captures
+// still pack a full 20; heavy ones make smaller batches. The seed always
+// rides alone if it alone exceeds the cap (per-capture cap keeps it well
+// under, so that's only a safety net).
+const MAX_BATCH_BYTES = 120_000;
+
 // Aggressive defaults exist for tests (1-capture-per-call shape);
 // production overrides via index.ts.
 const DEFAULT_EXTRACT_BATCH_FULL = 1;
@@ -534,6 +544,7 @@ export function createRuntime(deps: DaemonDeps) {
       if (processed.has(seed.id)) continue;
 
       const batch: typeof entries = [seed];
+      let batchBytes = seed.capture.content.length;
 
       for (const candidate of entries) {
         if (candidate.id === seed.id) continue;
@@ -545,7 +556,11 @@ export function createRuntime(deps: DaemonDeps) {
         const inWindow = Math.abs(candidate.ts - seed.ts) <= COALESCE_WINDOW_MS;
 
         if (sameSession && sameRepo && samePrivate && inWindow) {
+          // Stop before the combined batch overruns the extract turn (the
+          // seed is already in, so this only caps *additional* members).
+          if (batchBytes + candidate.capture.content.length > MAX_BATCH_BYTES) break;
           batch.push(candidate);
+          batchBytes += candidate.capture.content.length;
         }
       }
 
@@ -553,6 +568,7 @@ export function createRuntime(deps: DaemonDeps) {
 
       Logger.info("extract starting", {
         size: batch.length,
+        bytes: batchBytes,
         session: seed.capture.session_id ?? null,
         repo: seed.capture.repo ?? null,
       });

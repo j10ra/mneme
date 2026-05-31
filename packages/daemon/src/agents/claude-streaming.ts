@@ -48,7 +48,10 @@ const DISALLOWED_TOOLS = [
 const RECYCLE_MS = 30 * 60 * 1000;
 
 // Catches genuine deadlocks; well above slow-network inference time.
-const TURN_TIMEOUT_MS = 90 * 1000;
+// 150s (was 90s): a near-cap extract batch (~120KB, see MAX_BATCH_BYTES)
+// can take >90s to generate, which used to time out → retry → slow drain
+// + dead-letter risk on code-heavy sessions.
+const TURN_TIMEOUT_MS = 150 * 1000;
 
 type SDKUserMessage = {
   type: "user";

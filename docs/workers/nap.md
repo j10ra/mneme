@@ -1,6 +1,6 @@
 # Nap — every 4 hours, on the server (pure SQL)
 
-The **maintenance pass**. No LLM, no embedder, no per-row HTTP calls — all SQL, four independent phases per cycle. Runs server-side because the only thing it needs is fast access to Postgres.
+The **maintenance pass**. No LLM, no embedder, no per-row HTTP calls — all SQL, six independent phases per cycle. Runs server-side because the only thing it needs is fast access to Postgres.
 
 > Reads for context: [`../concepts.md`](../concepts.md), [`../data-model.md`](../data-model.md).
 > Sibling workers: [`dream.md`](./dream.md), [`digest.md`](./digest.md).
@@ -14,7 +14,7 @@ Six phases, each its own SQL call (not one transaction — a slow phase fails in
 
 1. **Importance decay (with asymmetric floors).** Every non-archived memory's `importance` shrinks by age — exponential decay with τ = 30 days. Per-cycle factor is `NAP_DECAY_PER_CYCLE = exp(-1/180) ≈ 0.9945` (6 naps/day × 30 days = 180). A `GREATEST(...)` clamp inside the UPDATE enforces asymmetric floors: `NAP_PIN_FLOOR = 0.5` for `meta.pinned = true`, `NAP_FLOOR = 0.05` for everything else. Pinned content stays in recall's high zone; a fresh pin (1.0) still outranks a stale one (0.5). Keyset-paginated so a full-table pass never trips the Postgres `statement_timeout = 2 min`.
 
-2. **Recall-weight decay (LTP).** Multiplies `recall_weight` by `RECALL_LTD_DECAY = 0.933` per cycle so use-driven reinforcement fades when unused. With 6 cycles/day this preserves a ~42 hour half-life from a single recall hit. Same keyset pagination as importance decay.
+2. **Recall-weight decay (LTP).** Multiplies `recall_weight` by `RECALL_LTD_DECAY = 0.933` per cycle so use-driven reinforcement fades when unused. With 6 cycles/day this preserves a ~42 hour half-life from a single recall hit. Decay stops once `recall_weight < 0.01` (the UPDATE only touches rows at or above the floor). Same keyset pagination as importance decay.
 
 3. **Auto-archive orphan atoms (`napArchiveOrphans`).** Sets `archived_at = now()` on `kind <> 'cluster'` memories matching ALL of:
    - `importance ≤ NAP_ARCHIVE_IMPORTANCE_MAX` (0.1) — fully decayed

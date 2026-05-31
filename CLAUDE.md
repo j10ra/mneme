@@ -15,7 +15,7 @@ Greek muse of memory. Personal cross-machine memory layer for one user, three ma
 | Understand the system at all | [`docs/README.md`](./docs/README.md) |
 | Look up a term | [`docs/concepts.md`](./docs/concepts.md) |
 | Trace the hot path (hook → daemon → server) | [`docs/capture-pipeline.md`](./docs/capture-pipeline.md) |
-| Reason about how memories get refined | [`docs/workers/nap.md`](./docs/workers/nap.md), [`docs/workers/dream.md`](./docs/workers/dream.md), [`docs/workers/digest.md`](./docs/workers/digest.md) |
+| Reason about how memories get refined | [`docs/workers/nap.md`](./docs/workers/nap.md), [`docs/workers/dream.md`](./docs/workers/dream.md), [`docs/workers/digest.md`](./docs/workers/digest.md), [`docs/workers/prune.md`](./docs/workers/prune.md) |
 | Read the schema or design a query | [`docs/data-model.md`](./docs/data-model.md), [`packages/plugin/skills/using-mneme/SKILL.md`](./packages/plugin/skills/using-mneme/SKILL.md) |
 | How agents read | [`docs/recall.md`](./docs/recall.md), [`docs/surface.md`](./docs/surface.md) |
 | Connect a non-Claude-Code MCP client (desktop/web/mobile, ChatGPT) | [`docs/oauth.md`](./docs/oauth.md) |

@@ -505,7 +505,7 @@ var DISALLOWED_TOOLS = [
   "TodoWrite"
 ];
 var RECYCLE_MS = 30 * 60 * 1000;
-var TURN_TIMEOUT_MS = 90 * 1000;
+var TURN_TIMEOUT_MS = 150 * 1000;
 
 class StreamingClaudeSession {
   model;
@@ -2489,6 +2489,7 @@ function scrubData(data) {
 var REQUIRED_STRING_FIELDS = ["content", "source", "hostname", "harness"];
 var COALESCE_WINDOW_MS = 5 * 60 * 1000;
 var MAX_BATCH_SIZE = 20;
+var MAX_BATCH_BYTES = 120000;
 var DEFAULT_EXTRACT_BATCH_FULL = 1;
 var DEFAULT_EXTRACT_IDLE_MS = 0;
 var DEFAULT_EXTRACT_FORCE_MS = 0;
@@ -2777,6 +2778,7 @@ function createRuntime(deps) {
       if (processed.has(seed.id))
         continue;
       const batch = [seed];
+      let batchBytes = seed.capture.content.length;
       for (const candidate of entries) {
         if (candidate.id === seed.id)
           continue;
@@ -2789,12 +2791,16 @@ function createRuntime(deps) {
         const samePrivate = candidate.capture.private === seed.capture.private;
         const inWindow = Math.abs(candidate.ts - seed.ts) <= COALESCE_WINDOW_MS;
         if (sameSession && sameRepo && samePrivate && inWindow) {
+          if (batchBytes + candidate.capture.content.length > MAX_BATCH_BYTES)
+            break;
           batch.push(candidate);
+          batchBytes += candidate.capture.content.length;
         }
       }
       const extractStartedAt = Date.now();
       Logger.info("extract starting", {
         size: batch.length,
+        bytes: batchBytes,
         session: seed.capture.session_id ?? null,
         repo: seed.capture.repo ?? null
       });

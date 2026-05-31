@@ -36,7 +36,7 @@ That's Mneme.
 
 ## ⚙️ How it works
 
-The data plumbing under the brain trio below: hooks scrub and post captures to the per-machine daemon at `127.0.0.1/capture` (falling back to a direct file-outbox write only if the daemon is unreachable); the daemon coalesces same-session captures, calls Claude (via the Agent SDK; credentials resolved per-platform) to distill atomic observations, embeds with `bge-small-en-v1.5` in an isolated subprocess so the ONNX session can't fragment the daemon's address space, then pushes pre-built bundles to the server. The server is a single Bun process — it inserts in one transaction, runs the workers below, and exposes one MCP tool (`mneme_sql`) so any agent on any harness can read. One Postgres holds it all.
+The data plumbing under the brain trio below: hooks scrub and post captures to the per-machine daemon at `127.0.0.1/capture` (falling back to a direct file-outbox write only if the daemon is unreachable); the daemon coalesces same-session captures, calls Claude (via the Agent SDK; credentials resolved per-platform) to distill atomic observations, embeds with `bge-small-en-v1.5` in an isolated subprocess so the ONNX session can't fragment the daemon's address space, then pushes pre-built bundles to the server. The server is a single Bun process — it inserts in one transaction, runs the workers below, and exposes two MCP tools (`mneme_sql` to read, `mneme_guide` for the schema + recall workflow) so any agent on any harness can read. One Postgres holds it all.
 
 ```mermaid
 flowchart LR
@@ -151,7 +151,7 @@ bun run dev                # local dev; for prod, deploy to any Bun-capable host
 <details>
 <summary><b>Provider configuration</b> — what to put in <code>.env</code></summary>
 
-Most LLM and embedder work happens **on the user's machine inside the daemon**, not on the server. The daemon uses the Claude Agent SDK — credential resolution is per-platform (macOS Keychain, Windows Credential Manager, `~/.claude/.credentials.json` on Linux/WSL), with `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` env vars as overrides. The daemon also runs `BAAI/bge-small-en-v1.5` in an isolated subprocess for embeddings — neither needs a server-side env var. The server only needs LLM/embedder env vars if you opt into the **digest** worker (every-24h cross-cluster pass), in which case the picker uses OpenRouter or any OpenAI-compatible fallback.
+Most LLM and embedder work happens **on the user's machine inside the daemon**, not on the server. The daemon uses the Claude Agent SDK — credential resolution is per-platform (macOS Keychain, Windows Credential Manager, `~/.claude/.credentials.json` on Linux/WSL), with `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` env vars as overrides. The daemon also runs `BAAI/bge-small-en-v1.5` in an isolated subprocess for capture-time embeddings. The server needs no LLM/embedder env vars unless you opt into one of two things: the **digest** worker (every-24h cross-cluster pass, single OpenRouter path), or **server-side recall embedding** (`MNEME_SERVER_EMBED=1`) so OAuth connector clients without a local daemon can run semantic `embed()` queries — both reuse the canonical `@mneme/embed` model so vectors never drift.
 
 ```env
 # Database (required)
@@ -165,11 +165,19 @@ MNEME_READER_DATABASE_URL=postgresql://...   # mneme_reader role for /mcp
 # password is the real defense.
 ADMIN_PASSWORD=...
 
+# OAuth remote-MCP connector (optional; see docs/oauth.md).
+# PUBLIC_URL pins the OAuth issuer origin; unset → derived from the request.
+PUBLIC_URL=https://mneme.example.com
+# Embed recall queries on the server for connector clients with no daemon.
+MNEME_SERVER_EMBED=1
+
 # Digest worker (optional; off by default)
 MNEME_DIGEST_ENABLED=1
 OPENROUTER_API_KEY=...
 OPENROUTER_DIGEST_MODEL=anthropic/claude-sonnet-4
 ```
+
+Connecting a non-Claude-Code MCP client (Claude desktop/web/mobile, ChatGPT) over OAuth 2.1 is covered in [`docs/oauth.md`](./docs/oauth.md).
 
 **Cost shape:** the daemon owns LLM extract + embed using the user's existing `claude` login, so per-machine compute is free. The server only runs nap (SQL) + the opt-in digest (Sonnet via OpenRouter), so a self-hosted Postgres + a $5 Bun host covers it. Enabling digest adds ~$1–5/mo in API spend depending on volume.
 
@@ -239,6 +247,7 @@ Hooks fire on their own. You shouldn't have to think about them.
 | `packages/server/` | Bun + Hono server: bundle ingest, session surface, MCP, ops, auth, plus the nap / digest / prune / keepalive scheduler |
 | `packages/daemon/` | Per-machine Bun daemon: capture intake, four-stage outbox, Claude SDK extract, bge-small embedder subprocess, push, distributed dream, span forwarder, dashboard server |
 | `packages/core/`   | auth, logger, trace store, route + fn instrumentation, AsyncLocalStorage context |
+| `packages/embed/`  | canonical embedder identity (`BAAI/bge-small-en-v1.5`, 384-dim, mean pooling, normalize) — shared by daemon and server so vectors never drift |
 | `packages/shared/` | scrubber + cross-cutting types reachable from any package |
 | `packages/plugin/` | Claude Code plugin (hooks, slashes, MCP proxy, skill, dashboard React app) |
 | `migrations/`      | sequential SQL migrations applied by `bun run migrate` |

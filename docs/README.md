@@ -21,6 +21,7 @@
 | What's the schema? | [`data-model.md`](./data-model.md) |
 | How does the agent read memories? | [`recall.md`](./recall.md) |
 | What lands in the agent at session start? | [`surface.md`](./surface.md) |
+| How do non-Claude-Code clients (desktop/web/ChatGPT) connect? | [`oauth.md`](./oauth.md) — OAuth 2.1 remote MCP |
 
 ---
 
