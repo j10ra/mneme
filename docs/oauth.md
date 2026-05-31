@@ -64,9 +64,24 @@ OAuth tokens have `machine_id = NULL`, so `/mneme:revoke` (per-machine) can't re
 
 Access tokens reuse `_ops.api_keys` (`name = oauth:<client_id>`, `expires_at` set). All three tables live in `_ops`, where `mneme_reader` has no privilege.
 
+## What a connector client gets
+
+MCP carries **tools**, not skills — so a connector has `mneme_sql` but not the `using-mneme` skill that ships with the Claude Code plugin. Two things bridge that gap:
+
+- **`mneme_guide` tool** — returns the schema, the 3-layer recall workflow (search → walk → unfold), and query templates. The `mneme_sql` description tells clients to call it first.
+- **Server-side embedding** — `embed('text')` is normally resolved by the plugin's local daemon before the SQL reaches the server. A bare connector has no daemon, so when `MNEME_SERVER_EMBED=1` the server resolves `embed()` itself with the **same bge-small model** (`@mneme/embed`), giving connectors full semantic recall. Disabled by default; with it off, `embed()` queries are rejected and clients fall back to keyword (`ts_rank`/`websearch_to_tsquery`).
+
+### Embedder is one source of truth
+
+`@mneme/embed` owns the model id, quantization, pooling/normalize, and dim. Both the daemon (capture + plugin search) and the server (connector search) embed through it, so a stored vector and a query vector can never come from divergent models. The server's copy is **lazy** (loads on first `embed()`) and **baked into the image at build time** (`nixpacks.toml` → `build:embed-model` → `.embed-cache`, reused at runtime via `MNEME_EMBED_CACHE_DIR`), so production never downloads at runtime.
+
+Enable with `MNEME_SERVER_EMBED=1`. The quantized model is ~33 MB.
+
 ## Code
 
 - Pure helpers (PKCE verify, encoding, metadata): [`packages/server/src/lib/oauth.ts`](../packages/server/src/lib/oauth.ts)
 - DB logic (register, codes, token issuance/refresh, owner check): [`packages/server/src/services/oauth.ts`](../packages/server/src/services/oauth.ts)
 - HTTP routes + login page: [`packages/server/src/routes/oauth.ts`](../packages/server/src/routes/oauth.ts)
 - Discovery `401` challenge on `/mcp`: [`packages/core/src/auth.ts`](../packages/core/src/auth.ts)
+- Canonical embedder (daemon + server): [`packages/embed/src/index.ts`](../packages/embed/src/index.ts)
+- Server embed substitution + `mneme_guide`: [`packages/server/src/services/mcp.ts`](../packages/server/src/services/mcp.ts), [`packages/server/src/lib/embedder.ts`](../packages/server/src/lib/embedder.ts)

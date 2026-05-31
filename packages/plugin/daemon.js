@@ -1111,7 +1111,12 @@ async function clusterIdFor(memberIds) {
 import { existsSync as existsSync2 } from "fs";
 import { dirname, join as join2 } from "path";
 import { fileURLToPath } from "url";
+
+// packages/embed/src/index.ts
 var EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5";
+var QUANTIZED = process.env.MNEME_EMBED_FULL_PREC !== "1";
+
+// packages/daemon/src/embed.ts
 var PIPELINE_IDLE_MS = 60 * 1000;
 var DISPOSE_GRACE_MS = 2000;
 var child = null;
