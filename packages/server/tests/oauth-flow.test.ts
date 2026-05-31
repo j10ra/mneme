@@ -96,4 +96,40 @@ describe.skipIf(!HAS_DB)("oauth full flow (requires DATABASE_URL)", () => {
     // Wrong client_id is rejected on the fresh refresh token too.
     expect(await oauth.refreshTokenSet(refreshed!.refresh_token, "not-the-client")).toBeNull();
   }, 30_000);
+
+  test("revokeClient cuts off a client's tokens (#59 M3)", async () => {
+    const oauth = await import("../src/services/oauth.ts");
+    const { sql, sha256Hex } = await import("../src/infra/db.ts");
+
+    const reg = await oauth.registerClient({
+      client_name: "revoke-me",
+      redirect_uris: [`http://localhost:9998/cb-${crypto.randomUUID()}`],
+    });
+
+    expect(reg.ok).toBe(true);
+    if (!reg.ok) return;
+    const clientId = reg.client.client_id;
+
+    clientIds.push(clientId);
+
+    const tokens = await oauth.issueTokenSet({ clientId, scope: "read mcp" });
+    const accessHash = await sha256Hex(tokens.access_token);
+
+    // Listed as active before revoke.
+    const before = (await oauth.listClients()).find((c) => c.client_id === clientId);
+
+    expect(before?.active_tokens).toBeGreaterThanOrEqual(1);
+
+    const result = await oauth.revokeClient(clientId);
+
+    expect(result.tokens).toBeGreaterThanOrEqual(1);
+    expect(result.client).toBe(1);
+
+    // Access token row gone, client gone, refresh cascaded.
+    const keyRows = await sql`SELECT 1 FROM _ops.api_keys WHERE key_hash = ${accessHash}`;
+
+    expect(keyRows.length).toBe(0);
+    expect((await oauth.listClients()).some((c) => c.client_id === clientId)).toBe(false);
+    expect(await oauth.refreshTokenSet(tokens.refresh_token, clientId)).toBeNull();
+  }, 30_000);
 });

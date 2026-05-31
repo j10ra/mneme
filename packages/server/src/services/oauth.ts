@@ -139,6 +139,51 @@ export async function validateAuthorizeClient(
   return { ok: true, client };
 }
 
+export type ClientSummary = {
+  client_id: string;
+  client_name: string | null;
+  redirect_uris: string[];
+  created_at: string;
+  last_used_at: string | null;
+  active_tokens: number;
+};
+
+/** Registered clients + their live access-token count, for the owner to
+ *  audit and revoke. */
+export async function listClients(): Promise<ClientSummary[]> {
+  return sql<ClientSummary[]>`
+    SELECT
+      c.client_id, c.client_name, c.redirect_uris, c.created_at, c.last_used_at,
+      (
+        SELECT count(*)::int FROM _ops.api_keys k
+        WHERE k.name = ${"oauth:"} || c.client_id
+          AND k.revoked_at IS NULL
+          AND (k.expires_at IS NULL OR k.expires_at > now())
+      ) AS active_tokens
+    FROM _ops.oauth_clients c
+    ORDER BY c.created_at DESC
+  `;
+}
+
+/** Revoke a client and everything it was granted: its access tokens
+ *  (api_keys named oauth:<client_id>) plus the client row, which cascades
+ *  to its auth codes and refresh tokens (FK ON DELETE CASCADE). */
+export async function revokeClient(clientId: string): Promise<{ tokens: number; client: number }> {
+  let tokens = 0;
+  let client = 0;
+
+  await sql.begin(async (tx) => {
+    const t = await tx`DELETE FROM _ops.api_keys WHERE name = ${`oauth:${clientId}`}`;
+
+    tokens = t.count;
+    const c = await tx`DELETE FROM _ops.oauth_clients WHERE client_id = ${clientId}`;
+
+    client = c.count;
+  });
+
+  return { tokens, client };
+}
+
 // ---------------------------------------------------------------------------
 // Authorization codes (PKCE)
 // ---------------------------------------------------------------------------

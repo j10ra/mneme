@@ -34,6 +34,26 @@ describe("scrub - secret patterns", () => {
     expect(scrub(`token=${t}`)).toBe("token=[REDACTED:github_pat_classic]");
   });
 
+  test("Mneme tokens (oauth / refresh / pat / code)", () => {
+    const access = `mneme_oauth_${"A1b2C3d4-_".repeat(4)}`;
+    const refresh = `mneme_refresh_${"x".repeat(43)}`;
+    const pat = `mneme_pat_macbook_${"f".repeat(40)}`;
+    const code = `mneme_code_${"Zz09-_".repeat(8)}`;
+
+    expect(scrub(`token=${access}`)).toBe("token=[REDACTED:mneme_token]");
+    expect(scrub(refresh)).toBe("[REDACTED:mneme_token]");
+    expect(scrub(`Bearer ${pat}`)).toContain("[REDACTED:");
+    expect(scrub(code)).toBe("[REDACTED:mneme_token]");
+    // Nested in a response-body object (the /token leak path).
+    const scrubbed = scrubData({ access_token: access, refresh_token: refresh }) as Record<
+      string,
+      string
+    >;
+
+    expect(scrubbed.access_token).toBe("[REDACTED:mneme_token]");
+    expect(scrubbed.refresh_token).toBe("[REDACTED:mneme_token]");
+  });
+
   test("GitHub PAT (fine-grained)", () => {
     const t = "github_pat_" + "A".repeat(82);
 
