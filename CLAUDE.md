@@ -18,6 +18,7 @@ Greek muse of memory. Personal cross-machine memory layer for one user, three ma
 | Reason about how memories get refined | [`docs/workers/nap.md`](./docs/workers/nap.md), [`docs/workers/dream.md`](./docs/workers/dream.md), [`docs/workers/digest.md`](./docs/workers/digest.md) |
 | Read the schema or design a query | [`docs/data-model.md`](./docs/data-model.md), [`packages/plugin/skills/using-mneme/SKILL.md`](./packages/plugin/skills/using-mneme/SKILL.md) |
 | How agents read | [`docs/recall.md`](./docs/recall.md), [`docs/surface.md`](./docs/surface.md) |
+| Connect a non-Claude-Code MCP client (desktop/web/mobile, ChatGPT) | [`docs/oauth.md`](./docs/oauth.md) |
 | Code style, formatting, naming, lint enforcement | [`docs/conventions.md`](./docs/conventions.md) |
 
 ### Operations (the code is the doc)
@@ -62,6 +63,7 @@ Prefer `mneme_sql` over `psql` for any read — same scrubbing + reader role + R
 | Admin password resolution: env → encrypted config → stdin | [`packages/plugin/src/core/admin-secret.ts`](./packages/plugin/src/core/admin-secret.ts) |
 | New env var? add it to `env.ts` with zod validation | [`packages/server/src/infra/env.ts`](./packages/server/src/infra/env.ts) |
 | Daemon trusts every loopback caller (accepted risk) — never run Mneme on a shared-user box | [`docs/capture-pipeline.md`](./docs/capture-pipeline.md) (Trust boundary) |
+| OAuth-issued connector tokens must stay read-only: scope forced to `{read,mcp}` (never `capture`); never widen `scopeToArray` | [`packages/server/src/lib/oauth.ts`](./packages/server/src/lib/oauth.ts) + [`docs/oauth.md`](./docs/oauth.md) |
 
 ## Things to never do
 
