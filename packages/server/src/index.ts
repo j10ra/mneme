@@ -119,6 +119,11 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 startWorker();
 
 Logger.info(`mneme server listening on :${port}`);
+Logger.info(
+  env.SERVER_EMBED_ENABLED
+    ? "server embedding enabled — connectors can run embed() semantic search"
+    : "server embedding disabled (set MNEME_SERVER_EMBED=1 to enable connector semantic search)",
+);
 
 // 0 = no idle cutoff. /api/dream/candidates queries can run multi-second
 // and Railway's edge serves 502 if Bun closes mid-query. Client-side
