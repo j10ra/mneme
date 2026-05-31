@@ -11,7 +11,7 @@
 //
 // Spec: docs/superpowers/specs/2026-05-10-graph-view-design.md
 
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiGet } from "../lib/api.ts";
 import { GraphCanvas } from "./graph/GraphCanvas.tsx";
@@ -88,6 +88,10 @@ export function GraphPanel() {
     nodes: [],
     edges: [],
   });
+  // In-flight flags for the top loading indicator (overview + focus fetches;
+  // detail uses state.kind === "loading").
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [egoLoading, setEgoLoading] = useState(false);
   const [knownKinds, setKnownKinds] = useState<string[]>([]);
   // Detail cache: every window fetch accumulates here and is never dropped, so
   // panning back to an already-loaded region is instant (no refetch, no
@@ -98,7 +102,6 @@ export function GraphPanel() {
     edges: Map<string, GraphResponse["edges"][number]>;
   }>({ nodes: new Map(), edges: new Map() });
   const [cacheVersion, setCacheVersion] = useState(0);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -106,6 +109,7 @@ export function GraphPanel() {
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query.trim()), SEARCH_DEBOUNCE_MS);
+
     return () => clearTimeout(t);
   }, [query]);
 
@@ -116,7 +120,6 @@ export function GraphPanel() {
     setDepth(1);
     cacheRef.current = { nodes: new Map(), edges: new Map() };
     setCacheVersion((v) => v + 1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
   // Esc closes the drawer without resetting the focal — drawer is the
@@ -125,15 +128,19 @@ export function GraphPanel() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setSelectedId(null);
     };
+
     window.addEventListener("keydown", onKey);
+
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   function filterParams(): URLSearchParams {
     const p = new URLSearchParams();
+
     if (filters.repo.length) p.set("repo", filters.repo.join(","));
     if (filters.machine_id.length) p.set("machine_id", filters.machine_id.join(","));
     if (filters.kind.length) p.set("kind", filters.kind.join(","));
+
     return p;
   }
 
@@ -141,28 +148,36 @@ export function GraphPanel() {
   // Refetched only when non-time filters change (not on pan/zoom).
   useEffect(() => {
     void fetchOverview();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.repo, filters.machine_id, filters.kind]);
 
   async function fetchOverview() {
     overviewAbortRef.current?.abort();
     const ac = new AbortController();
+
     overviewAbortRef.current = ac;
+    setOverviewLoading(true);
+
     try {
       const params = filterParams();
+
       params.set("since", new Date(0).toISOString());
       params.set("top_n", "300");
       const data = await apiGet<GraphResponse>(`/graph?${params.toString()}`, {
         signal: ac.signal,
       });
+
       setOverview(data);
       setKnownKinds(() => {
         const set = new Set<string>();
+
         for (const n of data.nodes) if (n.kind) set.add(n.kind);
+
         return [...set].sort();
       });
     } catch {
       // Overview failure is non-fatal — scrubber/domain degrade gracefully.
+    } finally {
+      if (!ac.signal.aborted) setOverviewLoading(false);
     }
   }
 
@@ -171,7 +186,6 @@ export function GraphPanel() {
   // so focusing keeps the timeline behind it rather than replacing it.
   useEffect(() => {
     void fetchDetail();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters, win]);
 
   async function fetchDetail() {
@@ -179,6 +193,7 @@ export function GraphPanel() {
     if (!win) return;
     abortRef.current?.abort();
     const ac = new AbortController();
+
     abortRef.current = ac;
     setState((prev) => {
       const previous =
@@ -187,11 +202,13 @@ export function GraphPanel() {
           : prev.kind === "loading"
             ? prev.previous
             : null;
+
       return { kind: "loading", previous };
     });
 
     try {
       const params = filterParams();
+
       // Paginate detail by the visible window — zoom in loads more of what's on
       // screen rather than a global top-N. 1000 = server cap.
       params.set("since", new Date(win.minT).toISOString());
@@ -200,6 +217,7 @@ export function GraphPanel() {
       const data = await apiGet<GraphResponse>(`/graph?${params.toString()}`, {
         signal: ac.signal,
       });
+
       // Accumulate into the cache (never drop) so panning is free.
       for (const n of data.nodes) cacheRef.current.nodes.set(n.id, n);
       for (const e of data.edges)
@@ -214,6 +232,7 @@ export function GraphPanel() {
           : err instanceof Error
             ? err.message
             : String(err);
+
       setState((prev) =>
         prev.kind === "ok" || prev.kind === "stale"
           ? {
@@ -235,13 +254,23 @@ export function GraphPanel() {
     // Clear immediately so the previous focal's connections never linger while
     // the new fetch is in flight (caused stale nodes-without-edges on refocus).
     setEgoExtra({ nodes: [], edges: [] });
-    if (!focalId) return;
+
+    if (!focalId) {
+      setEgoLoading(false);
+
+      return;
+    }
+
     let cancelled = false;
+
+    setEgoLoading(true);
+
     (async () => {
       try {
         const r = await apiGet<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
           `/memories/${focalId}/neighborhood`,
         );
+
         if (cancelled) return;
         // Drop the focal itself — it's kept separately as focalNode.
         setEgoExtra({
@@ -250,8 +279,11 @@ export function GraphPanel() {
         });
       } catch {
         if (!cancelled) setEgoExtra({ nodes: [], edges: [] });
+      } finally {
+        if (!cancelled) setEgoLoading(false);
       }
     })();
+
     return () => {
       cancelled = true;
     };
@@ -280,28 +312,39 @@ export function GraphPanel() {
     const interval = setInterval(() => {
       if (Date.now() - startedAt < 1500) return;
       const fg = fgRef.current;
+
       if (!fg) return;
+
       try {
         const pos = fg.cameraPosition?.();
+
         if (!pos) return;
         const dist = Math.hypot(pos.x ?? 0, pos.y ?? 0, pos.z ?? 0);
         // Number of thresholds crossed → target depth (1 = 1 hop).
         let target = 1;
+
         for (let i = 0; i < ZOOM_THRESHOLDS.length; i++) {
           if (dist > ZOOM_THRESHOLDS[i]) target = i + 2;
         }
+
         target = Math.min(MAX_HOPS, target);
+
         // Only EXPAND — zooming back in shouldn't shrink the loaded set.
         if (target <= depth) {
           stableSince = 0;
+
           return;
         }
+
         const now = Date.now();
+
         if (target !== lastTarget) {
           lastTarget = target;
           stableSince = now;
+
           return;
         }
+
         if (stableSince > 0 && now - stableSince > 1000) {
           setDepth(target);
           stableSince = 0;
@@ -310,11 +353,13 @@ export function GraphPanel() {
         /* best-effort */
       }
     }, 400);
+
     return () => clearInterval(interval);
   }, [focalId, depth]);
 
   function handleNodeSelect(id: string | null) {
     setSelectedId(id);
+
     // Background click (id=null) also exits focus.
     if (id === null && focalId) {
       setFocalId(null);
@@ -342,6 +387,7 @@ export function GraphPanel() {
   function handleNodeRefocus(id: string) {
     const n =
       mergedNodes.find((m) => m.id === id) ?? overview?.nodes.find((m) => m.id === id) ?? null;
+
     setFocalNode(n);
     setFocalId(id);
     setDepth(1);
@@ -359,43 +405,57 @@ export function GraphPanel() {
   // freed from time by the canvas; everything else stays on the timeline.
   const mergedNodes = useMemo(() => {
     const m = new Map<string, GraphNode>(cacheRef.current.nodes);
+
     // The focal must always be in the scene (it anchors every ego edge and the
     // drawer). It may not be in the cache if it came from a prior egoExtra.
     if (focalNode && !m.has(focalNode.id)) m.set(focalNode.id, focalNode);
     for (const n of egoExtra.nodes) if (!m.has(n.id)) m.set(n.id, n);
+
     return [...m.values()];
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cacheVersion, egoExtra, focalNode]);
 
   const mergedEdges = useMemo(() => {
     const seen = new Set<string>(cacheRef.current.edges.keys());
     const out: GraphResponse["edges"] = [...cacheRef.current.edges.values()];
+
     for (const e of egoExtra.edges) {
       const k = `${e.source}|${e.target}|${e.type}`;
+
       if (!seen.has(k)) {
         seen.add(k);
         out.push(e);
       }
     }
+
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cacheVersion, egoExtra]);
 
   // Explicit focus set: the focal node + its fetched connections. Passed to
   // the canvas so the focus layout doesn't have to race-derive it from edges.
   const egoIds = useMemo<string[] | null>(() => {
     if (!focalId) return null;
+
     return [focalId, ...egoExtra.nodes.map((n) => n.id)];
   }, [focalId, egoExtra]);
 
   const selectedNode = useMemo(() => {
     if (!selectedId) return null;
+
     return (
       mergedNodes.find((n) => n.id === selectedId) ??
       overview?.nodes.find((n) => n.id === selectedId) ??
       null
     );
   }, [selectedId, mergedNodes, overview]);
+
+  // Any server fetch in flight → show the top loading indicator.
+  const detailLoading = state.kind === "loading";
+  const fetching = overviewLoading || detailLoading || egoLoading;
+  const fetchLabel = egoLoading
+    ? "loading connections…"
+    : overviewLoading
+      ? "loading graph…"
+      : "fetching nodes…";
 
   return (
     <div className="flex h-full flex-col">
@@ -423,6 +483,13 @@ export function GraphPanel() {
               <AlertTitle>Failed to load graph</AlertTitle>
               <AlertDescription>{state.error}</AlertDescription>
             </Alert>
+          </div>
+        )}
+
+        {overview && fetching && (
+          <div className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border/60 bg-card/85 px-2.5 py-1 text-[11px] text-muted-foreground backdrop-blur">
+            <Loader2 className="h-3 w-3 animate-spin text-foreground/70" />
+            <span>{fetchLabel}</span>
           </div>
         )}
 
