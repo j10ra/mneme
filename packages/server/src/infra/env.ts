@@ -23,6 +23,17 @@ const Schema = z.object({
   // sees missing/empty cases at boot.
   ADMIN_PASSWORD: z.string().min(1),
 
+  // ── OAuth (remote MCP connector auth, #59) ────────────────────────
+  // PUBLIC_URL is the canonical issuer origin advertised in OAuth
+  // discovery metadata (e.g. https://web-production-xxxx.up.railway.app).
+  // Optional: when unset the issuer is derived from the incoming request
+  // origin, which works behind Railway's proxy. Pin it when fronted by a
+  // custom domain or reachable on multiple hostnames.
+  PUBLIC_URL: z.string().url().optional(),
+  // Access-token lifetime in seconds (default 90 days). Refresh tokens
+  // let connectors renew silently, so a bounded access token is cheap.
+  OAUTH_TOKEN_TTL: z.coerce.number().int().positive().default(7_776_000),
+
   // ── OpenRouter (the only server-side LLM path) ────────────────────
   // Digest runs its two cross-cluster judgments (findSupersedes for Op2,
   // judgeClusterMerge for Op1) against OpenRouter. When OPENROUTER_API_KEY
