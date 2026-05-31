@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 const {
   rejectUnsubstitutedEmbeds,
+  substituteEmbeds,
   hasRecallMarker,
   extractUuidsFromSql,
   extractRowIds,
@@ -30,6 +31,86 @@ describe("rejectUnsubstitutedEmbeds — guard for missing daemon substitution", 
         "SELECT * FROM memories WHERE embedding <=> '[0.1,0.2,0.3]'::vector < 0.1",
       ),
     ).not.toThrow();
+  });
+});
+
+describe("substituteEmbeds — server-side embed() resolution (#59)", () => {
+  // Fake embedder: deterministic vector per text, no model needed.
+  const fake = async (texts: string[]) => texts.map((_, i) => [i + 0.1, i + 0.2]);
+
+  test("replaces each embed('text') with a pgvector literal, in order", async () => {
+    const out = await substituteEmbeds(
+      "SELECT embedding <=> embed('first'), embedding <=> embed('second') FROM memories",
+      fake,
+    );
+
+    expect(out).toBe(
+      "SELECT embedding <=> '[0.1,0.2]'::vector, embedding <=> '[1.1,1.2]'::vector FROM memories",
+    );
+  });
+
+  test("no embed() macro → SQL unchanged, embedder not called", async () => {
+    let called = false;
+
+    const spy = async (t: string[]) => {
+      called = true;
+
+      return t.map(() => [0]);
+    };
+
+    const sql = "SELECT id FROM memories WHERE archived_at IS NULL LIMIT 5";
+
+    expect(await substituteEmbeds(sql, spy)).toBe(sql);
+    expect(called).toBe(false);
+  });
+
+  test("throws if the embedder returns the wrong vector count", async () => {
+    const bad = async () => [[0.1, 0.2]];
+
+    await expect(substituteEmbeds("WHERE embed('a') AND embed('b')", bad)).rejects.toThrow(
+      /expected 2 vector/i,
+    );
+  });
+});
+
+describe("MCP tool surface — connector guide (#59)", () => {
+  test("tools/list advertises mneme_sql + mneme_guide", async () => {
+    const { handleHttp } = await import("../src/services/mcp.ts");
+    const res = (await handleHttp({ jsonrpc: "2.0", id: 1, method: "tools/list" })) as {
+      result: { tools: { name: string }[] };
+    };
+    const names = res.result.tools.map((t) => t.name);
+
+    expect(names).toContain("mneme_sql");
+    expect(names).toContain("mneme_guide");
+  });
+
+  test("mneme_sql description no longer dangles a using-mneme skill reference", async () => {
+    const { handleHttp } = await import("../src/services/mcp.ts");
+    const res = (await handleHttp({ jsonrpc: "2.0", id: 1, method: "tools/list" })) as {
+      result: { tools: { name: string; description: string }[] };
+    };
+    const sqlTool = res.result.tools.find((t) => t.name === "mneme_sql");
+
+    expect(sqlTool?.description).toContain("mneme_guide");
+    expect(sqlTool?.description).not.toContain("using-mneme skill");
+  });
+
+  test("mneme_guide returns the workflow + schema, no DB needed", async () => {
+    const { handleHttp } = await import("../src/services/mcp.ts");
+    const res = (await handleHttp({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "mneme_guide", arguments: {} },
+    })) as { result: { isError: boolean; content: { text: string }[] } };
+
+    expect(res.result.isError).toBe(false);
+    const text = res.result.content[0]!.text;
+
+    expect(text).toMatch(/3-LAYER|search.*walk.*unfold/is);
+    expect(text).toContain("memories");
+    expect(text).toContain("embed(");
   });
 });
 

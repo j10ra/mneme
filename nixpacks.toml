@@ -1,0 +1,7 @@
+# Railway build config. The default install phase runs `bun install`; this
+# build phase then bakes the bge-small embedder into the image layer
+# (#59) so the server never downloads it at runtime. The model lands in
+# /app/.embed-cache and is reused at runtime via MNEME_EMBED_CACHE_DIR.
+# Start command stays in the Procfile (`web: bun run start`).
+[phases.build]
+cmds = ["bun run build:embed-model"]

@@ -13,12 +13,12 @@
 // Exits cleanly on stdin EOF (parent closing the pipe is the
 // canonical shutdown signal; SIGTERM works too).
 
+import { EMBED_OPTIONS, MODEL_ID, QUANTIZED } from "@mneme/embed";
+
 // Defensive: anything inside transformers.js / onnxruntime that calls
 // console.log would corrupt the JSON-lines protocol on stdout. Route
 // it to stderr where the daemon picks it up as plain log text.
 console.log = console.error.bind(console);
-
-const MODEL_ID = "Xenova/bge-small-en-v1.5";
 
 type FeatureExtractionPipeline = (
   texts: string | string[],
@@ -43,7 +43,7 @@ async function getExtractor(): Promise<FeatureExtractionPipeline> {
   }
 
   extractorPromise = pipeline("feature-extraction", MODEL_ID, {
-    quantized: process.env.MNEME_EMBED_FULL_PREC !== "1",
+    quantized: QUANTIZED,
   } as never) as unknown as Promise<FeatureExtractionPipeline>;
   void extractorPromise.then(() => {
     process.stderr.write(`embed-worker: pipeline ready (${Date.now() - t0}ms)\n`);
@@ -62,7 +62,7 @@ async function handleRequest(req: {
 
   try {
     const extractor = await getExtractor();
-    const out = await extractor(texts, { pooling: "mean", normalize: true });
+    const out = await extractor(texts, EMBED_OPTIONS);
 
     return { vectors: out.tolist() as number[][] };
   } catch (err) {

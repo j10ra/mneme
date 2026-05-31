@@ -11,3 +11,5 @@ coverage/
 .superpowers/
 docs/superpowers/
 .pg.env
+# Baked embedder model (built at deploy, never committed)
+.embed-cache/

@@ -31,7 +31,7 @@ Greek muse of memory. Personal cross-machine memory layer for one user, three ma
 | Scrubber patterns | [`packages/shared/src/scrub.ts`](./packages/shared/src/scrub.ts) |
 | Traces / spans / logs | [`packages/core/src/{logger,trace-store,mneme-route,mneme-fn}.ts`](./packages/core/src/) |
 | Daemon-side trace forwarder | [`packages/daemon/src/trace-forwarder.ts`](./packages/daemon/src/trace-forwarder.ts) |
-| Swap an LLM or embedder | [`packages/daemon/src/agents/`](./packages/daemon/src/agents/) (extract, dream), [`packages/server/src/llm/`](./packages/server/src/llm/) (digest) |
+| Swap an LLM or embedder | [`packages/daemon/src/agents/`](./packages/daemon/src/agents/) (extract, dream), [`packages/server/src/llm/`](./packages/server/src/llm/) (digest). Embedder identity is canonical in [`packages/embed/src/index.ts`](./packages/embed/src/index.ts) — daemon + server share it |
 | Tune a number / interval / cap | [`packages/server/src/infra/config.ts`](./packages/server/src/infra/config.ts) |
 | Add an env var | [`packages/server/src/infra/env.ts`](./packages/server/src/infra/env.ts) |
 

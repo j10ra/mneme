@@ -1,9 +1,13 @@
 // @bun
 var __require = import.meta.require;
 
+// packages/embed/src/index.ts
+var MODEL_ID = "Xenova/bge-small-en-v1.5";
+var EMBED_OPTIONS = { pooling: "mean", normalize: true };
+var QUANTIZED = process.env.MNEME_EMBED_FULL_PREC !== "1";
+
 // packages/daemon/src/embed-worker.ts
 console.log = console.error.bind(console);
-var MODEL_ID = "Xenova/bge-small-en-v1.5";
 var extractorPromise = null;
 async function getExtractor() {
   if (extractorPromise)
@@ -17,7 +21,7 @@ async function getExtractor() {
     tfEnv.allowLocalModels = false;
   }
   extractorPromise = pipeline("feature-extraction", MODEL_ID, {
-    quantized: process.env.MNEME_EMBED_FULL_PREC !== "1"
+    quantized: QUANTIZED
   });
   extractorPromise.then(() => {
     process.stderr.write(`embed-worker: pipeline ready (${Date.now() - t0}ms)
@@ -33,7 +37,7 @@ async function handleRequest(req) {
     return { vectors: [] };
   try {
     const extractor = await getExtractor();
-    const out = await extractor(texts, { pooling: "mean", normalize: true });
+    const out = await extractor(texts, EMBED_OPTIONS);
     return { vectors: out.tolist() };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };

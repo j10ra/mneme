@@ -13,13 +13,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Logger } from "@mneme/core";
 
-// Canonical model name written into `meta.embedding_model` and used in
-// `chunk_id = sha256(content_hash + ":" + EMBEDDER_MODEL)`. The
-// Transformers.js mirror ID (`Xenova/bge-small-en-v1.5`) is an
-// implementation detail of the worker. bge-small at 384 dims is the
-// retrieval-tier MTEB sweet spot — small ONNX, low peak RAM.
-export const EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5";
-export const EMBEDDER_DIM = 384;
+// Embedder identity is the single source of truth in @mneme/embed so the
+// daemon (capture + plugin search) and the server (connector search) can
+// never drift. Re-exported for the daemon's existing call sites
+// (chunk_id hashing, meta.embedding_model).
+export { EMBEDDER_MODEL, EMBEDDER_DIM } from "@mneme/embed";
 
 // Killing idle worker reclaims RSS; cold start on next embed is ~1-2s.
 const PIPELINE_IDLE_MS = 60 * 1000;

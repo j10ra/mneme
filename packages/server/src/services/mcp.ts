@@ -4,6 +4,7 @@
 
 import { Logger, errorMessageOf, mnemeFn } from "@mneme/core";
 import { readerSql, sql } from "../infra/db.ts";
+import { embedQuery, serverEmbedEnabled } from "../lib/embedder.ts";
 import {
   RECALL_LTP_FULL,
   RECALL_LTP_PARTIAL,
@@ -56,7 +57,8 @@ const TOOL_DEF = {
     "Auto-LIMIT 50 if absent. 5s timeout, 1MB result cap. " +
     "Response carries `rows`, `total`, and the effective `limit` — " +
     "`total === limit` means more rows may exist. " +
-    "See the using-mneme skill for the schema and query templates.",
+    "Call the `mneme_guide` tool first for the schema, the 3-layer recall " +
+    "workflow (search → walk → unfold), and copy-paste query templates.",
   inputSchema: {
     type: "object",
     properties: {
@@ -64,6 +66,63 @@ const TOOL_DEF = {
     },
     required: ["query"],
   },
+};
+
+// The using-mneme skill ships only with the Claude Code plugin. Connector
+// clients (Claude desktop/web/mobile, ChatGPT, local LLMs) have just the
+// tools, so the recall workflow + schema travel as this guide tool.
+const GUIDE_NAME = "mneme_guide";
+const GUIDE_TEXT = `Mneme — cross-machine memory, queried read-only via mneme_sql.
+
+THE 3-LAYER RECALL WORKFLOW (don't fetch full rows up front):
+
+1. SEARCH — pull a light index, ranked. Semantic + keyword:
+   SELECT id, kind, repo, importance, created_at,
+          meta->>'in_cluster'    AS in_cluster,
+          meta->>'superseded_by' AS superseded_by,
+          substring(content,1,200) AS preview
+   FROM memories
+   WHERE archived_at IS NULL
+   ORDER BY (
+       0.6 * (1 - (embedding <=> embed('your query'))) +
+       0.4 * ts_rank(tsv, websearch_to_tsquery('english','your query')) +
+       0.05 * importance + 0.10 * ln(1 + recall_weight)
+     ) * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
+   DESC LIMIT 10;
+   embed('text') runs the bge-small model server-side. If a query errors
+   on embed(), this server has embedding disabled — drop the embedding
+   term and rank by ts_rank(tsv, websearch_to_tsquery('english','...')).
+
+2. WALK — follow the graph from the IDs that matter:
+   meta.in_cluster   → the cluster summary (read this before members)
+   meta.member_ids   → raw members behind a cluster summary
+   meta.related_to   → semantic neighbours
+   meta.superseded_by→ the newer memory that replaced this one
+
+3. UNFOLD — full content for the chosen few (1-5):
+   SELECT id, content, kind, importance, repo, machine_id, created_at, meta
+   FROM memories WHERE id = ANY(ARRAY['<id>']::uuid[]);
+
+SCHEMA (public, read-only, RLS hides private rows):
+  memories(id uuid, kind, content, repo, importance, recall_weight,
+           machine_id, created_at, archived_at, meta jsonb, tsv, embedding)
+    kind ∈ decision|bugfix|feature|preference|constraint|summary|cluster|note...
+    cluster rows (kind='cluster') summarize members via meta.member_ids.
+  captures(...) — raw conversation/tool events; memories are distilled from these.
+
+NOTES:
+  - SELECT only; one statement; auto LIMIT 50; 5s timeout; 1MB cap.
+  - total === limit in the response means more rows may exist.
+  - Memories age — verify live-state claims (issue/PR status, versions,
+    counts, paths) against the real source before quoting them as current.`;
+
+const MNEME_GUIDE_TOOL = {
+  name: GUIDE_NAME,
+  description:
+    "Returns Mneme's recall workflow, schema, and query templates. " +
+    "Call this once before composing mneme_sql queries — it replaces the " +
+    "using-mneme skill for clients that only have the MCP tools.",
+  inputSchema: { type: "object", properties: {} },
 };
 
 // Defense-in-depth tarpit, NOT the primary control. The real boundary
@@ -127,6 +186,39 @@ export function rejectUnsubstitutedEmbeds(sql: string): void {
         "Ensure the daemon is running (`/mneme:status`) and the plugin's mcp-proxy is current.",
     );
   }
+}
+
+/** Cheap presence check that doesn't disturb EMBED_RE's lastIndex. */
+function hasEmbedMacro(sql: string): boolean {
+  return /\bembed\s*\(\s*'/i.test(sql);
+}
+
+/** Resolve each embed('text') to a pgvector literal via embedFn (server
+ *  embedding for connector clients, #59). Texts embed in one batch;
+ *  replacements apply in match order. matchAll/replace on a global regex
+ *  don't carry lastIndex between them. */
+export async function substituteEmbeds(
+  sql: string,
+  embedFn: (texts: string[]) => Promise<number[][]>,
+): Promise<string> {
+  const texts: string[] = [];
+
+  for (const m of sql.matchAll(EMBED_RE)) {
+    texts.push(m[1]!.replace(/\\(.)/g, "$1"));
+  }
+
+  if (texts.length === 0) return sql;
+  const vectors = await embedFn(texts);
+
+  if (vectors.length !== texts.length) {
+    throw new Error(
+      `embed() substitution: expected ${texts.length} vector(s), got ${vectors.length}`,
+    );
+  }
+
+  let i = 0;
+
+  return sql.replace(EMBED_RE, () => `'[${vectors[i++]!.join(",")}]'::vector`);
 }
 
 // Columns the agent never needs back: the raw 384-dim embedding vector and
@@ -328,9 +420,21 @@ const runSql = mnemeFn(
       throw new Error(`forbidden keyword: ${m[1]}`);
     }
 
-    rejectUnsubstitutedEmbeds(single);
-    const withLimit = injectLimit(single);
-    const limit = effectiveLimit(single);
+    // Plugin callers arrive pre-substituted (daemon did it). A bare
+    // connector sends embed('text') through: resolve it server-side when
+    // enabled, else reject with the daemon-needed message.
+    let prepared = single;
+
+    if (hasEmbedMacro(single)) {
+      if (serverEmbedEnabled()) {
+        prepared = await substituteEmbeds(single, embedQuery);
+      } else {
+        rejectUnsubstitutedEmbeds(single);
+      }
+    }
+
+    const withLimit = injectLimit(prepared);
+    const limit = effectiveLimit(prepared);
 
     // Privacy enforcement is at the role level: mneme_reader has an RLS
     // policy on memories + captures of `USING (private = false)`. No GUC
@@ -391,11 +495,15 @@ export async function dispatch(req: JsonRpcRequest): Promise<JsonRpcResponse | n
       return ok(id, {});
 
     case "tools/list":
-      return ok(id, { tools: [TOOL_DEF] });
+      return ok(id, { tools: [TOOL_DEF, MNEME_GUIDE_TOOL] });
 
     case "tools/call": {
       const name = req.params?.name as string | undefined;
       const args = (req.params?.arguments ?? {}) as Record<string, unknown>;
+
+      if (name === GUIDE_NAME) {
+        return ok(id, { content: [{ type: "text", text: GUIDE_TEXT }], isError: false });
+      }
 
       if (name !== TOOL_NAME && name !== LEGACY_TOOL_NAME) {
         return err(id, ERR_METHOD_NOT_FOUND, `unknown tool: ${name}`);

@@ -34,6 +34,13 @@ const Schema = z.object({
   // let connectors renew silently, so a bounded access token is cheap.
   OAUTH_TOKEN_TTL: z.coerce.number().int().positive().default(7_776_000),
 
+  // ── Server-side embedding (connector semantic search, #59) ────────
+  // When "1", the server resolves embed('text') in /mcp itself (bge-small,
+  // baked into the image) so connector clients without the local daemon
+  // get semantic recall. Off by default — plugin callers arrive
+  // pre-substituted and never need it.
+  MNEME_SERVER_EMBED: z.enum(["0", "1"]).default("0"),
+
   // ── OpenRouter (the only server-side LLM path) ────────────────────
   // Digest runs its two cross-cluster judgments (findSupersedes for Op2,
   // judgeClusterMerge for Op1) against OpenRouter. When OPENROUTER_API_KEY
@@ -93,6 +100,7 @@ export const env = {
   IS_PRODUCTION: parsed.NODE_ENV === "production",
   // Worker toggles as bools (parsed from "0"/"1" strings)
   DIGEST_ENABLED: parsed.MNEME_DIGEST_ENABLED === "1",
+  SERVER_EMBED_ENABLED: parsed.MNEME_SERVER_EMBED === "1",
 } as const;
 
 export type Env = typeof env;

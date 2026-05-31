@@ -30,7 +30,8 @@
     "check": "biome check .",
     "lint:style": "eslint .",
     "lint:style:fix": "eslint . --fix",
-    "build:plugin-scrub": "bun build packages/shared/src/scrub.ts --outfile packages/plugin/src/core/scrub.ts --format esm --target bun --banner '// @ts-nocheck'"
+    "build:plugin-scrub": "bun build packages/shared/src/scrub.ts --outfile packages/plugin/src/core/scrub.ts --format esm --target bun --banner '// @ts-nocheck'",
+    "build:embed-model": "bun run scripts/fetch-embed-model.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
