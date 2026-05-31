@@ -44,11 +44,12 @@ jobs:
           # review posts nothing and looks like it did nothing.
           use_sticky_comment: true
           display_report: true
-          # Headless CI denies arbitrary Bash by default, so the review agent
-          # can't read the diff or post. Grant only the read-only gh/git calls
-          # the code-review plugin declares it needs (no skip-permissions).
+          # Headless CI replaces the default tool set with --allowedTools, so
+          # grant the full read-only review surface: file inspection, read-only
+          # gh/git, and the comment MCP tools. No Write/Edit, no arbitrary Bash,
+          # no skip-permissions.
           claude_args: |
-            --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(git rev-parse:*),mcp__github_inline_comment__create_inline_comment"
+            --allowedTools "Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(git diff:*),Bash(git log:*),Bash(git rev-parse:*),mcp__github_inline_comment__create_inline_comment,mcp__github_comment__update_claude_comment"
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
