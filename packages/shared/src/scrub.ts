@@ -23,6 +23,13 @@ const SECRET_PATTERNS: Pattern[] = [
     re: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
   },
   { name: "bearer_header", re: /\b[Bb]earer\s+[A-Za-z0-9_\-.=]{20,}/g },
+  // Mneme's own bearer/refresh/auth-code tokens. /token and
+  // /api/auth/register carry these in the response body, which the trace
+  // store captures verbatim — without this they'd sit in _ops.spans in
+  // plaintext. After bearer_header so "Bearer mneme_…" still redacts as a
+  // whole; this catches bare token bodies. No trailing \b: base64url
+  // payloads end in - or _ (#59).
+  { name: "mneme_token", re: /\bmneme_(?:pat|oauth|refresh|code)_[A-Za-z0-9_-]{16,}/g },
   {
     name: "ssh_private_key",
     re: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g,

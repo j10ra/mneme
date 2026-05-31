@@ -19,6 +19,7 @@ var SECRET_PATTERNS = [
     re: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g
   },
   { name: "bearer_header", re: /\b[Bb]earer\s+[A-Za-z0-9_\-.=]{20,}/g },
+  { name: "mneme_token", re: /\bmneme_(?:pat|oauth|refresh|code)_[A-Za-z0-9_-]{16,}/g },
   {
     name: "ssh_private_key",
     re: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g

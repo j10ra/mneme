@@ -15,7 +15,7 @@
 // relaxed in index.ts (everything else stays default-src 'none').
 
 import type { Context, Hono } from "hono";
-import { Logger, mnemeRoute } from "@mneme/core";
+import { Logger, mnemeRoute, requireAuth } from "@mneme/core";
 import { clientIp } from "@mneme/core/auth-throttle";
 import { authServerMetadata, protectedResourceMetadata, verifyPkceS256 } from "../lib/oauth.ts";
 import { publicOrigin } from "../lib/origin.ts";
@@ -23,8 +23,10 @@ import {
   consumeAuthCode,
   issueAuthCode,
   issueTokenSet,
+  listClients,
   refreshTokenSet,
   registerClient,
+  revokeClient,
   validateAuthorizeClient,
   verifyOwnerPassword,
 } from "../services/oauth.ts";
@@ -75,7 +77,14 @@ function redirectWith(base: string, params: Record<string, string>): string {
   return u.toString();
 }
 
-function loginPage(issuer: string, hidden: Record<string, string>, errorMsg?: string): string {
+type Consent = { clientName: string | null; redirectUri: string };
+
+function loginPage(
+  issuer: string,
+  hidden: Record<string, string>,
+  consent: Consent,
+  errorMsg?: string,
+): string {
   const fields = Object.entries(hidden)
     .map(([k, v]) => `<input type="hidden" name="${escapeAttr(k)}" value="${escapeAttr(v)}">`)
     .join("\n      ");
@@ -93,8 +102,15 @@ function loginPage(issuer: string, hidden: Record<string, string>, errorMsg?: st
     form { background: #1b1b1b; padding: 2rem; border-radius: 12px; width: 320px;
            box-shadow: 0 8px 40px rgba(0,0,0,.5); }
     h1 { font-size: 1.1rem; margin: 0 0 .25rem; }
-    p.sub { color: #999; margin: 0 0 1.25rem; font-size: .85rem; }
+    p.sub { color: #999; margin: 0 0 1rem; font-size: .85rem; }
     p.err { color: #ff6b6b; font-size: .85rem; margin: 0 0 1rem; }
+    .grant { background: #111; border: 1px solid #333; border-radius: 8px;
+             padding: .75rem .85rem; margin: 0 0 1rem; font-size: .8rem; }
+    .grant div { display: flex; justify-content: space-between; gap: 1rem; }
+    .grant div + div { margin-top: .4rem; }
+    .grant span { color: #888; }
+    .grant b { color: #eee; word-break: break-all; text-align: right; }
+    .warn { color: #e0a060; font-size: .8rem; margin: 0 0 1rem; }
     input[type=password] { width: 100%; box-sizing: border-box; padding: .6rem .7rem;
            border: 1px solid #333; border-radius: 8px; background: #111; color: #eee;
            margin-bottom: 1rem; }
@@ -105,7 +121,12 @@ function loginPage(issuer: string, hidden: Record<string, string>, errorMsg?: st
 <body>
   <form method="post" action="${escapeAttr(issuer)}/authorize">
     <h1>Connect to Mneme</h1>
-    <p class="sub">Enter the admin password to authorize read-only memory access.</p>
+    <p class="sub">This client is requesting <strong>read-only</strong> access to your memory:</p>
+    <div class="grant">
+      <div><span>Client</span><b>${escapeAttr(consent.clientName || "(unnamed client)")}</b></div>
+      <div><span>Redirects to</span><b>${escapeAttr(consent.redirectUri)}</b></div>
+    </div>
+    <p class="warn">Only continue if you started this connection. The redirect above is where your access code is sent.</p>
     ${banner}
     ${fields}
     <input type="password" name="password" placeholder="Admin password" autofocus required>
@@ -118,7 +139,10 @@ function loginPage(issuer: string, hidden: Record<string, string>, errorMsg?: st
 export function mountOAuthRoutes(app: Hono): void {
   // ── Discovery metadata (bare + /mcp-suffixed variants) ─────────────
   const authMeta = (c: Context) => {
-    c.header("Cache-Control", "public, max-age=3600");
+    // no-store: the issuer is derived per-request (PUBLIC_URL or
+    // X-Forwarded-*), so a shared cache must never serve one client's
+    // (possibly host-spoofed) metadata to another. #59 hardening.
+    c.header("Cache-Control", "no-store");
 
     return c.json(authServerMetadata(issuerOf(c)));
   };
@@ -126,7 +150,10 @@ export function mountOAuthRoutes(app: Hono): void {
   const resourceMeta = (c: Context) => {
     const issuer = issuerOf(c);
 
-    c.header("Cache-Control", "public, max-age=3600");
+    // no-store: the issuer is derived per-request (PUBLIC_URL or
+    // X-Forwarded-*), so a shared cache must never serve one client's
+    // (possibly host-spoofed) metadata to another. #59 hardening.
+    c.header("Cache-Control", "no-store");
 
     return c.json(protectedResourceMetadata(issuer, `${issuer}/mcp`));
   };
@@ -213,7 +240,12 @@ export function mountOAuthRoutes(app: Hono): void {
     if (scope) hidden.scope = scope;
     if (resource) hidden.resource = resource;
 
-    return c.html(loginPage(issuerOf(c), hidden));
+    return c.html(
+      loginPage(issuerOf(c), hidden, {
+        clientName: check.client.client_name,
+        redirectUri: redirect_uri,
+      }),
+    );
   });
 
   app.post("/authorize", mnemeRoute("oauth.authorize.submit"), async (c) => {
@@ -252,7 +284,15 @@ export function mountOAuthRoutes(app: Hono): void {
         ? `Too many attempts. Try again in ${owner.retryAfter}s.`
         : "Incorrect password.";
 
-      return c.html(loginPage(issuerOf(c), hidden, msg), owner.locked ? 429 : 401);
+      return c.html(
+        loginPage(
+          issuerOf(c),
+          hidden,
+          { clientName: check.client.client_name, redirectUri: redirect_uri },
+          msg,
+        ),
+        owner.locked ? 429 : 401,
+      );
     }
 
     const code = await issueAuthCode({
@@ -329,5 +369,24 @@ export function mountOAuthRoutes(app: Hono): void {
     Logger.warn(`oauth: unsupported grant_type ${grant}`);
 
     return oauthError(c, "unsupported_grant_type", `grant_type ${grant} not supported`);
+  });
+
+  // ── Owner management (admin-gated) ──────────────────────────────────
+  // OAuth tokens have machine_id NULL, so /api/auth/revoke (per-machine)
+  // can't reach them. These let the owner audit and cut off connectors.
+  app.get("/api/oauth/clients", mnemeRoute("oauth.clients"), requireAuth("admin"), async (c) => {
+    return c.json({ clients: await listClients() });
+  });
+
+  app.post("/api/oauth/revoke", mnemeRoute("oauth.revoke"), requireAuth("admin"), async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { client_id?: unknown } | null;
+    const clientId =
+      typeof body?.client_id === "string" && body.client_id.trim() ? body.client_id.trim() : "";
+
+    if (!clientId) return c.json({ error: "client_id required" }, 400);
+
+    const result = await revokeClient(clientId);
+
+    return c.json({ client_id: clientId, ...result });
   });
 }

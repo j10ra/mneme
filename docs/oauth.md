@@ -34,12 +34,27 @@ Mneme is one user across N machines. The OAuth resource owner is the deployment 
 | POST | `/register` | RFC 7591 Dynamic Client Registration |
 | GET/POST | `/authorize` | owner login → authorization code |
 | POST | `/token` | `authorization_code` + `refresh_token` grants |
+| GET | `/api/oauth/clients` | admin: list clients + live token counts |
+| POST | `/api/oauth/revoke` | admin: revoke a client's tokens + registration |
+
+## Revoking a connector
+
+OAuth tokens have `machine_id = NULL`, so `/mneme:revoke` (per-machine) can't reach them. The two admin-gated endpoints above (only the `ADMIN_PASSWORD` bearer satisfies them) let the owner audit and cut off any connector: `revoke` deletes the client's access tokens, its refresh tokens, and the client row (codes/refresh cascade).
 
 ## Config
 
 - `ADMIN_PASSWORD` (required, already used) — the owner login at `/authorize`.
-- `PUBLIC_URL` (optional) — canonical issuer origin in discovery metadata. Unset → derived from the request origin (works behind Railway's proxy). Pin it when fronted by a custom domain or reachable on multiple hostnames.
+- `PUBLIC_URL` (**recommended in production**) — canonical issuer origin in discovery metadata. Unset → derived from `X-Forwarded-*`. **Set it** to pin the issuer: it removes any chance of a spoofed `Host`/`X-Forwarded-Host` steering discovery to an attacker's endpoints. Metadata is served `Cache-Control: no-store` so it can't be cached/poisoned, but pinning is the real fix.
 - `OAUTH_TOKEN_TTL` (optional, default 90d) — access-token lifetime in seconds; refresh tokens renew silently.
+
+## Security posture (#59 hardening)
+
+- **Read-only twice over** — scope forced to `{read,mcp}`; the tool runs as `mneme_reader`.
+- **Consent screen** shows the requesting client name + redirect_uri before the password prompt, so the owner can spot a phishing client.
+- **Tokens never in logs** — `mneme_*` token families are redacted by the scrubber before traces reach `_ops.spans`.
+- **PKCE S256 enforced**; auth codes hashed + one-shot + 60s; refresh single-use rotation; redirect_uri exact-match.
+- Expired codes + revoked/expired refresh rows are swept by the prune worker.
+- Open item: the `/authorize` brute-force throttle keys on `X-Forwarded-For` — verify the edge sets it untamperably.
 
 ## Tables (migration `0031_oauth.sql`)
 
