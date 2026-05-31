@@ -5,7 +5,7 @@ The architecture document was split into focused, just-in-time docs. **Start at 
 Direct links to the most-asked-for sections:
 
 - The hot path · [`docs/capture-pipeline.md`](./docs/capture-pipeline.md)
-- Nap, dream, digest · [`docs/workers/`](./docs/workers/)
+- Nap, dream, digest, prune · [`docs/workers/`](./docs/workers/)
 - Schema · [`docs/data-model.md`](./docs/data-model.md)
 - Vocabulary · [`docs/concepts.md`](./docs/concepts.md)
 

@@ -32,7 +32,7 @@ This is the only legal way to re-point a member's cluster id.
 |---|---|
 | Schedule | Every 24h (`scheduleMs = 24 * 60 * 60 * 1000`) |
 | Default | **Off**. Set `MNEME_DIGEST_ENABLED=1` to opt in. |
-| Provider | Sonnet via OpenRouter (`pickDream()` with the cloud-only path) |
+| Provider | Sonnet via OpenRouter (`pickDigest()` — single cloud path, no local fallback) |
 | Scope | Per-repo (matches dream's per-repo scoping). No machine_id filter — server-side, sees the global cluster graph. **No `private` filter** (see note below). |
 | Output | `meta.superseded_by` on losing clusters (Op1) and on memory pairs (Op2); concatenated `meta.member_ids` on the winning cluster; repointed `meta.in_cluster` on absorbed members |
 | Per-cycle caps | `DIGEST_MERGE_WINDOW = 100` (clusters pulled per cycle, watermark-ordered), `DIGEST_MAX_MERGE_PAIRS = 20` (Sonnet calls for the merge pass), `DIGEST_MAX_SUPERSEDE_CANDIDATES = 200` (≈ 7 batches at `SUPERSEDE_LLM_BATCH_MAX_MEMBERS = 30`). |
@@ -57,4 +57,4 @@ Digest costs Sonnet calls per cycle on a separate quota (OpenRouter) — that wa
 
 - [`nap.md`](./nap.md), [`dream.md`](./dream.md) — the other two brain workers. Together they implement the bitemporal pattern: nothing ever gets deleted (only archived), but recall sees only the current truth.
 - [`../recall.md`](../recall.md) — `meta.superseded_by` on losing clusters gets `× 0.3` rank-down in recall, same as superseded individual memories.
-- [`/packages/server/src/llm/pick.ts`](../../packages/server/src/llm/pick.ts) — the picker digest uses to route between OpenRouter and the local fallback.
+- [`/packages/server/src/llm/pick.ts`](../../packages/server/src/llm/pick.ts) — `pickDigest()`, the single-provider picker digest uses to gate its OpenRouter calls and trip the breaker. There is no local fallback: when OpenRouter is unavailable, digest skips its LLM passes for that cycle.

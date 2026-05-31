@@ -515,3 +515,79 @@ describe("runWorkerTick", () => {
     expect(extractCalls).toBe(2);
   });
 });
+
+describe("extract batching — MAX_BATCH_SIZE + MAX_BATCH_BYTES caps", () => {
+  function recordingMocks() {
+    const calls: { count: number; bytes: number }[] = [];
+    const base = createMocks({
+      extract: async (captures: Capture[]) => {
+        calls.push({
+          count: captures.length,
+          bytes: captures.reduce((s, c) => s + c.content.length, 0),
+        });
+
+        return captures.map((c) => ({
+          content: `s:${c.content.slice(0, 12)}`,
+          kind: "note" as const,
+          importance: 0.5,
+          topics: [],
+        }));
+      },
+    });
+
+    return { ...base, calls };
+  }
+
+  test("byte cap splits a code-heavy set so no batch overruns the extract turn", async () => {
+    const outbox = createOutbox(root);
+    const mocks = recordingMocks();
+    const runtime = createRuntime({
+      outbox,
+      extract: mocks.extract,
+      embed: mocks.embed,
+      push: mocks.push,
+      shasDir: join(root, "shas"),
+    });
+
+    // 6 captures × ~30KB, same session → would coalesce into one fat
+    // batch (~180KB) without the byte cap. Each is unique so it isn't
+    // deduped by content sha.
+    for (let i = 0; i < 6; i++) {
+      await runtime.handleCapture({ ...validBody, content: `c${i}-${"x".repeat(30_000)}` });
+    }
+
+    await runtime.runWorkerTick();
+
+    // Split into multiple batches, and every batch stays under the cap.
+    expect(mocks.calls.length).toBeGreaterThanOrEqual(2);
+
+    for (const call of mocks.calls) {
+      expect(call.bytes).toBeLessThanOrEqual(120_000);
+    }
+  });
+
+  test("light captures still pack up to the count cap of 20", async () => {
+    const outbox = createOutbox(root);
+    const mocks = recordingMocks();
+    const runtime = createRuntime({
+      outbox,
+      extract: mocks.extract,
+      embed: mocks.embed,
+      push: mocks.push,
+      shasDir: join(root, "shas"),
+    });
+
+    // 25 tiny captures, same session → one batch of 20 (count cap) + 5.
+    for (let i = 0; i < 25; i++) {
+      await runtime.handleCapture({ ...validBody, content: `tiny capture ${i}` });
+    }
+
+    await runtime.runWorkerTick();
+
+    expect(mocks.calls.some((c) => c.count === 20)).toBe(true);
+
+    for (const call of mocks.calls) {
+      expect(call.count).toBeLessThanOrEqual(20);
+    }
+  });
+});

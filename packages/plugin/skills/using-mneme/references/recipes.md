@@ -49,8 +49,10 @@ ORDER BY captured_at DESC LIMIT 10;
 | `claude_assistant` | What the agent said in the session transcript. |
 | `claude_summary` | Stop / PreCompact session digests (full payload as JSON). |
 | `claude_memory` | Auto-memory writes the agent made to `~/.claude/projects/*/memory/*.md`. |
+| `pi_prompt`, `pi_assistant`, `pi_tool` | Pi harness analogs of the `claude_*` prompt/assistant/tool sources. |
 | `manual:/memory` | Explicit `/mneme:memory` slash. |
 | `manual:/api/memory` | Direct memory write (`/mneme:pin <text>`, bypasses extract). |
+| `manual` | pin / unpin / archive / supersede actuation captures. |
 
 For "what did the user say" specifically: filter `source = 'claude_hook'` AND `content NOT LIKE '{%'` to exclude tool-call JSON.
 

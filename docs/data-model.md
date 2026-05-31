@@ -68,7 +68,6 @@ erDiagram
 | Member's cluster pointer | `meta.in_cluster: "<cluster_id>"` (sticky — only digest can re-point) |
 | Bitemporal supersede | `meta.superseded_by: "<id>"` on the older memory |
 | Pinned by user | `meta.pinned: true` |
-| Source coalescing window | `meta.coalesced_from: ["<capture_id>", ...]` |
 | Cross-machine handoff slug | `meta.handoff_slug: "<kebab-case>"` — set by `/mneme:handoff` and the compact auto-capture path; consumed by `/mneme:resume <slug>` |
 | Provenance | `meta.extractor_provider`, `meta.extractor_model`, `meta.distiller_provider`, `meta.distiller_model` |
 | Nap pagination | `meta.last_napped_at: timestamptz` |

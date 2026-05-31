@@ -1,6 +1,6 @@
 # Capture pipeline
 
-The hot path: raw text from a hook becomes a fully-formed `{capture, memories[]}` bundle in Postgres. **All extract and embed work happens locally in the daemon.** The server is the dedup wall and the cross-machine fan-in point.
+The hot path: raw text from a hook becomes a fully-formed `{capture, memories[]}` bundle in Postgres. **All capture-time extract and embed work happens locally in the daemon.** The server is the dedup wall and the cross-machine fan-in point. (The one server-side embed path is recall-time query embedding for connector clients — see *Bundle vs. `/api/capture`* below.)
 
 > Reads for context: [`concepts.md`](./concepts.md).
 
@@ -137,9 +137,12 @@ The push worker runs **4-wide concurrent** `POST /api/bundle` calls against the 
 | `claude_hook` | Claude Code `UserPromptSubmit` and `PostToolUse` | (extracted by daemon) | Coalesced by `session_id` within ±5-min window |
 | `claude_summary` | Claude Code `Stop`, `PreCompact`, `SessionEnd` hooks | `summary` | Skips coalescing |
 | `claude_assistant` | Assistant turns transcribed from Claude Code's session JSONL | (extracted) | Lets Mneme see what the agent said, not just what the user prompted |
-| `claude_memory` | Claude Code `PostToolUse(Write\|Edit)` on `~/.claude/projects/*/memory/*.md` | `claude_memory` (frontmatter `type:` lands in `meta.original_type`) | Mirrors Anthropic auto-memory |
+| `claude_memory` | Claude Code `PostToolUse(Write\|Edit)` on `~/.claude/projects/*/memory/*.md` | (extracted) | Mirrors Anthropic auto-memory; the memory file is captured and extracted like any other source. `claude_memory` is the capture *source*, not a memory `kind` |
+| `pi_prompt` / `pi_assistant` / `pi_tool` | Pi harness prompt / assistant / tool events | (extracted) | Pi-harness analogs of the `claude_*` sources |
 | `manual:/memory` | `/mneme:memory <text>` slash command | (extracted) | Goes through daemon extract like any other capture |
 | `manual:/api/memory` | `POST /api/memory` (used by `/mneme:pin <text>`) | `note` | Direct memory write; bypasses extract; embeds ~2s later |
+| `manual` | `/mneme:pin\|unpin\|archive\|supersede` actuations | (n/a) | Actuation captures from slash commands |
+| `http` | `POST /api/capture` with no `source` set | (none) | Default tag for direct HTTP callers; not extracted |
 | Future: `codex_hook` / `cursor_hook` / `opencode_hook` | harness-native hooks | (extracted) | [#6](https://github.com/j10ra/mneme/issues/6) |
 
 ---
@@ -148,6 +151,8 @@ The push worker runs **4-wide concurrent** `POST /api/bundle` calls against the 
 
 - `POST /api/bundle` — the daemon's path. Bundle arrives with capture + memories already extracted and embedded; server writes both atomically.
 - `POST /api/capture` — direct HTTP path for callers without a daemon. The server scrubs and stores the capture row, but no extract/embed runs on those rows.
+
+**Where embedding runs.** Capture-time embedding is daemon-only (Stage 3). The only place the *server* embeds is recall-time query text for connector clients that have no local daemon — gated by `MNEME_SERVER_EMBED=1`, using the same canonical `@mneme/embed` model (`BAAI/bge-small-en-v1.5`, 384-dim) baked into the server image at build, so vectors never drift from the daemon's. See [`recall.md`](./recall.md) and [`oauth.md`](./oauth.md).
 
 ---
 

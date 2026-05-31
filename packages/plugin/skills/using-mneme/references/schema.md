@@ -39,7 +39,6 @@ Column types, jsonb shapes, and the source taxonomy. Load when you need to const
 | `cluster_title` | string | dream | only on `kind='cluster'` rows — short label |
 | `extractor_provider`, `extractor_model` | string | daemon extract | provenance |
 | `distiller_provider`, `distiller_model` | string | daemon dream | provenance for cluster summaries |
-| `original_type` | string | hook | for `claude_memory` source captures, the frontmatter `type:` |
 | `last_napped_at` | timestamptz | nap | drives nap's round-robin pagination — don't filter on it manually |
 
 ---
@@ -66,8 +65,11 @@ Column types, jsonb shapes, and the source taxonomy. Load when you need to const
 | `claude_summary` | Stop / PreCompact session digests (full payload as JSON) |
 | `claude_assistant` | Assistant turns transcribed from the session JSONL |
 | `claude_memory` | Hook detected an auto-memory write to `~/.claude/projects/*/memory/*.md` |
+| `pi_prompt`, `pi_assistant`, `pi_tool` | Pi harness analogs of the `claude_*` prompt/assistant/tool sources |
 | `manual:/memory` | `/mneme:memory <text>` slash |
 | `manual:/api/memory` | Direct memory write — `/mneme:pin <text>` (bypasses extract) |
+| `manual` | pin / unpin / archive / supersede actuation captures |
+| `http` | default for `/api/capture` posts that don't set a source |
 
 `source` is the *event origin*. It is **not** the same as `memories.kind`. Don't write `WHERE source = 'note'` — that's a kind, not a source.
 

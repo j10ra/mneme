@@ -1,6 +1,6 @@
 # Recall
 
-How agents read memories. **One MCP tool, `mneme_sql`, plus a skill that teaches query shapes.** Schema changes update the skill, not the MCP surface.
+How agents read memories. **One read primitive, `mneme_sql`, plus a `mneme_guide` companion tool and a skill that teach query shapes.** Schema changes update the skill and the guide, not the `mneme_sql` surface.
 
 > Reads for context: [`concepts.md`](./concepts.md), [`data-model.md`](./data-model.md).
 > The canonical skill: [`/packages/plugin/skills/using-mneme/SKILL.md`](../packages/plugin/skills/using-mneme/SKILL.md).
@@ -8,9 +8,9 @@ How agents read memories. **One MCP tool, `mneme_sql`, plus a skill that teaches
 
 ---
 
-## The MCP tool
+## The MCP tools
 
-`mneme_sql(query)` — single tool, read-only.
+`mneme_sql(query)` — the read primitive, read-only. `/mcp` also exposes `mneme_guide` (no args): it returns the schema, the 3-layer search → walk → unfold workflow, and query templates, so a connector client that never loads the using-mneme skill still has the recall playbook. The `mneme_sql` tool description tells clients to call `mneme_guide` first.
 
 ```mermaid
 sequenceDiagram
@@ -28,14 +28,17 @@ sequenceDiagram
     MCP-->>Agent: result set
 ```
 
+> **Who embeds.** For plugin/daemon callers the `embed()` macro is substituted **client-side by the daemon** before the SQL reaches the server (the diagram's embedder step happens locally). The server resolves `embed()` itself only for connector clients running with `MNEME_SERVER_EMBED=1`; with server-embed off (the default), a bare `embed()` that reaches the server is **rejected**, not run. Either way the embedder is the canonical `@mneme/embed` model, so vectors never drift.
+
 **Safety layers, in order:**
 1. Comment stripping.
 2. Single-statement check.
-3. SELECT/WITH-only regex (rejects 17+ DML/DDL keywords).
-4. `embed('text')` macro substitution (batched if multiple appear).
-5. Auto-`LIMIT 50` if absent.
-6. 5s `statement_timeout`.
-7. 1MB result cap.
+3. `SELECT`/`WITH` prefix required.
+4. `FORBIDDEN_RE` keyword deny-list (18 DML/DDL keywords: `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `VACUUM`, `REINDEX`, `REFRESH`, `COPY`, `CALL`, `DO`, `EXECUTE`, `LOCK`, `MERGE`).
+5. `embed('text')` macro handling (see *Who embeds* above).
+6. Auto-`LIMIT 50` if absent.
+7. 5s `statement_timeout`.
+8. 1MB result cap.
 
 The connection runs as `mneme_reader` (Postgres role) — `SELECT`-only on `public.*`, blocked from `_ops.*`. RLS policy `USING (private = false)` means private rows are physically unreachable through this tool. The canonical implementation lives in [`/packages/server/src/services/mcp.ts`](../packages/server/src/services/mcp.ts).
 
@@ -124,6 +127,8 @@ SELECT * FROM memories WHERE id::text = ANY(
 - **Schema changes update the skill, not the MCP surface.** Adding a column or a new `kind` value is a `SKILL.md` edit, not an MCP version bump.
 - **Full SQL power for queries we never anticipated.** Want `kind='bugfix'` count per repo per week? It's a query, not a feature request.
 - **The pattern: primitive + teach.** Same shape as Claude Code's own `grep` + `read` design — a tiny set of general primitives plus documentation that teaches the patterns, instead of a sprawling tool surface that has to grow with every use case.
+
+`mneme_guide` is the one deliberate exception, and it doesn't reintroduce the routing problem: it takes no query and returns static schema + workflow text. It exists only so connector clients (Claude desktop/web/mobile, ChatGPT) that can't load the using-mneme skill still get the playbook — not as another query path to choose between.
 
 ---
 

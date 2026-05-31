@@ -12,7 +12,7 @@ The vocabulary used everywhere else. Read this first if other docs use a term yo
 | **Memory** | A chunk of a capture with embedding, tsvector, kind, scope, importance. Cluster summaries are *also* memories — same table, `kind='cluster'`. |
 | **Bundle** | The unit of work the daemon posts to the server. Shape: `{ capture, memories[] }`. Built locally — capture is scrubbed/hashed/dedup-checked, memories are LLM-extracted, embedded, and stamped with `chunk_id` before posting. The server's `/api/bundle` is the dedup wall: `UNIQUE (content_sha256, machine_id)` makes duplicate posts harmless. |
 | **Outbox** | Daemon-local file queue at `~/.mneme/outbox/`. Captures land in `captured/`, become `observations/` after extract, become `embedded/` after embed, post to the server as bundles, and are deleted on success. Permanent failures move to `failed/` with a reason file. The directory **is** the state. |
-| **Kind** | One of `note`, `bugfix`, `feature`, `discovery`, `decision`, `preference`, `constraint`, `security_alert`, `reference`, `summary`, `cluster`, `claude_memory`. Drives recall filters and surface aggregation. |
+| **Kind** | One of `note`, `bugfix`, `feature`, `discovery`, `decision`, `preference`, `constraint`, `security_alert`, `reference`, `summary`, `cluster`. Drives recall filters and surface aggregation. (`claude_memory` is a capture *source*, not a kind — see Source.) |
 | **Scope** | The `(machine, repo, harness, agent, topics[])` tuple on every capture and memory. Repo is the cross-machine join key. |
 | **Importance** | Salience score in `[0, 1]`. Decays each nap cycle. Floors at `FLOOR=0.05` for unpinned, `PIN_FLOOR=0.5` for pinned. |
 | **Pinned** | `meta.pinned = true`. Surfaces in every session, never decays below `PIN_FLOOR`, exempt from clustering and supersede. |
@@ -26,7 +26,7 @@ The vocabulary used everywhere else. Read this first if other docs use a term yo
 | **Digest** | Server-side, every 24h, opt-in (`MNEME_DIGEST_ENABLED=1`). Cross-cluster merge (DIGEST_MERGE_DISTANCE = 0.2) + supersede. See [`workers/digest.md`](./workers/digest.md). |
 | **Surface** | Per-session injection. `/api/session/start` returns five sections of memory pointers (Pinned, Rules, Themes, Recent, Sessions); the SessionStart hook prints them as Claude Code's `additionalContext`. Never writes to user files. See [`surface.md`](./surface.md). |
 | **Recall** | Read path via the MCP `mneme_sql` tool. Hybrid score (cosine + ts_rank + importance) with rank-down for superseded. See [`recall.md`](./recall.md). |
-| **Source** | Origin tag on a capture row. Today: `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`, `manual:/memory`, `manual:/api/memory`. |
+| **Source** | Origin tag on a capture row. Claude harness: `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`. Pi harness: `pi_prompt`, `pi_assistant`, `pi_tool`. Manual: `manual:/memory`, `manual:/api/memory`, and bare `manual` (pin/unpin/archive/supersede actuations). HTTP default: `http`. |
 | **Skill** | The bundled MCP-companion (`packages/plugin/skills/using-mneme/SKILL.md`) that teaches the agent how to write `mneme_sql` queries. Loaded on demand via Anthropic's progressive-disclosure pattern. |
 
 ---
