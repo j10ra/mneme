@@ -26,9 +26,11 @@ const COMMANDS_DIR = join(PLUGIN_ROOT, "commands");
 
 export default function mnemeCommands(pi) {
   const specs = loadCommandSpecs(COMMANDS_DIR, PLUGIN_ROOT);
+
   if (!specs.length) return;
 
   const taken = new Set();
+
   try {
     for (const c of pi.getCommands?.() ?? []) taken.add(c.name);
   } catch {
@@ -37,6 +39,7 @@ export default function mnemeCommands(pi) {
 
   for (const spec of specs) {
     const name = resolveCommandName(spec.base, taken);
+
     taken.add(name);
     pi.registerCommand(name, {
       description: spec.description,

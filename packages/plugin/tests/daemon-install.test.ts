@@ -30,6 +30,7 @@ const cfg = {
 describe("buildLaunchdPlist", () => {
   test("includes the bun path, daemon entry, and KeepAlive=true", () => {
     const plist = buildLaunchdPlist(cfg);
+
     expect(plist).toContain(cfg.bunPath);
     expect(plist).toContain(`${cfg.pluginRoot}/daemon.js`);
     expect(plist).toContain("<key>KeepAlive</key>");
@@ -38,12 +39,14 @@ describe("buildLaunchdPlist", () => {
 
   test("omits CLAUDE_EXECUTABLE_PATH when no claudePath provided", () => {
     const plist = buildLaunchdPlist(cfg);
+
     expect(plist).not.toContain("CLAUDE_EXECUTABLE_PATH");
   });
 
   test("injects CLAUDE_EXECUTABLE_PATH inside EnvironmentVariables when set", () => {
     const claudePath = "/Users/jetz/.bun/bin/claude";
     const plist = buildLaunchdPlist({ ...cfg, claudePath });
+
     expect(plist).toContain("<key>CLAUDE_EXECUTABLE_PATH</key>");
     expect(plist).toContain(`<string>${claudePath}</string>`);
     // Sanity check it's inside the EnvironmentVariables dict, not floating elsewhere
@@ -51,11 +54,13 @@ describe("buildLaunchdPlist", () => {
       plist.indexOf("<key>EnvironmentVariables</key>"),
       plist.indexOf("</dict>\n</dict>"),
     );
+
     expect(envBlock).toContain("CLAUDE_EXECUTABLE_PATH");
   });
 
   test("never injects CLAUDE_CODE_OAUTH_TOKEN (credentials.json is the runtime source of truth)", () => {
     const plist = buildLaunchdPlist(cfg);
+
     expect(plist).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
   });
 });
@@ -63,6 +68,7 @@ describe("buildLaunchdPlist", () => {
 describe("buildSystemdUnit", () => {
   test("declares the right ExecStart and Restart=on-failure", () => {
     const unit = buildSystemdUnit(cfg);
+
     expect(unit).toContain(`ExecStart=${cfg.bunPath} run`);
     expect(unit).toContain("Restart=on-failure");
     expect(unit).toContain("WantedBy=default.target");
@@ -70,17 +76,20 @@ describe("buildSystemdUnit", () => {
 
   test("omits CLAUDE_EXECUTABLE_PATH when no claudePath provided", () => {
     const unit = buildSystemdUnit(cfg);
+
     expect(unit).not.toContain("CLAUDE_EXECUTABLE_PATH");
   });
 
   test("injects Environment=CLAUDE_EXECUTABLE_PATH=… when set", () => {
     const claudePath = "/home/jetz/.nvm/versions/node/v24.11.1/bin/claude";
     const unit = buildSystemdUnit({ ...cfg, claudePath });
+
     expect(unit).toContain(`Environment=CLAUDE_EXECUTABLE_PATH=${claudePath}`);
   });
 
   test("never injects CLAUDE_CODE_OAUTH_TOKEN (credentials.json is the runtime source of truth)", () => {
     const unit = buildSystemdUnit(cfg);
+
     expect(unit).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
   });
 });
@@ -88,6 +97,7 @@ describe("buildSystemdUnit", () => {
 describe("buildWindowsTaskXml", () => {
   test("includes a LogonTrigger and the bun command", () => {
     const xml = buildWindowsTaskXml(cfg);
+
     expect(xml).toContain("<LogonTrigger>");
     expect(xml).toContain("<Command>" + cfg.bunPath);
     expect(xml).toContain("<RestartOnFailure>");
@@ -117,14 +127,17 @@ describe("buildServiceConfig", () => {
 describe("startCommandsFor", () => {
   test("darwin uses launchctl load/unload", () => {
     const cmds = startCommandsFor("darwin");
+
     expect(cmds.some((c) => c.includes("launchctl load"))).toBe(true);
   });
   test("linux uses systemctl --user", () => {
     const cmds = startCommandsFor("linux");
+
     expect(cmds.every((c) => c.startsWith("systemctl --user"))).toBe(true);
   });
   test("win32 uses schtasks", () => {
     const cmds = startCommandsFor("win32");
+
     expect(cmds.some((c) => c.startsWith("schtasks /Create"))).toBe(true);
   });
 });
@@ -160,6 +173,7 @@ describe("isDaemonConfigStale", () => {
       daemonPort: 53121,
       bunPath: "/Users/jetz/.bun/bin/bun",
     });
+
     expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(stalePlist), "darwin")).toBe(true);
     expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshPlist), "darwin")).toBe(false);
   });
@@ -175,6 +189,7 @@ describe("isDaemonConfigStale", () => {
       daemonPort: 53121,
       bunPath: "/home/jetz/.bun/bin/bun",
     });
+
     expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(staleUnit), "linux")).toBe(true);
     expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshUnit), "linux")).toBe(false);
   });
@@ -186,6 +201,7 @@ describe("isDaemonConfigStale", () => {
       daemonPort: 53121,
       bunPath: "/home/jetz/.bun/bin/bun-old-version",
     });
+
     expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(unit), "linux")).toBe(false);
   });
 
@@ -200,6 +216,7 @@ describe("isDaemonConfigStale", () => {
       daemonPort: 53121,
       bunPath: "C:\\Users\\jetz\\.bun\\bin\\bun.exe",
     });
+
     expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(staleXml), "win32")).toBe(true);
     expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(freshXml), "win32")).toBe(false);
   });
@@ -218,6 +235,7 @@ describe("isDaemonConfigStale", () => {
       "</plist>",
       `  <!-- ${PLUGIN_ROOT_NEW}/daemon.js earlier ran here -->\n</plist>`,
     );
+
     expect(isDaemonConfigStale(PLUGIN_ROOT_NEW, fakeFs(polluted), "darwin")).toBe(true);
   });
 });
@@ -226,12 +244,14 @@ describe("depsSignature", () => {
   test("ignores version field changes", () => {
     const a = depsSignature('{"name":"x","version":"1.0.64","dependencies":{"hono":"4"}}');
     const b = depsSignature('{"name":"x","version":"1.0.65","dependencies":{"hono":"4"}}');
+
     expect(a).toBe(b);
   });
 
   test("differs when a dependency version changes", () => {
     const a = depsSignature('{"dependencies":{"hono":"4.12"}}');
     const b = depsSignature('{"dependencies":{"hono":"5.0"}}');
+
     expect(a).not.toBe(b);
   });
 
@@ -240,12 +260,14 @@ describe("depsSignature", () => {
     const b = depsSignature(
       '{"dependencies":{"hono":"4"},"optionalDependencies":{"sharp":"^0.32"}}',
     );
+
     expect(a).not.toBe(b);
   });
 
   test("differs when trustedDependencies changes", () => {
     const a = depsSignature('{"trustedDependencies":["sharp"]}');
     const b = depsSignature('{"trustedDependencies":["sharp","onnxruntime-node"]}');
+
     expect(a).not.toBe(b);
   });
 
@@ -253,6 +275,7 @@ describe("depsSignature", () => {
     const a = depsSignature("{this is not json");
     const b = depsSignature("{this is not json");
     const c = depsSignature("{neither is this");
+
     expect(a).toBe(b);
     expect(a).not.toBe(c);
   });
@@ -264,17 +287,20 @@ describe("pluginDepsStoreDir", () => {
     // identical — both must resolve to the same store dir.
     const a = pluginDepsStoreDir('{"version":"1.0.64","dependencies":{"hono":"4.12.18"}}');
     const b = pluginDepsStoreDir('{"version":"1.0.65","dependencies":{"hono":"4.12.18"}}');
+
     expect(a).toBe(b);
   });
 
   test("differs when dependencies differ", () => {
     const a = pluginDepsStoreDir('{"dependencies":{"hono":"4.12"}}');
     const b = pluginDepsStoreDir('{"dependencies":{"hono":"5.0"}}');
+
     expect(a).not.toBe(b);
   });
 
   test("resolves under ~/.mneme/deps", () => {
     const dir = pluginDepsStoreDir('{"dependencies":{"hono":"4"}}');
+
     expect(dir).toContain(join(".mneme", "deps"));
   });
 });
@@ -297,12 +323,14 @@ describe("isPopulatedNodeModules", () => {
 
   test("false for a dangling symlink", () => {
     const nm = join(root, "node_modules");
+
     symlinkSync(join(root, "does-not-exist"), nm);
     expect(isPopulatedNodeModules(nm, pkg)).toBe(false);
   });
 
   test("false when a declared dependency is missing", () => {
     const nm = join(root, "node_modules");
+
     mkdirSync(join(nm, "hono"), { recursive: true });
     // 'postgres' is absent — a half-finished install.
     expect(isPopulatedNodeModules(nm, pkg)).toBe(false);
@@ -310,6 +338,7 @@ describe("isPopulatedNodeModules", () => {
 
   test("true when every declared dependency is present", () => {
     const nm = join(root, "node_modules");
+
     mkdirSync(join(nm, "hono"), { recursive: true });
     mkdirSync(join(nm, "postgres"), { recursive: true });
     expect(isPopulatedNodeModules(nm, pkg)).toBe(true);
@@ -317,19 +346,23 @@ describe("isPopulatedNodeModules", () => {
 
   test("resolves through a symlink to a populated directory", () => {
     const realNm = join(root, "store", "node_modules");
+
     mkdirSync(join(realNm, "hono"), { recursive: true });
     mkdirSync(join(realNm, "postgres"), { recursive: true });
     const link = join(root, "node_modules");
+
     symlinkSync(realNm, link);
     expect(isPopulatedNodeModules(link, pkg)).toBe(true);
   });
 
   test("falls back to a non-empty check for unparseable package.json", () => {
     const nm = join(root, "node_modules");
+
     mkdirSync(join(nm, "anything"), { recursive: true });
     expect(isPopulatedNodeModules(nm, "{not json")).toBe(true);
 
     const empty = join(root, "empty");
+
     mkdirSync(empty);
     expect(isPopulatedNodeModules(empty, "{not json")).toBe(false);
   });
@@ -339,6 +372,7 @@ describe("pickFreePortDeterministic", () => {
   test("returns a port in [49152, 65535] for any machine_id", () => {
     for (let i = 0; i < 5; i++) {
       const port = pickFreePortDeterministic(crypto.randomUUID());
+
       expect(port).toBeGreaterThanOrEqual(49152);
       expect(port).toBeLessThan(65535);
     }
@@ -346,6 +380,7 @@ describe("pickFreePortDeterministic", () => {
   test("is stable for the same machine_id", () => {
     const a = pickFreePortDeterministic("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     const b = pickFreePortDeterministic("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
     expect(a).toBe(b);
   });
 });

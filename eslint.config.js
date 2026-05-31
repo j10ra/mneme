@@ -36,11 +36,13 @@ export default [
         // functions isolated by a blank line on both sides
         { blankLine: "always", prev: "*", next: "function" },
         { blankLine: "always", prev: "function", next: "*" },
-        // const/let/var group must be separated from a following multi-line block
-        // (a const followed by a single-line statement stays allowed)
-        { blankLine: "always", prev: ["const", "let", "var"], next: "multiline-block-like" },
+        // const/let/var group must be separated from whatever follows it
+        { blankLine: "always", prev: ["const", "let", "var"], next: "*" },
         // consecutive declarations may stay grouped with no gap
         { blankLine: "any", prev: ["const", "let", "var"], next: ["const", "let", "var"] },
+        // every multi-line block (if/for/while/try/switch/...) isolated by blank lines
+        { blankLine: "always", prev: "multiline-block-like", next: "*" },
+        { blankLine: "always", prev: "*", next: "multiline-block-like" },
       ],
     },
   },

@@ -13,11 +13,15 @@ export function mountDreamRoute(app: Hono, runDream: () => Promise<DreamCycleRes
   app.post("/dream/run", mnemeRoute("daemon.dream_run"), async (c) => {
     try {
       const result = await runDream();
+
       Logger.info("dream cycle (manual)", result);
+
       return c.json(result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+
       Logger.error("dream cycle (manual) failed", err);
+
       return c.json({ error: msg }, 500);
     }
   });

@@ -19,12 +19,14 @@ describe("parseCommandFile", () => {
   test("extracts description + argument-hint and strips frontmatter", () => {
     const raw = `---\ndescription: Do a thing\nargument-hint: <id>\nscope: user\n---\n\nBody $ARGUMENTS here`;
     const { description, argumentHint, body } = parseCommandFile(raw);
+
     expect(description).toBe("Do a thing");
     expect(argumentHint).toBe("<id>");
     expect(body).toBe("Body $ARGUMENTS here");
   });
   test("handles a body with no frontmatter", () => {
     const { description, body } = parseCommandFile("just a body");
+
     expect(description).toBe("");
     expect(body).toBe("just a body");
   });
@@ -36,6 +38,7 @@ describe("adaptForPi", () => {
       'bun "${CLAUDE_PLUGIN_ROOT}/scripts/slash.ts" memory then mcp__plugin_mneme_mneme__mneme_sql',
       "/abs/plugin",
     );
+
     expect(out).toContain('bun "/abs/plugin/scripts/slash.ts" memory');
     expect(out).toContain("mneme_sql");
     expect(out).not.toContain("CLAUDE_PLUGIN_ROOT");
@@ -77,6 +80,7 @@ describe("loadCommandSpecs (real commands dir)", () => {
   test("loads the shipped commands and skips setup", () => {
     expect(specs.length).toBeGreaterThan(10);
     const bases = specs.map((s) => s.base);
+
     expect(bases).toContain("memory");
     expect(bases).toContain("recall");
     for (const skip of SKIP_COMMANDS) expect(bases).not.toContain(skip);

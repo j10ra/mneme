@@ -18,8 +18,10 @@ function makeFakeFetch() {
       url,
       body: JSON.parse(init?.body ?? "{}"),
     });
+
     return new Response("{}", { status: 200 });
   }) as unknown as typeof fetch;
+
   return { calls, fakeFetch };
 }
 
@@ -41,6 +43,7 @@ describe("TraceForwarder", () => {
       token: "test-token",
       fetch: fakeFetch,
     });
+
     await fwd.flush();
     expect(calls).toHaveLength(0);
   });
@@ -52,6 +55,7 @@ describe("TraceForwarder", () => {
       token: "test-token",
       fetch: fakeFetch,
     });
+
     fwd.pushSpan({
       traceId: "t1",
       spanId: "s1-child",
@@ -84,6 +88,7 @@ describe("TraceForwarder", () => {
       token: "test-token",
       fetch: fakeFetch,
     });
+
     fwd.pushTrace({
       traceId: "t-late",
       rootSpanName: "root",
@@ -113,6 +118,7 @@ describe("TraceForwarder", () => {
       token: "test-token",
       fetch: fakeFetch,
     });
+
     fwd.pushTrace({
       traceId: "t-err",
       rootSpanName: "root",
@@ -134,6 +140,7 @@ describe("TraceForwarder", () => {
       token: "test-token",
       fetch: fakeFetch,
     });
+
     fwd.pushTrace({
       traceId: "t-net",
       rootSpanName: "root",
@@ -152,6 +159,7 @@ describe("TraceForwarder", () => {
       token: "test-token",
       fetch: fakeFetch,
     });
+
     fwd.pushLog({
       level: "info",
       message: "hello",

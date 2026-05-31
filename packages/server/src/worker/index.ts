@@ -36,6 +36,7 @@ import { register, startScheduler } from "./scheduler.ts";
 
 export function startWorker(): void {
   const jobs = ["nap", "keepalive"];
+
   if (env.DIGEST_ENABLED) jobs.splice(1, 0, "digest");
   Logger.info(`worker: starting scheduler-driven jobs (${jobs.join(", ")})`);
 

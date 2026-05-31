@@ -24,13 +24,17 @@ export function mnemeRoute(name: string): MiddlewareHandler {
     let inputObj: unknown;
     let inputSize: number | undefined;
     const method = c.req.method;
+
     if (method === "POST" || method === "PUT" || method === "PATCH") {
       const ct = c.req.header("content-type") ?? "";
+
       if (ct.includes("application/json")) {
         try {
           const cloned = c.req.raw.clone();
           const text = await cloned.text();
+
           inputSize = text.length;
+
           if (inputSize <= MAX_BODY_BYTES) {
             inputObj = JSON.parse(text);
           } else {
@@ -69,12 +73,15 @@ export function mnemeRoute(name: string): MiddlewareHandler {
       // Capture response body
       let outputObj: unknown;
       let outputSize: number | undefined;
+
       try {
         const respCt = c.res.headers.get("content-type") ?? "";
+
         if (respCt.includes("application/json")) {
           const cloned = c.res.clone();
           const text = await cloned.text();
           const summary = summarizeIO(text ? JSON.parse(text) : null);
+
           outputObj = summary.value;
           outputSize = summary.size;
         }
@@ -91,6 +98,7 @@ export function mnemeRoute(name: string): MiddlewareHandler {
       rootSpan.outputSize = outputSize;
 
       const store = getTraceStore();
+
       if (store) {
         // Push the root span FIRST so it lands in this trace's pending
         // bucket alongside any child spans. pushTrace then moves the whole

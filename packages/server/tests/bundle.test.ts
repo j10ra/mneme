@@ -15,6 +15,7 @@ describe.skipIf(!HAS_DB)("/api/bundle smoke (requires DATABASE_URL)", () => {
   test("validateBundleBody catches missing capture", async () => {
     const { validateBundleBody } = await import("../src/routes/bundle.ts");
     const result = validateBundleBody({});
+
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/capture/i);
@@ -37,6 +38,7 @@ describe.skipIf(!HAS_DB)("/api/bundle smoke (requires DATABASE_URL)", () => {
         raw_meta: {},
       },
     });
+
     expect(result.ok).toBe(false);
   });
 
@@ -70,6 +72,7 @@ describe.skipIf(!HAS_DB)("/api/bundle smoke (requires DATABASE_URL)", () => {
         },
       ],
     });
+
     expect(result.ok).toBe(true);
   });
 
@@ -109,16 +112,19 @@ describe.skipIf(!HAS_DB)("/api/bundle smoke (requires DATABASE_URL)", () => {
     };
 
     const first = await insertBundle(bundle, machineId);
+
     expect(first.capture_id).toBeDefined();
     expect(first.memory_ids).toHaveLength(1);
     expect(first.deduped[0]).toBe(false);
 
     const second = await insertBundle(bundle, machineId);
+
     expect(second.capture_id).toBe(first.capture_id);
     expect(second.deduped[0]).toBe(true);
 
     // Cleanup
     const { sql } = await import("../src/infra/db.ts");
+
     await sql`DELETE FROM memories WHERE chunk_id = ${chunkId}`;
     await sql`DELETE FROM captures WHERE content_sha256 = ${captureSha} AND machine_id = ${machineId}`;
   });

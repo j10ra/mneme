@@ -72,6 +72,7 @@ export class TraceForwarder implements TraceSink {
       clearInterval(this.timer);
       this.timer = null;
     }
+
     this.pendingSpans.clear();
     this.pendingLogs.clear();
     await this.flush();
@@ -83,15 +84,19 @@ export class TraceForwarder implements TraceSink {
 
   pushTrace(t: TraceRecord): void {
     const spans = this.pendingSpans.get(t.traceId);
+
     if (spans) {
       this.spanBuffer.push(...spans);
       this.pendingSpans.delete(t.traceId);
     }
+
     const logs = this.pendingLogs.get(t.traceId);
+
     if (logs) {
       this.logBuffer.push(...logs);
       this.pendingLogs.delete(t.traceId);
     }
+
     this.traceBuffer.push(t);
     this.markFinalized(t.traceId);
     this.maybeFlushOverflow();
@@ -101,17 +106,23 @@ export class TraceForwarder implements TraceSink {
     if (this.recentlyFinalized.has(s.traceId)) {
       this.spanBuffer.push(s);
       this.maybeFlushOverflow();
+
       return;
     }
+
     let bucket = this.pendingSpans.get(s.traceId);
+
     if (!bucket) {
       if (this.pendingSpans.size >= MAX_PENDING_TRACES) {
         const firstKey = this.pendingSpans.keys().next().value as string | undefined;
+
         if (firstKey !== undefined) this.pendingSpans.delete(firstKey);
       }
+
       bucket = [];
       this.pendingSpans.set(s.traceId, bucket);
     }
+
     if (bucket.length >= MAX_PENDING_SPANS_PER_TRACE) bucket.shift();
     bucket.push(s);
     this.maybeFlushOverflow();
@@ -121,22 +132,30 @@ export class TraceForwarder implements TraceSink {
     if (!l.traceId) {
       this.logBuffer.push(l);
       this.maybeFlushOverflow();
+
       return;
     }
+
     if (this.recentlyFinalized.has(l.traceId)) {
       this.logBuffer.push(l);
       this.maybeFlushOverflow();
+
       return;
     }
+
     let bucket = this.pendingLogs.get(l.traceId);
+
     if (!bucket) {
       if (this.pendingLogs.size >= MAX_PENDING_TRACES) {
         const firstKey = this.pendingLogs.keys().next().value as string | undefined;
+
         if (firstKey !== undefined) this.pendingLogs.delete(firstKey);
       }
+
       bucket = [];
       this.pendingLogs.set(l.traceId, bucket);
     }
+
     if (bucket.length >= MAX_PENDING_SPANS_PER_TRACE) bucket.shift();
     bucket.push(l);
     this.maybeFlushOverflow();
@@ -146,15 +165,19 @@ export class TraceForwarder implements TraceSink {
     if (this.recentlyFinalized.has(traceId)) {
       this.recentlyFinalized.delete(traceId);
     }
+
     this.recentlyFinalized.set(traceId, true);
+
     if (this.recentlyFinalized.size > RECENT_TRACE_LRU_SIZE) {
       const oldest = this.recentlyFinalized.keys().next().value as string | undefined;
+
       if (oldest !== undefined) this.recentlyFinalized.delete(oldest);
     }
   }
 
   private maybeFlushOverflow(): void {
     const total = this.traceBuffer.length + this.spanBuffer.length + this.logBuffer.length;
+
     if (total >= this.maxBatchSize) void this.flush();
   }
 
@@ -162,9 +185,11 @@ export class TraceForwarder implements TraceSink {
     const traces = this.traceBuffer.splice(0);
     const spans = this.spanBuffer.splice(0);
     const logs = this.logBuffer.splice(0);
+
     if (traces.length === 0 && spans.length === 0 && logs.length === 0) return;
 
     const body = JSON.stringify({ traces, spans, logs });
+
     try {
       const response = await this.fetchImpl(`${this.serverUrl}/api/ingest/spans`, {
         method: "POST",
@@ -174,8 +199,10 @@ export class TraceForwarder implements TraceSink {
         },
         body,
       });
+
       if (!response.ok) {
         const text = await response.text().catch(() => "");
+
         Logger.warn("trace-forwarder: server rejected batch", undefined, {
           status: response.status,
           detail: text.slice(0, 200),
@@ -195,6 +222,7 @@ export class TraceForwarder implements TraceSink {
         spans: spans.length,
         logs: logs.length,
       };
+
       if (isNetworkOfflineError(err)) {
         Logger.debug("trace-forwarder: flush skipped (offline)", {
           ...meta,

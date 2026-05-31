@@ -12,9 +12,11 @@ import type { MemoryRowData } from "./types.ts";
 
 function fmtAge(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
+
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
   if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+
   return `${Math.round(ms / 86_400_000)}d`;
 }
 
@@ -22,10 +24,12 @@ function repoShort(repo: string | null): string {
   if (!repo) return "—";
   // github.com/j10ra/mneme → j10ra/mneme
   const gh = repo.match(/^github\.com\/(.+)$/);
+
   if (gh) return gh[1]!;
   // Azure DevOps: <user>@dev.azure.com/<org>/<project>/_git/<repo>
   // → <project>/<repo> with %20 decoded.
   const az = repo.match(/dev\.azure\.com\/[^/]+\/(.+?)\/_git\/(.+)$/);
+
   if (az) {
     try {
       return `${decodeURIComponent(az[1]!)}/${decodeURIComponent(az[2]!)}`;
@@ -33,6 +37,7 @@ function repoShort(repo: string | null): string {
       return `${az[1]!}/${az[2]!}`;
     }
   }
+
   return repo;
 }
 
@@ -60,6 +65,7 @@ export function MemoryRow({
 }) {
   const kindStyles =
     (data.kind && KIND_TONE[data.kind]) ?? "border-border bg-muted/40 text-muted-foreground";
+
   return (
     <div className="rounded-md border border-border bg-card overflow-hidden">
       <button

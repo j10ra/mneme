@@ -33,14 +33,17 @@ function emit(level: Level, message: string, error?: unknown, meta?: Meta): void
 
   // Buffer to DB store (only if traceId; orphan logs go to stderr only)
   const store = getTraceStore();
+
   if (store) {
     const fullMessage = errStr ? `${message} :: ${errStr}` : message;
+
     store.pushLog({ traceId, spanId, level, message: fullMessage, ts });
   }
 
   // INFO/DEBUG → stdout, WARN/ERROR → stderr so Railway/Docker log
   // viewers colorize by severity.
   const stream = level === "warn" || level === "error" ? process.stderr : process.stdout;
+
   if (jsonMode) {
     // Meta keys are spread top-level so Railway parses them as searchable
     // attributes (e.g. `attributes.repo`, `attributes.source`) rather than
@@ -53,6 +56,7 @@ function emit(level: Level, message: string, error?: unknown, meta?: Meta): void
       spanId,
       ...(meta ?? {}),
     };
+
     if (error instanceof Error) {
       record.error = {
         name: error.name,
@@ -62,6 +66,7 @@ function emit(level: Level, message: string, error?: unknown, meta?: Meta): void
     } else if (error !== undefined) {
       record.error = errorMessageOf(error);
     }
+
     stream.write(`${JSON.stringify(record)}\n`);
   } else {
     const t = new Date(ts).toISOString().slice(11, 23);
@@ -74,7 +79,9 @@ function emit(level: Level, message: string, error?: unknown, meta?: Meta): void
             .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
             .join(" ")}`
         : "";
+
     stream.write(`${t} ${lvlPad} ${tracePart}${message}${metaPart}${errPart}\n`);
+
     // For ERROR with a real Error, print the stack on continuation lines so
     // local debugging gets the call site without flipping to JSON mode.
     if (level === "error" && error instanceof Error && error.stack) {
@@ -83,6 +90,7 @@ function emit(level: Level, message: string, error?: unknown, meta?: Meta): void
         .slice(1) // drop the duplicate "Error: message" header
         .map((l) => `    ${l.trim()}`)
         .join("\n");
+
       if (stackLines) stream.write(`${stackLines}\n`);
     }
   }

@@ -20,6 +20,7 @@ describe.skipIf(!HAS_DB)("digest (requires DATABASE_URL)", () => {
         VALUES (${captureId}, 'seed', ${`sha-${captureId}`}, 'test',
                 '00000000-0000-0000-0000-0000000e1d99', 'testhost', 'test')
       `;
+
       const insertCluster = async (id: string, meta: string) => {
         await sql`
           INSERT INTO memories (id, capture_id, chunk_id, content, content_hash,
@@ -28,10 +29,12 @@ describe.skipIf(!HAS_DB)("digest (requires DATABASE_URL)", () => {
             'test', 'cluster', '00000000-0000-0000-0000-0000000e1d99', 'test', ${sql.json(JSON.parse(meta))})
         `;
       };
+
       await insertCluster(fresh, '{"last_digested_at":"2999-01-01T00:00:00.000Z"}');
       await insertCluster(never, "{}");
 
       const window = await selectDigestClusterWindow(10_000);
+
       expect(window.indexOf(never)).toBeGreaterThanOrEqual(0);
       expect(window.indexOf(never)).toBeLessThan(window.indexOf(fresh));
     } finally {
@@ -54,6 +57,7 @@ describe.skipIf(!HAS_DB)("digest (requires DATABASE_URL)", () => {
         VALUES (${captureId}, 'seed', ${`sha-${captureId}`}, 'test',
                 '00000000-0000-0000-0000-0000000e2d99', 'testhost', 'test')
       `;
+
       const insertCluster = async (id: string, meta: Record<string, unknown>) => {
         await sql`
           INSERT INTO memories (id, capture_id, chunk_id, content, content_hash,
@@ -63,6 +67,7 @@ describe.skipIf(!HAS_DB)("digest (requires DATABASE_URL)", () => {
             ${sql.json(meta as never)})
         `;
       };
+
       await insertCluster(live, { member_ids: [] });
       await insertCluster(dead, { member_ids: [], superseded_by: live });
 
@@ -88,6 +93,7 @@ describe.skipIf(!HAS_DB)("digest (requires DATABASE_URL)", () => {
         VALUES (${captureId}, 'seed', ${`sha-${captureId}`}, 'test',
                 '00000000-0000-0000-0000-0000000e0d01', 'testhost', 'test')
       `;
+
       for (const id of [idA, idB]) {
         await sql`
           INSERT INTO memories (id, capture_id, chunk_id, content, content_hash,
@@ -102,6 +108,7 @@ describe.skipIf(!HAS_DB)("digest (requires DATABASE_URL)", () => {
       const rows = await sql<{ stamped: string | null }[]>`
         SELECT meta->>'last_digested_at' AS stamped FROM memories WHERE id = ANY(${[idA, idB]})
       `;
+
       expect(rows).toHaveLength(2);
       for (const r of rows) expect(r.stamped).not.toBeNull();
     } finally {
@@ -119,6 +126,7 @@ describe("dedupePairs", () => {
       { a_id: "y", b_id: "x" },
       { a_id: "x", b_id: "z" },
     ]);
+
     expect(out).toEqual([
       { a_id: "x", b_id: "y" },
       { a_id: "x", b_id: "z" },
@@ -127,6 +135,7 @@ describe("dedupePairs", () => {
 
   test("returns empty for empty input", async () => {
     const { dedupePairs } = await import("../src/worker/digest.ts");
+
     expect(dedupePairs([])).toEqual([]);
   });
 });

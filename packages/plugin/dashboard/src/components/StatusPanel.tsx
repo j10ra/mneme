@@ -76,6 +76,7 @@ function fmtAge(ms: number | null): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
   if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+
   return `${Math.round(ms / 86_400_000)}d`;
 }
 
@@ -86,6 +87,7 @@ function fmtDuration(ms: number): string {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
   if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+
   return `${Math.round(ms / 86_400_000)}d`;
 }
 
@@ -102,11 +104,13 @@ export function StatusPanel() {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }
+
       try {
         const [data, schedule] = await Promise.all([
           apiGet<StatusResponse>("/status"),
           apiGet<DaemonSchedule>("/daemon-schedule").catch(() => null as DaemonSchedule | null),
         ]);
+
         if (cancelled) return;
         setState({ kind: "ok", data, schedule, fetchedAt: Date.now() });
       } catch (err) {
@@ -117,6 +121,7 @@ export function StatusPanel() {
             : err instanceof Error
               ? err.message
               : String(err);
+
         setState((prev) =>
           prev.kind === "ok" || prev.kind === "stale"
             ? {
@@ -141,9 +146,11 @@ export function StatusPanel() {
         void tick();
       }
     };
+
     document.addEventListener("visibilitychange", onVisibility);
 
     void tick();
+
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
@@ -191,6 +198,7 @@ export function StatusPanel() {
 
 function BreakerSummary({ breakers }: { breakers: Record<string, BreakerState> }) {
   const open = Object.entries(breakers).filter(([, b]) => b.open);
+
   if (open.length === 0) {
     return (
       <Badge variant="success">
@@ -199,6 +207,7 @@ function BreakerSummary({ breakers }: { breakers: Record<string, BreakerState> }
       </Badge>
     );
   }
+
   return (
     <Badge variant="destructive">
       <CircleAlert className="h-3 w-3" />
@@ -217,6 +226,7 @@ function StatusContent({
   const napRow = data.workers.find((w) => w.name === "nap");
   const digestRow = data.workers.find((w) => w.name === "digest");
   const otherWorkers = data.workers.filter((w) => w.name !== "nap" && w.name !== "digest");
+
   return (
     <>
       <SectionHeading>Brain</SectionHeading>
@@ -260,6 +270,7 @@ function StatusContent({
 function WorkerRowItem({ w }: { w: WorkerRow }) {
   const status = w.last_status ?? "ok";
   const forceable = w.name === "nap" || w.name === "digest";
+
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
       <div className="flex min-w-0 items-center gap-3">
@@ -307,6 +318,7 @@ function DreamRowItem({
   const nextInMs = schedule?.dream
     ? Math.max(0, new Date(schedule.dream.next_run_at).getTime() - Date.now())
     : null;
+
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
       <div className="flex min-w-0 items-center gap-3">
@@ -356,9 +368,11 @@ function ForceButton({
   const lastRunMs = lastRunAt ? new Date(lastRunAt).getTime() : 0;
   const localPending = clickedAt !== null && lastRunMs < clickedAt;
   const pending = serverPending || localPending;
+
   const onClick = async () => {
     setErrored(false);
     setClickedAt(Date.now());
+
     try {
       await apiPost(`/worker/${worker}/run`);
     } catch (err) {
@@ -367,7 +381,9 @@ function ForceButton({
       setClickedAt(null);
     }
   };
+
   const label = errored ? "failed" : pending ? "running" : "run now";
+
   return (
     <Button
       size="xs"

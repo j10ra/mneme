@@ -32,6 +32,7 @@ describe("isNetworkOfflineError", () => {
       message: "fetch failed",
       cause: { code: "ECONNREFUSED", message: "connect ECONNREFUSED" },
     };
+
     expect(isNetworkOfflineError(wrapped)).toBe(true);
   });
 

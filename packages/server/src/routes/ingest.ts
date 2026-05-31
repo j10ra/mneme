@@ -8,7 +8,7 @@
 // `content` — so credentials embedded in `repo` (e.g. `user:token@host`
 // in a git remote URL) don't leak.
 
-import { Hono, type MiddlewareHandler } from "hono";
+import type { Hono, MiddlewareHandler } from "hono";
 import {
   Logger,
   currentAuth,
@@ -31,10 +31,12 @@ const silentTrace: MiddlewareHandler = async (c, next) => {
     source: c.req.header("x-mneme-source") ?? "http",
     spanStack: [],
   };
+
   await storage.run(ctx, async () => {
     await next();
   });
 };
+
 import { sql, sha256Hex } from "../infra/db.ts";
 import { EMBEDDER_DIM } from "../infra/config.ts";
 import { actuateRawMeta } from "../lib/actuate.ts";
@@ -128,6 +130,7 @@ export function mountIngestRoutes(app: Hono): void {
   // ---------------------------------------------------------------------------
   app.post("/api/capture", mnemeRoute("api.capture"), requireAuth("capture"), async (c) => {
     const body = (await c.req.json().catch(() => null)) as CaptureBody | null;
+
     if (!body) return c.json({ error: "invalid_json" }, 400);
 
     // machine_id comes from the auth token (server-stamped, can't be spoofed).
@@ -138,11 +141,13 @@ export function mountIngestRoutes(app: Hono): void {
       auth?.machineId ?? (typeof body.machine_id === "string" ? body.machine_id : "");
 
     const required = ["content", "source", "hostname", "harness"] as const;
+
     for (const field of required) {
       if (!body[field] || typeof body[field] !== "string") {
         return c.json({ error: `${field} required` }, 400);
       }
     }
+
     if (!machineId) return c.json({ error: "machine_id required" }, 400);
 
     const cleaned = scrub(body.content);
@@ -172,6 +177,7 @@ export function mountIngestRoutes(app: Hono): void {
 
     let id: string;
     let deduped: boolean;
+
     if (inserted[0]) {
       id = inserted[0].id;
       deduped = false;
@@ -190,6 +196,7 @@ export function mountIngestRoutes(app: Hono): void {
           WHERE content_sha256 = ${hash} AND machine_id = ${machineId}
           LIMIT 1
         `;
+
       if (!existing[0]) return c.json({ error: "insert_failed" }, 500);
       id = existing[0].id;
       deduped = true;
@@ -219,15 +226,20 @@ export function mountIngestRoutes(app: Hono): void {
   // ---------------------------------------------------------------------------
   app.post("/api/memory", mnemeRoute("api.memory"), requireAuth("capture"), async (c) => {
     const body = (await c.req.json()) as MemoryBody;
+
     if (!body.content || typeof body.content !== "string") {
       return c.json({ error: "content required" }, 400);
     }
+
     if (!body.hostname) return c.json({ error: "hostname required" }, 400);
     if (!body.harness) return c.json({ error: "harness required" }, 400);
+
     if (!body.embedding_model || typeof body.embedding_model !== "string") {
       return c.json({ error: "embedding_model required" }, 400);
     }
+
     const embeddingModel = scrub(body.embedding_model).trim();
+
     if (!embeddingModel) {
       return c.json({ error: "embedding_model empty after scrub" }, 400);
     }
@@ -235,9 +247,11 @@ export function mountIngestRoutes(app: Hono): void {
     const auth = currentAuth();
     const machineId =
       auth?.machineId ?? (typeof body.machine_id === "string" ? body.machine_id : "");
+
     if (!machineId) return c.json({ error: "machine_id required" }, 400);
 
     const cleaned = scrub(body.content).trim();
+
     if (!cleaned) return c.json({ error: "content empty after scrub" }, 400);
 
     const kind = body.kind && (KINDS as readonly string[]).includes(body.kind) ? body.kind : "note";
@@ -258,6 +272,7 @@ export function mountIngestRoutes(app: Hono): void {
         ? scrub(body.handoff_slug).trim()
         : null;
     const meta: Record<string, unknown> = { pinned, source_slash: true };
+
     if (handoffSlug) meta.handoff_slug = handoffSlug;
 
     // Optional pre-computed vector from the caller's local daemon. When
@@ -265,6 +280,7 @@ export function mountIngestRoutes(app: Hono): void {
     // of waiting on an eventual re-embed. Validate shape strictly so a
     // bad payload can't corrupt the vector column.
     let vectorLiteral: string | null = null;
+
     if (body.embedding !== undefined) {
       if (!Array.isArray(body.embedding) || body.embedding.length !== EMBEDDER_DIM) {
         return c.json(
@@ -272,11 +288,13 @@ export function mountIngestRoutes(app: Hono): void {
           400,
         );
       }
+
       for (const v of body.embedding) {
         if (typeof v !== "number" || !Number.isFinite(v)) {
           return c.json({ error: "embedding contains non-finite values" }, 400);
         }
       }
+
       vectorLiteral = `[${body.embedding.join(",")}]`;
     }
 
@@ -325,6 +343,7 @@ export function mountIngestRoutes(app: Hono): void {
         `;
       const memId = memRows[0]!.id;
       const created = memRows[0]!.created;
+
       // Callers (slash.ts, hook.ts) pre-compute the embedding via the
       // local daemon's /embed endpoint when possible, so direct-write
       // rows land semantically searchable. If the daemon was unreachable
@@ -342,6 +361,7 @@ export function mountIngestRoutes(app: Hono): void {
       repo: cleanedRepo ?? "-",
       chars: cleaned.length,
     });
+
     return c.json({ id: result.id, created: result.created, pinned });
   });
 
@@ -356,10 +376,13 @@ export function mountIngestRoutes(app: Hono): void {
   // ---------------------------------------------------------------------------
   app.post("/api/ingest/spans", silentTrace, requireAuth("capture"), async (c) => {
     const auth = currentAuth();
+
     if (!auth?.machineId) {
       return c.json({ error: "ingest/spans requires per-machine token" }, 400);
     }
+
     const body = (await c.req.json().catch(() => null)) as IngestSpansBody | null;
+
     if (!body) return c.json({ error: "invalid_json" }, 400);
 
     const traces = Array.isArray(body.traces) ? body.traces : [];
@@ -396,6 +419,7 @@ export function mountIngestRoutes(app: Hono): void {
               ON CONFLICT (trace_id) DO NOTHING
             `;
         }
+
         if (spans.length > 0) {
           await tx`
               INSERT INTO _ops.spans ${tx(
@@ -408,6 +432,7 @@ export function mountIngestRoutes(app: Hono): void {
                     s.output === undefined || s.output === null
                       ? null
                       : tx.json(scrubData(s.output) as never);
+
                   return {
                     span_id: s.spanId,
                     trace_id: s.traceId,
@@ -426,6 +451,7 @@ export function mountIngestRoutes(app: Hono): void {
               ON CONFLICT (span_id) DO NOTHING
             `;
         }
+
         if (logs.length > 0) {
           await tx`
               INSERT INTO _ops.logs ${tx(
@@ -442,6 +468,7 @@ export function mountIngestRoutes(app: Hono): void {
       });
     } catch (err) {
       Logger.warn(`ingest/spans failed: ${err instanceof Error ? err.message : String(err)}`);
+
       return c.json({ error: "ingest_failed" }, 500);
     }
 

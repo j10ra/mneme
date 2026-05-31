@@ -22,6 +22,7 @@ export const FALLBACK_COLOR = "#94a3b8";
 
 export function colorForNode(n: GraphNode): string {
   if (n.kind && KIND_COLOR[n.kind]) return KIND_COLOR[n.kind]!;
+
   return FALLBACK_COLOR;
 }
 

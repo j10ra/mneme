@@ -54,6 +54,7 @@ const jsResult = await Bun.build({
     ),
   },
 });
+
 if (!jsResult.success) {
   for (const log of jsResult.logs) console.error(log);
   throw new Error("dashboard: JS bundle failed");
@@ -67,6 +68,7 @@ const cssProc = Bun.spawn(
   { cwd: HERE, stdout: "inherit", stderr: "inherit" },
 );
 const cssExit = await cssProc.exited;
+
 if (cssExit !== 0) {
   throw new Error(`dashboard: Tailwind build failed (exit ${cssExit})`);
 }
@@ -81,10 +83,13 @@ await Bun.write(join(DIST, "index.html"), html);
 let entryBytes = 0;
 let chunkBytes = 0;
 let chunkCount = 0;
+
 for (const f of readdirSync(TMP)) {
   if (!f.endsWith(".js")) continue;
   const bytes = await Bun.file(join(TMP, f)).bytes();
+
   await Bun.write(join(DIST, f), bytes);
+
   if (f === "bundle.js") {
     entryBytes = bytes.byteLength;
   } else {
@@ -97,6 +102,7 @@ for (const f of readdirSync(TMP)) {
 rmSync(TMP, { recursive: true, force: true });
 
 const htmlBytes = (await Bun.file(join(DIST, "index.html")).bytes()).byteLength;
+
 console.log(
   `✓ dashboard built — index.html ${(htmlBytes / 1024).toFixed(1)}KB, ` +
     `bundle.js ${(entryBytes / 1024).toFixed(1)}KB` +

@@ -76,6 +76,7 @@ function fmtField(v: unknown): string {
   if (v == null) return "—";
   if (Array.isArray(v)) return v.length ? v.join(", ") : "—";
   if (typeof v === "object") return JSON.stringify(v);
+
   return String(v);
 }
 
@@ -84,6 +85,7 @@ function FieldsTab({ id }: { id: string }) {
     () => apiGet<{ memory: Record<string, unknown> }>(`/memories/${id}`),
     [id],
   );
+
   if (loading) return <Pending>Loading row…</Pending>;
   if (error) return <Failed message={error} />;
   if (!data) return null;
@@ -93,6 +95,7 @@ function FieldsTab({ id }: { id: string }) {
     ...Object.keys(row).filter((k) => k !== "content" && k !== "meta" && !FIELD_ORDER.includes(k)),
   ];
   const meta = row.meta;
+
   return (
     <div className="space-y-3 text-[12px]">
       {typeof row.content === "string" && (
@@ -193,8 +196,10 @@ function useLazy<T>(
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
   useEffect(() => {
     let cancelled = false;
+
     setLoading(true);
     setError(null);
     fetcher()
@@ -209,16 +214,18 @@ function useLazy<T>(
             : e instanceof Error
               ? e.message
               : String(e);
+
         setError(msg);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
+
   return { data, error, loading };
 }
 
@@ -242,6 +249,7 @@ function RelatedTab({ id }: { id: string }) {
       ),
     [id],
   );
+
   if (loading) return <Pending>Loading connections…</Pending>;
   if (error) return <Failed message={error} />;
   if (!data) return null;
@@ -257,18 +265,22 @@ function RelatedTab({ id }: { id: string }) {
     related: new Set(),
     supersede: new Set(),
   };
+
   // Collect the connected node on the far side of each edge (cluster edges run
   // member→theme, so sibling edges contribute both the sibling and the theme).
   for (const e of data.edges) {
     for (const end of [e.source, e.target]) {
       if (end === id || seen[e.type].has(end)) continue;
       const n = byId.get(end);
+
       if (!n) continue;
       seen[e.type].add(end);
       groups[e.type].push(n);
     }
   }
+
   const total = REL_ORDER.reduce((s, t) => s + groups[t].length, 0);
+
   if (total === 0) return <Empty>No graph connections (cluster, related, or supersede).</Empty>;
 
   return (
@@ -308,10 +320,12 @@ function ChainTab({ id }: { id: string }) {
     () => apiGet<{ parents: ChainRow[]; children: ChainRow[] }>(`/memories/${id}/supersede-chain`),
     [id],
   );
+
   if (loading) return <Pending>Walking supersede chain…</Pending>;
   if (error) return <Failed message={error} />;
   if (!data?.parents.length && !data?.children.length)
     return <Empty>This memory is not in any supersede chain.</Empty>;
+
   return (
     <div className="space-y-3 text-[12px]">
       {data.parents.length > 0 && (
@@ -358,6 +372,7 @@ function CaptureTab({ data }: { data: MemoryRowData }) {
     error,
     loading,
   } = useLazy(() => apiGet<{ capture: CaptureBody }>(`/memories/${data.id}/capture`), [data.id]);
+
   return (
     <div className="space-y-3 text-[12px]">
       {data.cluster_id && (
@@ -393,7 +408,9 @@ function CaptureTab({ data }: { data: MemoryRowData }) {
 // parses, else show it as-is (prompts/assistant text are plain).
 function prettyJson(s: string): string {
   const t = s.trim();
+
   if (!(t.startsWith("{") || t.startsWith("["))) return s;
+
   try {
     return JSON.stringify(JSON.parse(t), null, 2);
   } catch {

@@ -35,7 +35,7 @@
     },
     "packages/plugin": {
       "name": "@mneme/plugin",
-      "version": "1.1.93",
+      "version": "1.1.95",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.132",
         "@xenova/transformers": "^2.17.2",

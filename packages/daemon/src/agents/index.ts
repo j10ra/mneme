@@ -11,9 +11,11 @@ const REGISTRY: Record<string, AgentProvider> = {
 
 export function pickAgent(name: string): AgentProvider {
   const provider = REGISTRY[name];
+
   if (!provider) {
     throw new Error(`unknown agent provider: "${name}". Available: ${listAgents().join(", ")}`);
   }
+
   return provider;
 }
 

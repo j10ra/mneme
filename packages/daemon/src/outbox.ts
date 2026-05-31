@@ -52,6 +52,7 @@ async function atomicWrite(path: string, data: unknown): Promise<void> {
   const dir = path.substring(0, path.lastIndexOf("/"));
   const name = path.substring(path.lastIndexOf("/") + 1);
   const tmp = join(dir, `.${name}.tmp`);
+
   await writeFile(tmp, JSON.stringify(data));
   await rename(tmp, path);
 }
@@ -63,7 +64,9 @@ export function createOutbox(rootPath: string): Outbox {
     for (const { from, to } of LEGACY_MOVES) {
       const oldDir = join(rootPath, from);
       const newDir = join(rootPath, to);
+
       if (!existsSync(oldDir)) continue;
+
       // If the new dir doesn't exist yet, do a directory-level rename —
       // O(1) regardless of file count. If it exists (mid-migration crash
       // or already-migrated install), move file-by-file.
@@ -71,9 +74,11 @@ export function createOutbox(rootPath: string): Outbox {
         await rename(oldDir, newDir);
       } else {
         const entries = await readdir(oldDir);
+
         for (const f of entries) {
           await rename(join(oldDir, f), join(newDir, f));
         }
+
         await rm(oldDir, { recursive: true, force: true });
       }
     }
@@ -82,9 +87,11 @@ export function createOutbox(rootPath: string): Outbox {
   async function ensureDirs(): Promise<void> {
     if (initialized) return;
     await migrateLegacy();
+
     for (const state of STATES) {
       await mkdir(join(rootPath, state), { recursive: true });
     }
+
     initialized = true;
   }
 
@@ -99,6 +106,7 @@ export function createOutbox(rootPath: string): Outbox {
     async list(state) {
       await ensureDirs();
       const entries = await readdir(join(rootPath, state));
+
       return entries
         .filter((f) => !f.startsWith(".") && f.endsWith(".json"))
         .map((f) => f.slice(0, -".json".length));
@@ -106,6 +114,7 @@ export function createOutbox(rootPath: string): Outbox {
 
     async read(id, state) {
       const buf = await readFile(fileFor(rootPath, state, id), "utf8");
+
       return JSON.parse(buf);
     },
 
@@ -114,6 +123,7 @@ export function createOutbox(rootPath: string): Outbox {
       // Source-file existence check: rename() will fail with ENOENT if
       // the source is missing, but we surface a clearer error early.
       const src = fileFor(rootPath, from, id);
+
       await readFile(src);
 
       // Write the enriched content into the destination state via the
@@ -133,6 +143,7 @@ export function createOutbox(rootPath: string): Outbox {
       await ensureDirs();
       const src = fileFor(rootPath, from, id);
       const data = JSON.parse(await readFile(src, "utf8"));
+
       await atomicWrite(fileFor(rootPath, "failed", id), data);
       await writeFile(join(rootPath, "failed", `${id}.error.txt`), reason);
       await rm(src);
@@ -142,10 +153,12 @@ export function createOutbox(rootPath: string): Outbox {
       await ensureDirs();
       const ids = await this.list("failed");
       let moved = 0;
+
       for (const id of ids) {
         try {
           const data = await this.read(id, "failed");
           const target = inferOriginStage(data);
+
           await atomicWrite(fileFor(rootPath, target, id), data);
           await rm(fileFor(rootPath, "failed", id), { force: true });
           await rm(join(rootPath, "failed", `${id}.error.txt`), {
@@ -156,6 +169,7 @@ export function createOutbox(rootPath: string): Outbox {
           // Leave it — don't lose the file if shape is unreadable.
         }
       }
+
       return moved;
     },
   };
@@ -164,13 +178,16 @@ export function createOutbox(rootPath: string): Outbox {
 function inferOriginStage(data: unknown): "captured" | "observations" | "embedded" {
   if (data && typeof data === "object" && "capture" in data) {
     const memories = (data as { memories?: unknown[] }).memories;
+
     if (
       Array.isArray(memories) &&
       memories.some((m) => m && typeof m === "object" && "embedding" in (m as object))
     ) {
       return "embedded";
     }
+
     return "observations";
   }
+
   return "captured";
 }

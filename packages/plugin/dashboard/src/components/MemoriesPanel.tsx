@@ -68,24 +68,26 @@ export function MemoriesPanel() {
   // Debounce search input.
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query.trim()), SEARCH_DEBOUNCE_MS);
+
     return () => clearTimeout(t);
   }, [query]);
 
   // Load initial page on filter / query change.
   useEffect(() => {
     void fetchPage(0, /* append */ false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters, debouncedQuery]);
 
   async function fetchPage(offset: number, append: boolean) {
     abortRef.current?.abort();
     const ac = new AbortController();
+
     abortRef.current = ac;
     if (append) setLoadingMore(true);
     else setState({ kind: "loading" });
 
     try {
       const params = new URLSearchParams();
+
       params.set("limit", String(PAGE_SIZE));
       params.set("offset", String(offset));
       if (filters.since) params.set("since", filters.since);
@@ -101,6 +103,7 @@ export function MemoriesPanel() {
         signal: ac.signal,
       });
       const got = data.memories.length;
+
       setHasMore(got >= PAGE_SIZE);
       // Union into the sticky facet sets so chips persist across filter
       // changes. Functional updaters keep this race-safe with overlapping
@@ -108,36 +111,43 @@ export function MemoriesPanel() {
       setKnownKinds((prev) => {
         let changed = false;
         const next = new Set(prev);
+
         for (const m of data.memories) {
           if (m.kind && !next.has(m.kind)) {
             next.add(m.kind);
             changed = true;
           }
         }
+
         return changed ? next : prev;
       });
       setKnownRepos((prev) => {
         let changed = false;
         const next = new Set(prev);
+
         for (const m of data.memories) {
           if (m.repo && !next.has(m.repo)) {
             next.add(m.repo);
             changed = true;
           }
         }
+
         return changed ? next : prev;
       });
       setKnownMachines((prev) => {
         let changed = false;
         const next = new Map(prev);
+
         for (const m of data.memories) {
           if (!m.machine_id) continue;
           const label = m.machine_name ?? m.machine_id.slice(0, 8);
+
           if (next.get(m.machine_id) !== label) {
             next.set(m.machine_id, label);
             changed = true;
           }
         }
+
         return changed ? next : prev;
       });
       setState((prev) => {
@@ -145,6 +155,7 @@ export function MemoriesPanel() {
           append && prev.kind !== "loading" && prev.kind !== "error"
             ? prev.entries.concat(data.memories)
             : data.memories;
+
         return {
           kind: "ok",
           entries: merged,
@@ -160,6 +171,7 @@ export function MemoriesPanel() {
           : err instanceof Error
             ? err.message
             : String(err);
+
       setState((prev) =>
         prev.kind === "ok" || prev.kind === "stale"
           ? {
@@ -180,6 +192,7 @@ export function MemoriesPanel() {
   useEffect(() => {
     if (state.kind !== "ok" || !hasMore) return;
     const el = sentinelRef.current;
+
     if (!el) return;
     const obs = new IntersectionObserver(
       (entries) => {
@@ -189,16 +202,19 @@ export function MemoriesPanel() {
       },
       { root: scrollRef.current, rootMargin: "200px" },
     );
+
     obs.observe(el);
+
     return () => obs.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, hasMore, loadingMore]);
 
   function toggleExpand(id: string) {
     setExpandedIds((prev) => {
       const next = new Set(prev);
+
       if (next.has(id)) next.delete(id);
       else next.add(id);
+
       return next;
     });
   }
@@ -209,12 +225,15 @@ export function MemoriesPanel() {
   const grouped = useMemo(() => {
     if (!groupByCluster) return null;
     const map = new Map<string | null, MemoryRowData[]>();
+
     for (const m of entries) {
       const key = m.cluster_id ?? null;
       const arr = map.get(key) ?? [];
+
       arr.push(m);
       map.set(key, arr);
     }
+
     return [...map.entries()];
   }, [entries, groupByCluster]);
 
@@ -362,10 +381,13 @@ function ClusterGrouped({
   const toggle = (key: string) => () =>
     setCollapsed((prev) => {
       const next = new Set(prev);
+
       if (next.has(key)) next.delete(key);
       else next.add(key);
+
       return next;
     });
+
   return (
     <div className="space-y-3">
       {grouped.map(([cid, members]) => {

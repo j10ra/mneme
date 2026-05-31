@@ -24,6 +24,7 @@ const queries = [
 ];
 
 const databaseUrl = process.env.DATABASE_URL;
+
 if (!databaseUrl) {
   console.error("DATABASE_URL required");
   process.exit(1);
@@ -34,6 +35,7 @@ const sql = postgres(databaseUrl, { max: 2, connect_timeout: 10 });
 console.error(`loading ${MODEL_ID} ...`);
 const tLoad = Date.now();
 const { pipeline, env: tfEnv } = await import("@xenova/transformers");
+
 tfEnv.useBrowserCache = false;
 tfEnv.allowLocalModels = false;
 const extractor = (await pipeline("feature-extraction", MODEL_ID, {
@@ -42,6 +44,7 @@ const extractor = (await pipeline("feature-extraction", MODEL_ID, {
   texts: string | string[],
   options: { pooling: "mean"; normalize: true },
 ) => Promise<{ tolist(): number[][] | number[][][] }>;
+
 console.error(`ready (${Date.now() - tLoad}ms)\n`);
 
 for (const query of queries) {
@@ -71,9 +74,11 @@ for (const query of queries) {
   `;
 
   console.log(`\n=== query: "${query}" ===`);
+
   for (const r of rows) {
     const id8 = r.id.slice(0, 8);
     const repo = r.repo ? r.repo.replace("github.com/", "") : "-";
+
     console.log(
       `[${r.similarity.toFixed(3)}] ${id8} · ${r.kind ?? "-"} · ${repo} · imp ${r.importance.toFixed(2)}`,
     );

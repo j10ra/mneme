@@ -8,7 +8,7 @@
 // rendered markdown the hook prints to stdout for SessionStart context
 // injection.
 
-import { Hono } from "hono";
+import type { Hono } from "hono";
 import { currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { buildSurface } from "../services/surface.ts";
 
@@ -37,6 +37,7 @@ export function mountSessionRoutes(app: Hono): void {
       // ignored for privacy enforcement so a machine can't impersonate another.
       const auth = currentAuth();
       const surface = await buildSurface(repos, auth?.machineId ?? null);
+
       return c.json(surface);
     },
   );

@@ -101,6 +101,7 @@ export async function selectDigestClusterWindow(limit: number): Promise<string[]
     ORDER BY meta->>'last_digested_at' NULLS FIRST, created_at ASC
     LIMIT ${limit}
   `;
+
   return rows.map((r) => r.id);
 }
 
@@ -110,12 +111,15 @@ export async function selectDigestClusterWindow(limit: number): Promise<string[]
 export function dedupePairs(rows: MergePairRow[]): MergePairRow[] {
   const seen = new Set<string>();
   const deduped: MergePairRow[] = [];
+
   for (const r of rows) {
     const key = [r.a_id, r.b_id].sort().join("|");
+
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(r);
   }
+
   return deduped;
 }
 
@@ -172,6 +176,7 @@ export async function loadCluster(id: string): Promise<ClusterRow | null> {
       AND (meta->>'superseded_by') IS NULL
     LIMIT 1
   `) as ClusterRow[];
+
   return rows[0] ?? null;
 }
 
@@ -179,6 +184,7 @@ async function applyMerge(winner: ClusterRow, loser: ClusterRow): Promise<void> 
   // Union member_ids on the winner. Mark loser superseded by winner.
   // Re-point every memory whose in_cluster was the loser to the winner.
   const merged = Array.from(new Set([...winner.member_ids, ...loser.member_ids]));
+
   await sql.begin(async (tx) => {
     await tx`
       UPDATE memories
@@ -251,6 +257,7 @@ async function applySupersede(oldId: string, newId: string): Promise<boolean> {
     WHERE id = ${oldId}
       AND (meta->>'superseded_by') IS NULL
   `;
+
   return r.count > 0;
 }
 
@@ -269,19 +276,24 @@ export async function stampDigested(ids: string[]): Promise<void> {
 
 function chunk<T>(arr: T[], n: number): T[][] {
   const out: T[][] = [];
+
   for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+
   return out;
 }
 
 export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<DigestResult> => {
   const cycleStart = Date.now();
+
   Logger.info("digest: cycle start");
 
   const dr = pickDigest();
+
   if (!dr.judgeClusterMerge || !dr.findSupersedes) {
     Logger.info("digest: skipped (provider lacks judgeClusterMerge or findSupersedes)", {
       provider: dr.name,
     });
+
     return {
       merge_pairs_evaluated: 0,
       merges_applied: 0,
@@ -290,6 +302,7 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
       supersedes_rejected: 0,
     };
   }
+
   const judgeClusterMerge = dr.judgeClusterMerge;
   const findSupersedes = dr.findSupersedes;
 
@@ -297,16 +310,21 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
   Logger.info("digest: Op1 cluster merge — selecting window");
   let opStart = Date.now();
   const mergeWindow = await selectDigestClusterWindow(DIGEST_MERGE_WINDOW);
+
   Logger.info("digest: Op1 window selected", { clusters: mergeWindow.length });
   const mergePairs = await findMergePairs(mergeWindow);
+
   Logger.info("digest: Op1 candidate pairs", { pairs: mergePairs.length });
   let mergesApplied = 0;
+
   for (const pair of mergePairs) {
     const a = await loadCluster(pair.a_id);
     const b = await loadCluster(pair.b_id);
+
     if (!a || !b) continue;
 
     let judgment: Awaited<ReturnType<typeof judgeClusterMerge>>;
+
     try {
       judgment = await judgeClusterMerge(
         { title: a.title, summary: a.summary },
@@ -337,6 +355,7 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
     // enough that lexical id is acceptable noise).
     const winner = a.importance >= b.importance ? a : b;
     const loser = winner === a ? b : a;
+
     try {
       await applyMerge(winner, loser);
       mergesApplied++;
@@ -364,10 +383,12 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
   Logger.info("digest: Op2 cross-cluster supersede — selecting candidates");
   opStart = Date.now();
   const candidates = await findCrossClusterSupersedeCandidates();
+
   Logger.info("digest: Op2 candidates", { count: candidates.length });
   let supersedesApplied = 0;
   let supersedesRejected = 0;
   let batchCount = 0;
+
   for (const batch of chunk(candidates, SUPERSEDE_LLM_BATCH_MAX_MEMBERS)) {
     batchCount++;
     const supersedeBatch: SupersedeCandidate[] = batch.map((row) => ({
@@ -377,6 +398,7 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
       created_at: row.created_at.toISOString(),
     }));
     let pairs: SupersedePair[];
+
     try {
       pairs = await findSupersedes(supersedeBatch);
     } catch (e) {
@@ -390,6 +412,7 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
     // server applies to dream's pairs in writeClusters). The candidate set
     // is the batch we sent the LLM; created_at on each is the DB value.
     const { valid, rejected } = validateSupersedePairs(pairs, supersedeBatch);
+
     for (const r of rejected) {
       Logger.warn("digest: supersede pair rejected", undefined, {
         reason: r.reason,
@@ -398,8 +421,10 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
       });
       supersedesRejected++;
     }
+
     for (const pair of valid) {
       const written = await applySupersede(pair.old_id, pair.new_id);
+
       if (written) {
         supersedesApplied++;
         Logger.info("digest: cross-cluster supersede written", {
@@ -428,6 +453,8 @@ export const runDigestOnce = mnemeFn("worker.digest.once", async (): Promise<Dig
     supersedes_applied: supersedesApplied,
     supersedes_rejected: supersedesRejected,
   };
+
   Logger.info("digest: done", { ...result, total_ms: Date.now() - cycleStart });
+
   return result;
 });

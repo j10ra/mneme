@@ -42,9 +42,11 @@ export function loadConfig(): MnemeConfig {
   const cfg = JSON.parse(raw) as MnemeConfig & {
     daemon?: { claudeOauthToken?: string };
   };
+
   if (!cfg.server?.url) throw new Error("config missing server.url");
   if (!cfg.auth?.key) throw new Error("config missing auth.key");
   if (!cfg.machine?.id) throw new Error("config missing machine.id");
+
   // Self-healing migration: pre-1.1.73 configs cached the user's OAuth
   // token here. The SDK owns auth now, no code reads this field, and
   // leaving it on disk is a needless secret-at-rest. Strip and rewrite.
@@ -52,6 +54,7 @@ export function loadConfig(): MnemeConfig {
     delete cfg.daemon.claudeOauthToken;
     saveConfig(cfg);
   }
+
   return cfg;
 }
 
@@ -81,6 +84,7 @@ export function isBlacklistedPath(cwd: string): boolean {
 /** True if cwd is under a registered project root (exact or path-prefix match). */
 export function isProjectRegistered(cfg: MnemeConfig, cwd: string): boolean {
   const projects = cfg.projects ?? [];
+
   return projects.some((p) => cwd === p.path || cwd.startsWith(`${p.path}/`));
 }
 
@@ -90,6 +94,7 @@ export function isProjectRegistered(cfg: MnemeConfig, cwd: string): boolean {
 export function saveConfig(cfg: MnemeConfig): void {
   const path = configPath();
   const tmp = `${path}.tmp.${process.pid}`;
+
   writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, path);
 }
@@ -111,6 +116,7 @@ export function saveConfig(cfg: MnemeConfig): void {
 export function machineFingerprint(): string | null {
   try {
     const p = platform();
+
     if (p === "darwin") {
       const out = execFileSync("ioreg", ["-d2", "-c", "IOPlatformExpertDevice"], {
         encoding: "utf8",
@@ -118,27 +124,35 @@ export function machineFingerprint(): string | null {
         timeout: 2000,
       });
       const match = out.match(/IOPlatformUUID["\s=]+"([0-9A-Fa-f-]{36})"/);
+
       return match?.[1]?.toLowerCase() ?? null;
     }
+
     if (p === "linux") {
       for (const path of ["/etc/machine-id", "/var/lib/dbus/machine-id"]) {
         if (existsSync(path)) {
           const id = readFileSync(path, "utf8").trim();
+
           if (/^[0-9a-f]{32}$/.test(id)) return id;
         }
       }
+
       return null;
     }
+
     if (p === "win32") {
       const result = spawnSync(
         "reg",
         ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"],
         { encoding: "utf8", timeout: 2000 },
       );
+
       if (result.status !== 0) return null;
       const match = result.stdout.match(/MachineGuid\s+REG_SZ\s+([0-9A-Fa-f-]{36})/);
+
       return match?.[1]?.toLowerCase() ?? null;
     }
+
     return null;
   } catch {
     return null;
@@ -149,9 +163,11 @@ export function machineFingerprint(): string | null {
 export function registerProject(cwd: string): boolean {
   const cfg = loadConfig();
   const projects = cfg.projects ?? [];
+
   if (projects.some((p) => p.path === cwd)) return false;
   projects.push({ path: cwd, registered_at: new Date().toISOString() });
   cfg.projects = projects;
   saveConfig(cfg);
+
   return true;
 }

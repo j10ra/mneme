@@ -56,14 +56,17 @@ export class Breaker {
 
   gate(): BreakerGate {
     const now = this.clock();
+
     if (now < this.openUntil) {
       return { open: true, pauseMs: this.openUntil - now };
     }
+
     return { open: false };
   }
 
   inspect(): BreakerState {
     const now = this.clock();
+
     return {
       open: now < this.openUntil,
       failures: this.failures,
@@ -73,21 +76,28 @@ export class Breaker {
 
   report(outcome: "success" | "failure"): BreakerReport {
     const priorFailures = this.failures;
+
     if (outcome === "success") {
       this.failures = 0;
       this.openUntil = 0;
+
       return { priorFailures, openedNow: false };
     }
+
     this.failures += 1;
+
     if (this.failures >= this.threshold) {
       const wasOpen = this.openUntil > this.clock();
+
       this.openUntil = this.clock() + this.pauseMs;
+
       // openedNow only fires on the closed→open transition. A failure
       // reported while the breaker is still in cooldown extends the
       // window but doesn't double-log. (Callers shouldn't hit this — they
       // gate first — but defending against the misuse keeps logs sane.)
       return { priorFailures, openedNow: !wasOpen };
     }
+
     return { priorFailures, openedNow: false };
   }
 }

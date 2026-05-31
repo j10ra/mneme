@@ -29,6 +29,7 @@ export function validateSupersedePairs(
   candidates: Iterable<SupersedeCandidateRef>,
 ): SupersedeValidation {
   const tsById = new Map<string, number>();
+
   for (const c of candidates) {
     tsById.set(c.id, new Date(c.created_at).getTime());
   }
@@ -41,16 +42,20 @@ export function validateSupersedePairs(
       rejected.push({ pair, reason: "old_id equals new_id" });
       continue;
     }
+
     const oldTs = tsById.get(pair.old_id);
     const newTs = tsById.get(pair.new_id);
+
     if (oldTs === undefined || newTs === undefined) {
       rejected.push({ pair, reason: "id not in candidate set" });
       continue;
     }
+
     if (!(oldTs < newTs)) {
       rejected.push({ pair, reason: "old_id is not older than new_id" });
       continue;
     }
+
     valid.push(pair);
   }
 

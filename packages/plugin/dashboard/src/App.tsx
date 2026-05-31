@@ -29,12 +29,15 @@ const THEME_KEY = "mneme.dashboard.theme";
 
 function loadTheme(): Theme {
   if (typeof window === "undefined") return "dark";
+
   try {
     const saved = window.localStorage.getItem(THEME_KEY);
+
     if (saved === "dark" || saved === "light") return saved;
   } catch {
     /* ignore */
   }
+
   return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
@@ -44,6 +47,7 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+
     try {
       window.localStorage.setItem(THEME_KEY, theme);
     } catch {

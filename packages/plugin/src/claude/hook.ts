@@ -30,10 +30,13 @@ const event = process.argv[2] ?? "unknown";
 
 async function readStdin(): Promise<Record<string, unknown>> {
   let buf = "";
+
   for await (const chunk of process.stdin as AsyncIterable<Buffer | string>) {
     buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
   }
+
   if (!buf.trim()) return {};
+
   try {
     return JSON.parse(buf) as Record<string, unknown>;
   } catch {
@@ -65,15 +68,21 @@ function latestCachedPluginRoot(): string | null {
   const ownRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
   // Walk up to the cache root: …/cache/j10ra-mneme/mneme/<version>/
   const cacheRoot = dirname(ownRoot);
+
   if (!existsSync(cacheRoot)) return ownRoot;
   let best: { ver: string; tuple: [number, number, number] } | null = null;
+
   for (const entry of readdirSync(cacheRoot)) {
     const m = entry.match(/^(\d+)\.(\d+)\.(\d+)$/);
+
     if (!m) continue;
     const tuple: [number, number, number] = [Number(m[1]), Number(m[2]), Number(m[3])];
+
     if (!best || tuple > best.tuple) best = { ver: entry, tuple };
   }
+
   if (!best) return ownRoot;
+
   return join(cacheRoot, best.ver);
 }
 
@@ -85,28 +94,34 @@ function refreshDaemonIfStale(): void {
   // location, so we can still update the plist + daemon.
   const targetRoot =
     latestCachedPluginRoot() ?? dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+
   if (!isDaemonConfigStale(targetRoot)) return;
 
   const ownRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
   const ownVersion = basename(ownRoot);
   const targetVersion = basename(targetRoot);
+
   process.stderr.write(
     `mneme: service config stale, refreshing daemon to ${targetVersion} (hook is on ${ownVersion})\n`,
   );
+
   if (ownVersion !== targetVersion) {
     process.stderr.write(
       `mneme: this session is on plugin ${ownVersion}; run /reload-plugins to load ${targetVersion}\n`,
     );
   }
+
   try {
     // Run refresh-daemon from the TARGET version so the new daemon is
     // what gets installed into the plist.
     const refreshScript = join(targetRoot, "src/daemon/refresh-daemon.ts");
+
     if (!existsSync(refreshScript)) return;
     const child = spawn(process.execPath, [refreshScript], {
       detached: true,
       stdio: "ignore",
     });
+
     child.unref();
   } catch {
     // best-effort; if spawn fails the operator can still run /mneme:setup
@@ -120,6 +135,7 @@ function refreshDaemonIfStale(): void {
 // matter because the daemon's idle gate is the safety net.
 async function pingDaemonFlush(cfg: MnemeConfig): Promise<void> {
   if (!cfg.daemon) return;
+
   try {
     await fetch(`http://127.0.0.1:${cfg.daemon.port}/flush`, {
       method: "POST",
@@ -158,10 +174,12 @@ async function postCapture(cfg: MnemeConfig, body: Record<string, unknown>): Pro
       body: JSON.stringify(cleaned),
       signal: AbortSignal.timeout(2500),
     });
+
     if (resp.ok) return true;
   } catch {
     // Daemon unreachable; fall through to direct outbox write.
   }
+
   // Fallback when the daemon HTTP listener is briefly unreachable (restart
   // gap, crash): write straight into captured/, drained on the next tick.
   return writeToOutbox(cleaned);
@@ -187,8 +205,10 @@ async function fetchSurface(
       }),
       signal: AbortSignal.timeout(5000),
     });
+
     if (!resp.ok) return "";
     const data = (await resp.json()) as { rendered?: string };
+
     return data.rendered ?? "";
   } catch {
     return "";
@@ -233,6 +253,7 @@ type SurfaceParse = {
 
 function parseSurface(surface: string): SurfaceParse | null {
   const header = surface.match(/^#\s+Mneme\s+·\s+(\S+)\s+·\s+across\s+(\d+)\s+machine/m);
+
   if (!header) return null;
   const stats = surface.match(
     /^_Since last session \(([^)]+)\s+ago\):\s+(\d+)\s+captures,\s+(\d+)\s+memories(?:\s+·\s+(\d+)\s+superseded[^_]*)?_/m,
@@ -247,12 +268,14 @@ function parseSurface(surface: string): SurfaceParse | null {
     .map(([name, pattern]) => {
       const m = surface.match(pattern);
       const total = m?.[1];
+
       return total ? { name, total } : null;
     })
     .filter((s): s is { name: string; total: string } => s !== null);
 
   const repo = header[1];
   const machineCount = header[2];
+
   if (!repo || !machineCount) return null;
 
   return {
@@ -273,7 +296,9 @@ function parseSurface(surface: string): SurfaceParse | null {
 function extractSectionForUser(surface: string, section: string, limit: number): string[] {
   const re = new RegExp(`^##\\s+${section}\\b[^\\n]*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, "m");
   const match = surface.match(re);
+
   if (!match?.[1]) return [];
+
   return match[1]
     .split("\n")
     .filter((l) => l.startsWith("- ["))
@@ -287,6 +312,7 @@ function extractSectionForUser(surface: string, section: string, limit: number):
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
@@ -298,16 +324,20 @@ function formatBytes(bytes: number): string {
  *  stays LLM-only; the banner shows only deliberately pinned rows. */
 function summariseSurfaceForUser(surface: string, injectedBytes: number): string {
   const p = parseSurface(surface);
+
   if (!p) return "Mneme memory loaded.";
   const lines: string[] = [`Mneme · ${p.repo} · ${p.machineCount} machines`];
+
   if (p.sinceAgo && p.memories && p.captures) {
     const supText = p.superseded ? ` · ${p.superseded} superseded` : "";
+
     lines.push(
       `Since last session (${p.sinceAgo} ago): ${p.memories} memories · ${p.captures} captures${supText}`,
     );
   }
 
   const pinned = extractSectionForUser(surface, "Pinned", 5);
+
   if (pinned.length > 0) {
     lines.push("");
     lines.push("📍 Pinned");
@@ -318,6 +348,7 @@ function summariseSurfaceForUser(surface: string, injectedBytes: number): string
   lines.push(
     `🧠 Memory loaded with decisions, bug fixes, discoveries, and prior sessions. Unfold any of it on demand. (~${formatBytes(injectedBytes)} context)`,
   );
+
   return lines.join("\n");
 }
 
@@ -335,6 +366,7 @@ const KIND_LEGEND =
  *  on the row means. Skipped if parsing failed or no sections matched. */
 function prefixSurfaceForLLM(surface: string, strippedSurface: string): string {
   const p = parseSurface(surface);
+
   if (!p || p.sections.length === 0) return strippedSurface;
   const totals = p.sections.map((s) => `${s.total} ${s.name}`).join(" · ");
   const reminder =
@@ -355,6 +387,7 @@ function prefixSurfaceForLLM(surface: string, strippedSurface: string): string {
     "this session). `/mneme:pin` is reserved for the user — never invoke it. " +
     `Act on clear signal; ask the user first only when which memory to ` +
     `supersede/archive is genuinely ambiguous.\n\n`;
+
   return reminder + strippedSurface;
 }
 
@@ -374,6 +407,7 @@ function formatCurrentTime(): string {
   // dayTime renders as "Tue, 10:25 AM PST" — promote the comma to parens
   // around the weekday so the line reads cleaner alongside the ISO date.
   const [weekday, ...rest] = dayTime.split(", ");
+
   return `${isoDate} (${weekday}) ${rest.join(", ")}`;
 }
 
@@ -383,12 +417,16 @@ function formatCurrentTime(): string {
 function assistantTextFromEntry(entry: Record<string, unknown>): string | null {
   if (entry.type !== "assistant") return null;
   const message = entry.message as Record<string, unknown> | undefined;
+
   if (!message) return null;
   const content = message.content;
+
   if (!Array.isArray(content)) {
     return typeof message.content === "string" ? (message.content as string) : null;
   }
+
   const texts: string[] = [];
+
   for (const block of content) {
     if (
       block &&
@@ -399,7 +437,9 @@ function assistantTextFromEntry(entry: Record<string, unknown>): string | null {
       texts.push((block as Record<string, unknown>).text as string);
     }
   }
+
   const joined = texts.join("\n\n").trim();
+
   return joined.length > 0 ? joined : null;
 }
 
@@ -407,8 +447,10 @@ function memoryWritePath(toolName: unknown, input: unknown): string | null {
   if (toolName !== "Write" && toolName !== "Edit") return null;
   if (!input || typeof input !== "object") return null;
   const fp = (input as Record<string, unknown>).file_path;
+
   if (typeof fp !== "string") return null;
   if (!/\.claude\/projects\/.*\/memory\/.*\.md$/.test(fp)) return null;
+
   return fp;
 }
 
@@ -438,18 +480,21 @@ const SKIP_TOOLS = new Set<string>([
 function shouldSkipTool(toolName: unknown): boolean {
   if (typeof toolName !== "string") return false;
   if (SKIP_TOOLS.has(toolName)) return true;
+
   // Recursive guard (own MCP tools + claude-mem) is shared across harnesses.
   return isRecursiveTool(toolName);
 }
 
 async function main(): Promise<void> {
   let cfg: MnemeConfig;
+
   try {
     cfg = loadConfig();
   } catch (e) {
     process.stderr.write(
       `mneme-hook[${event}]: config error: ${e instanceof Error ? e.message : e}\n`,
     );
+
     return; // never block harness
   }
 
@@ -476,6 +521,7 @@ async function main(): Promise<void> {
     plog("INFO", `hook.${event.toLowerCase()}`, "skipped: blacklisted cwd", {
       cwd: sessionCwd,
     });
+
     return;
   }
 
@@ -524,6 +570,7 @@ async function main(): Promise<void> {
 
       const source = typeof payload.source === "string" ? payload.source : "startup";
       const surface = await fetchSurface(cfg, payload, repos);
+
       if (surface) {
         // Two channels, two purposes — not duplicated content:
         //   additionalContext → LLM gets the full surface plus a one-line
@@ -544,9 +591,11 @@ async function main(): Promise<void> {
             additionalContext: fullForLlm,
           },
         };
+
         if (source === "startup" || source === "clear") {
           envelope.systemMessage = summaryForUser;
         }
+
         // Stale-session banner: the hook running RIGHT NOW lives at
         // `.../mneme/<ownVer>/src/claude/hook.ts`. If the cache has a
         // higher version, the live Claude Code session is loading the
@@ -555,16 +604,20 @@ async function main(): Promise<void> {
         // long-running process; this banner just nudges the user.
         const ownRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
         const targetRoot = latestCachedPluginRoot();
+
         if (targetRoot && targetRoot !== ownRoot) {
           const ownV = basename(ownRoot);
           const targetV = basename(targetRoot);
           const note = `mneme: this session is on plugin ${ownV}; cache has ${targetV}. Exit + restart Claude Code to pick up the new slash commands + hooks.`;
+
           envelope.systemMessage = envelope.systemMessage
             ? `${envelope.systemMessage}\n${note}`
             : note;
         }
+
         process.stdout.write(JSON.stringify(envelope));
       }
+
       return;
     }
 
@@ -586,13 +639,16 @@ async function main(): Promise<void> {
 
       if (prompt.trim()) {
         const body = { ...baseScope, content: prompt };
+
         await postCapture(cfg, body);
       }
+
       return;
     }
 
     case "Stop":
     case "PreCompact":
+
     case "SessionEnd": {
       // Per-turn Stop events let captures keep building so the daemon
       // can extract a coherent multi-turn batch later. PreCompact and
@@ -618,20 +674,25 @@ async function main(): Promise<void> {
       //    re-runs when Stop/PreCompact fires multiple times in one session.
       const transcriptPath =
         typeof payload.transcript_path === "string" ? payload.transcript_path : null;
+
       if (transcriptPath) {
         try {
           const { readFileSync } = await import("node:fs");
           const raw = readFileSync(transcriptPath, "utf8");
           const lines = raw.split("\n").filter((l) => l.trim().length > 0);
           let captured = 0;
+
           for (const line of lines) {
             let entry: Record<string, unknown>;
+
             try {
               entry = JSON.parse(line) as Record<string, unknown>;
             } catch {
               continue;
             }
+
             const text = assistantTextFromEntry(entry);
+
             // Filter very short replies ("ok", "got it") — not memorable.
             if (!text || text.length < 200) continue;
             const messageUuid = typeof entry.uuid === "string" ? entry.uuid : undefined;
@@ -642,8 +703,10 @@ async function main(): Promise<void> {
               raw_meta: { event, message_uuid: messageUuid },
             };
             const turnOk = await postCapture(cfg, turnBody);
+
             if (turnOk) captured++;
           }
+
           if (captured > 0) {
             process.stderr.write(
               `mneme-hook[${event}]: captured ${captured} assistant turn(s) from transcript\n`,
@@ -655,6 +718,7 @@ async function main(): Promise<void> {
           );
         }
       }
+
       // Only PreCompact/SessionEnd flush. Stop is per-turn — letting
       // captures buffer across turns means the next extract sees
       // multi-turn context, which produces better observations than
@@ -662,6 +726,7 @@ async function main(): Promise<void> {
       if (isSessionBoundary) {
         await pingDaemonFlush(cfg);
       }
+
       // Don't clear the dedup set on SessionEnd. Resuming a session
       // (`claude --resume <id>`) reuses the same session_id and fires
       // Stop again, which replays the FULL transcript from disk. With
@@ -699,6 +764,7 @@ async function main(): Promise<void> {
       }
 
       const memPath = memoryWritePath(toolName, toolInput);
+
       if (memPath) {
         const ti = toolInput as Record<string, unknown>;
         const content =
@@ -707,6 +773,7 @@ async function main(): Promise<void> {
             : typeof ti.new_string === "string"
               ? ti.new_string
               : "";
+
         if (!content.trim()) return;
         const body = {
           ...baseScope,
@@ -715,6 +782,7 @@ async function main(): Promise<void> {
           raw_meta: { tool: toolName, file_path: memPath },
         };
         const ok = await postCapture(cfg, body);
+
         return;
       }
 
@@ -734,6 +802,7 @@ async function main(): Promise<void> {
       // sail under the cap un-stubbed and later choke the batch extract API.
       // Returns null when the scrubbed observation is still oversize.
       const observation = buildToolObservation(toolName as string, toolInput, toolResp);
+
       if (!observation) return;
       const body = {
         ...scope,
@@ -741,6 +810,7 @@ async function main(): Promise<void> {
         raw_meta: { event, tool: toolName },
       };
       const ok = await postCapture(cfg, body);
+
       return;
     }
 

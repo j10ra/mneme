@@ -12,12 +12,12 @@
 import { Logger, mnemeFn } from "@mneme/core";
 import { env } from "../../infra/env.ts";
 import { CLUSTER_MERGE_PROMPT, SUPERSEDE_PROMPT } from "../prompt.ts";
-import {
-  type ClusterMergeJudgment,
-  type ClusterSummary,
-  type DigestLimits,
-  type SupersedeCandidate,
-  type SupersedePair,
+import type {
+  ClusterMergeJudgment,
+  ClusterSummary,
+  DigestLimits,
+  SupersedeCandidate,
+  SupersedePair,
 } from "../types.ts";
 
 const URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -33,43 +33,56 @@ type StreamChunk = {
 
 function cleanErrorBody(body: string): string {
   const trimmed = body.trim();
+
   if (!trimmed) return "";
+
   if (trimmed.startsWith("<")) {
     const stripped = trimmed
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim();
+
     return stripped.slice(0, 200);
   }
+
   return trimmed.replace(/\s+/g, " ").slice(0, 200);
 }
 
 async function consumeStream(resp: Response): Promise<string> {
   const reader = resp.body?.getReader();
+
   if (!reader) throw new Error("llm.openrouter: response body not readable");
   const decoder = new TextDecoder();
   let buffer = "";
   let out = "";
+
   while (true) {
     const { value, done } = await reader.read();
+
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let nl: number;
+
     while ((nl = buffer.indexOf("\n")) >= 0) {
       const line = buffer.slice(0, nl).trim();
+
       buffer = buffer.slice(nl + 1);
       if (!line.startsWith("data:")) continue;
       const payload = line.slice(5).trim();
+
       if (payload === "[DONE]") return out;
+
       try {
         const chunk = JSON.parse(payload) as StreamChunk;
         const piece = chunk.choices?.[0]?.delta?.content;
+
         if (piece) out += piece;
       } catch {
         // OpenRouter occasionally injects keep-alive comment frames; skip.
       }
     }
   }
+
   return out;
 }
 
@@ -142,15 +155,18 @@ export const findSupersedes = mnemeFn(
 
     if (!resp.ok) {
       const err = cleanErrorBody(await resp.text());
+
       throw new Error(
         `llm.openrouter supersede failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`,
       );
     }
 
     const raw = await consumeStream(resp);
+
     if (!raw.trim()) return [];
 
     let parsed: { pairs?: unknown };
+
     try {
       parsed = JSON.parse(raw) as { pairs?: unknown };
     } catch {
@@ -158,7 +174,9 @@ export const findSupersedes = mnemeFn(
     }
 
     const pairs = parsed.pairs;
+
     if (!Array.isArray(pairs)) return [];
+
     return pairs.filter(
       (p: unknown): p is SupersedePair =>
         !!p &&
@@ -208,13 +226,16 @@ export const judgeClusterMerge = mnemeFn(
 
     if (!resp.ok) {
       const err = cleanErrorBody(await resp.text());
+
       throw new Error(`llm.openrouter merge failed: HTTP ${resp.status}${err ? `: ${err}` : ""}`);
     }
 
     const raw = await consumeStream(resp);
+
     if (!raw.trim()) throw new Error("llm.openrouter merge: empty response");
 
     let parsed: { same_topic?: unknown; reason?: unknown };
+
     try {
       parsed = JSON.parse(raw) as { same_topic?: unknown; reason?: unknown };
     } catch {
@@ -224,6 +245,7 @@ export const judgeClusterMerge = mnemeFn(
     if (typeof parsed.same_topic !== "boolean") {
       throw new Error("llm.openrouter merge: missing same_topic");
     }
+
     return {
       same_topic: parsed.same_topic,
       reason: typeof parsed.reason === "string" ? parsed.reason : "",

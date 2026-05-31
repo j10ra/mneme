@@ -74,6 +74,7 @@ async function atomicWrite(path: string, payload: unknown): Promise<void> {
   const dir = path.substring(0, path.lastIndexOf("/"));
   const name = path.substring(path.lastIndexOf("/") + 1);
   const tmp = join(dir, `.${name}.tmp`);
+
   await mkdir(dir, { recursive: true });
   await writeFile(tmp, JSON.stringify(payload));
   await rename(tmp, path);
@@ -97,6 +98,7 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
     async transition(windowKey, from, to, cluster) {
       await ensureWindow(windowKey);
       const src = clusterFile(rootPath, windowKey, from, cluster.cluster_id);
+
       // Read just to surface ENOENT clearly if the source is gone.
       await readFile(src);
       await atomicWrite(clusterFile(rootPath, windowKey, to, cluster.cluster_id), cluster);
@@ -106,6 +108,7 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
     async list(windowKey, stage) {
       try {
         const entries = await readdir(join(rootPath, String(windowKey), stage));
+
         return entries
           .filter((f) => !f.startsWith(".") && f.endsWith(".json"))
           .map((f) => f.slice(0, -".json".length));
@@ -117,6 +120,7 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
 
     async read(windowKey, stage, clusterId) {
       const buf = await readFile(clusterFile(rootPath, windowKey, stage, clusterId), "utf8");
+
       return JSON.parse(buf) as DistilledCluster;
     },
 
@@ -130,6 +134,7 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
       await ensureWindow(windowKey);
       const src = clusterFile(rootPath, windowKey, from, clusterId);
       const cluster = JSON.parse(await readFile(src, "utf8")) as DistilledCluster;
+
       await atomicWrite(clusterFile(rootPath, windowKey, "failed", clusterId), cluster);
       await writeFile(
         join(rootPath, String(windowKey), "failed", `${clusterId}.error.txt`),
@@ -141,6 +146,7 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
     async listWindows() {
       try {
         const entries = await readdir(rootPath);
+
         return entries
           .filter((d) => /^\d+$/.test(d))
           .map((d) => Number(d))
@@ -157,9 +163,11 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
       const distilled = await this.list(windowKey, "distilled");
       const embedded = await this.list(windowKey, "embedded");
       const failed = await this.list(windowKey, "failed");
+
       if (distilled.length > 0 || embedded.length > 0 || failed.length > 0) {
         return;
       }
+
       for (const stage of STAGES) {
         try {
           await rmdir(join(rootPath, String(windowKey), stage));
@@ -167,6 +175,7 @@ export function createDreamOutbox(rootPath: string): DreamOutbox {
           // ignore
         }
       }
+
       try {
         await rmdir(join(rootPath, String(windowKey)));
       } catch {
@@ -186,6 +195,8 @@ export async function clusterIdFor(memberIds: string[]): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", buf);
   const bytes = new Uint8Array(digest);
   let hex = "";
+
   for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+
   return hex;
 }

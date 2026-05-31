@@ -13,6 +13,7 @@ export function mnemeFn<TArgs extends unknown[], TReturn>(
 ): (...args: TArgs) => Promise<TReturn> {
   return async (...args: TArgs): Promise<TReturn> => {
     const ctx = storage.getStore();
+
     if (!ctx) return fn(...args);
 
     const span: Span = {
@@ -26,17 +27,21 @@ export function mnemeFn<TArgs extends unknown[], TReturn>(
     // SQL string passed to mneme.sql.run). The scrubber on TraceStore
     // still redacts secrets before flush.
     const inputSummary = summarizeIO(args);
+
     span.input = inputSummary.value;
     span.inputSize = inputSummary.size;
 
     ctx.spanStack.push(span);
 
     let errorMessage: string | undefined;
+
     try {
       const result = await fn(...args);
       const summary = summarizeIO(result);
+
       span.output = summary.value;
       span.outputSize = summary.size;
+
       return result;
     } catch (err) {
       errorMessage = errorMessageOf(err);
@@ -47,6 +52,7 @@ export function mnemeFn<TArgs extends unknown[], TReturn>(
       ctx.spanStack.pop();
 
       const store = getTraceStore();
+
       if (store) {
         store.pushSpan({ ...span, traceId: ctx.traceId });
       }

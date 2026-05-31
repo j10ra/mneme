@@ -13,6 +13,7 @@
 
 export function errorMessageOf(err: unknown): string {
   if (err instanceof Error) return err.message;
+
   if (
     err !== null &&
     typeof err === "object" &&
@@ -21,5 +22,6 @@ export function errorMessageOf(err: unknown): string {
   ) {
     return (err as { message: string }).message;
   }
+
   return String(err);
 }

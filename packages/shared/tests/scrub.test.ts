@@ -8,6 +8,7 @@ describe("scrub - <private> tags", () => {
 
   test("strips multiline blocks", () => {
     const input = "x\n<private>line one\nline two</private>\ny";
+
     expect(scrub(input)).toBe("x\n[private redacted]\ny");
   });
 
@@ -29,31 +30,37 @@ describe("scrub - secret patterns", () => {
 
   test("GitHub PAT (classic)", () => {
     const t = "ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789";
+
     expect(scrub(`token=${t}`)).toBe("token=[REDACTED:github_pat_classic]");
   });
 
   test("GitHub PAT (fine-grained)", () => {
     const t = "github_pat_" + "A".repeat(82);
+
     expect(scrub(t)).toBe("[REDACTED:github_pat_fine]");
   });
 
   test("OpenAI key", () => {
     const t = "sk-" + "a".repeat(48);
+
     expect(scrub(`OPENAI=${t}`)).toBe("OPENAI=[REDACTED:openai_key]");
   });
 
   test("Anthropic key", () => {
     const t = "sk-ant-api03-" + "a".repeat(93);
+
     expect(scrub(t)).toBe("[REDACTED:anthropic_key]");
   });
 
   test("Groq key", () => {
     const t = "gsk_" + "a".repeat(52);
+
     expect(scrub(`GROQ=${t}`)).toBe("GROQ=[REDACTED:groq_key]");
   });
 
   test("Voyage key", () => {
     const t = "pa-" + "abcDEF123_-".repeat(4) + "xyz";
+
     expect(scrub(`VOYAGE=${t}`)).toBe("VOYAGE=[REDACTED:voyage_key]");
   });
 
@@ -66,6 +73,7 @@ describe("scrub - secret patterns", () => {
       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
       "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRlc3QifQ." +
       "abc123def456";
+
     expect(scrub(`Authorization: Bearer ${j}`)).toContain("[REDACTED:");
     expect(scrub(j)).toBe("[REDACTED:jwt]");
   });
@@ -90,6 +98,7 @@ describe("scrub - secret patterns", () => {
 
   test("URL without userinfo untouched", () => {
     const s = "see https://github.com/owner/repo for details";
+
     expect(scrub(s)).toBe(s);
   });
 
@@ -98,6 +107,7 @@ describe("scrub - secret patterns", () => {
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
 QyNTUxOQAAACBNiPaLs/Mf8...
 -----END OPENSSH PRIVATE KEY-----`;
+
     expect(scrub(`pre\n${block}\npost`)).toBe("pre\n[REDACTED:ssh_private_key]\npost");
   });
 });
@@ -105,6 +115,7 @@ QyNTUxOQAAACBNiPaLs/Mf8...
 describe("scrub - benign strings", () => {
   test("plain prose untouched", () => {
     const s = "we should refactor the auth middleware tomorrow";
+
     expect(scrub(s)).toBe(s);
   });
 
@@ -124,12 +135,14 @@ describe("scrubData - nested values", () => {
       content: "Bearer mneme_pat_test_abcdefghij1234567890abc",
       meta: { ok: true },
     }) as { content: string; meta: { ok: boolean } };
+
     expect(r.content).toBe("[REDACTED:bearer_header]");
     expect(r.meta.ok).toBe(true);
   });
 
   test("scrubs strings inside arrays", () => {
     const r = scrubData(["plain", "AKIAIOSFODNN7EXAMPLE", 42]) as unknown[];
+
     expect(r[0]).toBe("plain");
     expect(r[1]).toBe("[REDACTED:aws_access_key]");
     expect(r[2]).toBe(42);
@@ -145,6 +158,7 @@ describe("scrubData - nested values", () => {
     const r = scrubData({
       a: [{ b: "<private>oops</private>" }, "ok"],
     }) as { a: [{ b: string }, string] };
+
     expect(r.a[0].b).toBe("[private redacted]");
     expect(r.a[1]).toBe("ok");
   });
@@ -161,6 +175,7 @@ describe("scrubData - binary content blocks", () => {
       type: string;
       source: { type: string; media_type: string; data: string };
     };
+
     expect(r.type).toBe("image");
     expect(r.source.type).toBe("base64");
     expect(r.source.media_type).toBe("image/jpeg");
@@ -177,6 +192,7 @@ describe("scrubData - binary content blocks", () => {
       },
     };
     const r = scrubData(block) as { source: { data: string } };
+
     expect(r.source.data.startsWith("[redacted:")).toBe(true);
   });
 
@@ -186,6 +202,7 @@ describe("scrubData - binary content blocks", () => {
       source: { type: "base64", data: "BASE64BLOB" },
     }) as { source: { data: string } };
     const twice = scrubData(once) as { source: { data: string } };
+
     expect(twice.source.data).toBe(once.source.data);
   });
 
@@ -196,6 +213,7 @@ describe("scrubData - binary content blocks", () => {
       type: "image",
       source: { type: "url", url: "https://example.com/x.jpg" },
     }) as { source: Record<string, string> };
+
     expect(r.source.url).toBe("https://example.com/x.jpg");
   });
 
@@ -217,6 +235,7 @@ describe("scrubData - binary content blocks", () => {
       result: { source: { data: string } }[];
     };
     const first = r.result[0];
+
     expect(first).toBeDefined();
     expect(first?.source.data).toBe("[redacted: 50000 base64 chars]");
   });

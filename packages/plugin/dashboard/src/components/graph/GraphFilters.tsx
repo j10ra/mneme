@@ -21,6 +21,7 @@ export function GraphFilters({
   function toggleKind(k: string) {
     const cur = filters.kind;
     const next = cur.includes(k) ? cur.filter((v) => v !== k) : cur.concat(k);
+
     onFilters({ ...filters, kind: next });
   }
 

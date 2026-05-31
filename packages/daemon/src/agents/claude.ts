@@ -48,6 +48,7 @@ export type AuthMode = "api-key" | "oauth-token" | "claude-code";
 export function detectAuthMode(): AuthMode {
   if (process.env.ANTHROPIC_API_KEY) return "api-key";
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return "oauth-token";
+
   return "claude-code";
 }
 
@@ -65,6 +66,7 @@ export function buildExtractPrompt(captures: Capture[]): string {
       ]
         .filter(Boolean)
         .join(" | ");
+
       return `${header}\n${c.content}`;
     })
     .join("\n\n---\n\n");
@@ -74,6 +76,7 @@ export function buildExtractPrompt(captures: Capture[]): string {
 
 export function buildClusterPrompt(memories: Memory[]): string {
   const lines = memories.map((m, i) => `${i + 1}. (${m.kind}) ${m.content}`);
+
   return `Distill the following cluster of related memories.\n\n${lines.join("\n")}\n\nReturn JSON only.`;
 }
 
@@ -81,23 +84,29 @@ export function buildSupersedePrompt(candidates: SupersedeCandidate[]): string {
   const lines = candidates.map(
     (m) => `id=${m.id} kind=${m.kind} created_at=${m.created_at}: ${m.content}`,
   );
+
   return `Review the following memories for supersede relationships.\n\n${lines.join("\n")}\n\nReturn JSON only.`;
 }
 
 export function parseSupersedeResponse(text: string): SupersedePair[] {
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(extractJsonBlock(text));
   } catch {
     return [];
   }
+
   const pairs = (parsed as { pairs?: unknown }).pairs;
+
   if (!Array.isArray(pairs)) return [];
 
   const result: SupersedePair[] = [];
+
   for (const raw of pairs) {
     if (!raw || typeof raw !== "object") continue;
     const r = raw as Record<string, unknown>;
+
     if (
       typeof r.old_id !== "string" ||
       typeof r.new_id !== "string" ||
@@ -105,6 +114,7 @@ export function parseSupersedeResponse(text: string): SupersedePair[] {
     ) {
       continue;
     }
+
     if (r.old_id === r.new_id) continue;
     result.push({
       old_id: r.old_id,
@@ -112,6 +122,7 @@ export function parseSupersedeResponse(text: string): SupersedePair[] {
       reason: r.reason,
     });
   }
+
   return result;
 }
 
@@ -129,31 +140,39 @@ function extractJsonBlock(text: string): string {
   // anchors, so trailing prose after the fence is ignored.
   const fence = /```(?:json)?\s*([\s\S]*?)\s*```/;
   const fenceMatch = trimmed.match(fence);
+
   if (fenceMatch) return fenceMatch[1]!.trim();
 
   // No fence: find first `{` and walk forward counting braces (respecting
   // strings / escapes) until balanced. Robust to prose around the object.
   const start = trimmed.indexOf("{");
+
   if (start === -1) return trimmed;
 
   let depth = 0;
   let inString = false;
   let escaped = false;
+
   for (let i = start; i < trimmed.length; i++) {
     const ch = trimmed[i]!;
+
     if (escaped) {
       escaped = false;
       continue;
     }
+
     if (ch === "\\" && inString) {
       escaped = true;
       continue;
     }
+
     if (ch === '"') {
       inString = !inString;
       continue;
     }
+
     if (inString) continue;
+
     if (ch === "{") depth++;
     else if (ch === "}") {
       depth--;
@@ -171,18 +190,23 @@ function clamp(n: number, lo: number, hi: number): number {
 
 export function parseExtractResponse(text: string): ExtractedMemory[] {
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(extractJsonBlock(text));
   } catch {
     return [];
   }
+
   const obs = (parsed as { observations?: unknown }).observations;
+
   if (!Array.isArray(obs)) return [];
 
   const result: ExtractedMemory[] = [];
+
   for (const raw of obs) {
     if (!raw || typeof raw !== "object") continue;
     const r = raw as Record<string, unknown>;
+
     if (typeof r.content !== "string" || !r.content.trim()) continue;
     if (typeof r.kind !== "string" || !VALID_KINDS.has(r.kind)) continue;
 
@@ -198,6 +222,7 @@ export function parseExtractResponse(text: string): ExtractedMemory[] {
       topics,
     });
   }
+
   return result;
 }
 
@@ -206,13 +231,17 @@ export function parseClusterResponse(text: string): {
   summary: string;
 } | null {
   let parsed: unknown;
+
   try {
     parsed = JSON.parse(extractJsonBlock(text));
   } catch {
     return null;
   }
+
   const p = parsed as { title?: unknown; summary?: unknown };
+
   if (typeof p.title !== "string" || typeof p.summary !== "string") return null;
+
   return { title: p.title.trim(), summary: p.summary.trim() };
 }
 
@@ -255,6 +284,7 @@ export const claudeProvider: AgentProvider = {
 
   async isAvailable(): Promise<AvailabilityStatus> {
     const mode = detectAuthMode();
+
     return { available: true, detail: authDetail(mode) };
   },
 
@@ -262,11 +292,13 @@ export const claudeProvider: AgentProvider = {
     if (captures.length === 0) return [];
     const prompt = buildExtractPrompt(captures);
     const response = await callClaude(prompt, EXTRACT_MODEL, SYSTEM_PROMPT);
+
     if (process.env.MNEME_DEBUG_LLM === "1") {
       console.log(
         `[claude.extract] response (${response.length} chars):\n${response.slice(0, 800)}`,
       );
     }
+
     return parseExtractResponse(response);
   },
 
@@ -274,9 +306,11 @@ export const claudeProvider: AgentProvider = {
     const prompt = buildClusterPrompt(cluster);
     const response = await callClaude(prompt, DREAM_MODEL, CLUSTER_PROMPT);
     const parsed = parseClusterResponse(response);
+
     if (!parsed) {
       throw new Error("claude.distill: failed to parse cluster response");
     }
+
     return { title: parsed.title, summary: parsed.summary };
   },
 
@@ -284,6 +318,7 @@ export const claudeProvider: AgentProvider = {
     if (candidates.length < 2) return [];
     const prompt = buildSupersedePrompt(candidates);
     const response = await callClaude(prompt, DREAM_MODEL, SUPERSEDE_PROMPT);
+
     return parseSupersedeResponse(response);
   },
 

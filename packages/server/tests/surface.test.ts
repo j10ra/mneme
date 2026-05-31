@@ -23,6 +23,7 @@ describe.skipIf(!HAS_DB)("surface — SQL smoke (requires DATABASE_URL)", () => 
     // the supersede counter all execute against an empty result set; if
     // any column name is wrong, postgres throws.
     const result = await buildSurface(["mneme://test/nonexistent-repo-smoke"], null);
+
     expect(result.repos).toEqual(["mneme://test/nonexistent-repo-smoke"]);
     // computeDelta short-circuits without a prior summary, so its inner
     // count queries don't fire on this path. The populated test below
@@ -41,15 +42,19 @@ describe.skipIf(!HAS_DB)("surface — SQL smoke (requires DATABASE_URL)", () => 
       WHERE kind = 'summary' AND repo IS NOT NULL AND archived_at IS NULL
       LIMIT 1
     `;
+
     if (rows.length === 0) {
       // No data in this DB to exercise the populated path. The empty-repo
       // test still ran. Don't fail — this is informational on a fresh DB.
       console.log("  no repo with summaries found; populated path skipped");
+
       return;
     }
+
     const repo = rows[0]!.repo;
     const { buildSurface } = await import("../src/services/surface.ts");
     const result = await buildSurface([repo], null);
+
     expect(result.repos).toEqual([repo]);
     // Delta must be non-null (we just confirmed a summary exists), which
     // proves both count queries fired without a SQL error.

@@ -1514,7 +1514,7 @@ async function runDreamCycle(deps) {
   }
   Logger.info("dream: lock acquired", { window_key: windowKey });
   activeWindow = windowKey;
-  let t = Date.now();
+  const t = Date.now();
   const candidates = await fetchCandidates(deps, windowKey);
   const repoCount = Object.keys(candidates.repos).length;
   const seedCount = Object.values(candidates.repos).reduce((sum, r) => sum + r.seeds.length, 0);
@@ -2682,9 +2682,7 @@ function createRuntime(deps) {
         const meta = capture.raw_meta ?? {};
         const uuid = typeof meta.message_uuid === "string" ? meta.message_uuid : null;
         entries.push({ id, sessionId, contentSha, uuid });
-      } catch {
-        continue;
-      }
+      } catch {}
     }
     const ledgers = new Map;
     const seenInTick = new Map;
@@ -2765,9 +2763,7 @@ function createRuntime(deps) {
         const tsMatch = id.match(/^(\d+)-/);
         const ts = tsMatch ? Number(tsMatch[1]) : 0;
         entries.push({ id, ts, capture });
-      } catch {
-        continue;
-      }
+      } catch {}
     }
     entries.sort((a, b) => a.ts - b.ts);
     const processed = new Set;

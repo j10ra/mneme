@@ -42,19 +42,25 @@ export function MemoriesFilters({
   // had a chip selected before any matching row was returned).
   const repos = useMemo(() => {
     const set = new Set<string>(knownRepos);
+
     for (const r of filters.repo) set.add(r);
+
     return [...set].sort();
   }, [knownRepos, filters.repo]);
   const machines = useMemo(() => {
     const map = new Map(knownMachines);
+
     for (const id of filters.machine_id) {
       if (!map.has(id)) map.set(id, id.slice(0, 8));
     }
+
     return [...map.entries()];
   }, [knownMachines, filters.machine_id]);
   const kinds = useMemo(() => {
     const set = new Set<string>(knownKinds);
+
     for (const k of filters.kind) set.add(k);
+
     return [...set].sort();
   }, [knownKinds, filters.kind]);
 
@@ -62,9 +68,11 @@ export function MemoriesFilters({
     if (!filters.since) return "all";
     const ms = Date.now() - new Date(filters.since).getTime();
     const days = Math.round(ms / 86_400_000);
+
     if (days <= 1) return "24h";
     if (days <= 7) return "7d";
     if (days <= 30) return "30d";
+
     return "all";
   }, [filters.since]);
 
@@ -81,6 +89,7 @@ export function MemoriesFilters({
   function toggle(field: "repo" | "machine_id" | "kind" | "cluster_status", value: string) {
     const cur = filters[field];
     const next = cur.includes(value) ? cur.filter((v) => v !== value) : cur.concat(value);
+
     onChange({ ...filters, [field]: next });
   }
 

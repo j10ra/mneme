@@ -30,9 +30,11 @@ const SKIP_PREFIXES = [
 
 async function main(): Promise<void> {
   const raw = await Bun.stdin.text();
+
   if (!raw.trim()) return;
 
   let payload: { tool_input?: { file_path?: string } };
+
   try {
     payload = JSON.parse(raw);
   } catch {
@@ -40,13 +42,16 @@ async function main(): Promise<void> {
   }
 
   const filePath = payload.tool_input?.file_path;
+
   if (!filePath) return;
 
   const ext = extname(filePath).toLowerCase();
+
   if (!FORMATTABLE.has(ext)) return;
 
   const repoRoot = resolve(import.meta.dir, "..");
   const rel = filePath.startsWith(repoRoot) ? filePath.slice(repoRoot.length + 1) : filePath;
+
   if (SKIP_PREFIXES.some((p) => rel.startsWith(p))) return;
   if (!existsSync(filePath)) return;
 

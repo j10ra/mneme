@@ -24,12 +24,15 @@ let dirChecked = false;
 
 function ensureDir(): void {
   if (dirChecked) return;
+
   try {
     const dir = dirname(LOG_PATH);
+
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   } catch {
     /* drop */
   }
+
   dirChecked = true;
 }
 
@@ -38,11 +41,14 @@ type Level = "INFO" | "WARN" | "ERROR" | "DEBUG";
 function fmtFields(fields?: Record<string, unknown>): string {
   if (!fields) return "";
   const parts: string[] = [];
+
   for (const [k, v] of Object.entries(fields)) {
     if (v === undefined || v === null) continue;
     const s = typeof v === "string" ? v : JSON.stringify(v);
+
     parts.push(`${k}=${s}`);
   }
+
   return parts.length ? " " + parts.join(" ") : "";
 }
 
@@ -58,6 +64,7 @@ export function plog(
   ensureDir();
   const ts = new Date().toISOString().slice(11, 23);
   const line = `${ts} ${level.padEnd(5)} ${source}: ${msg}${fmtFields(fields)}\n`;
+
   try {
     appendFileSync(LOG_PATH, line);
   } catch {

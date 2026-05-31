@@ -13,6 +13,7 @@ import { listAgents, pickAgent } from "../src/agents/index.ts";
 describe("agent registry", () => {
   test("pickAgent returns the named provider", () => {
     const provider = pickAgent("claude");
+
     expect(provider.name).toBe("claude");
   });
 
@@ -22,6 +23,7 @@ describe("agent registry", () => {
 
   test("listAgents enumerates registered provider names", () => {
     const names = listAgents();
+
     expect(names).toContain("claude");
   });
 });

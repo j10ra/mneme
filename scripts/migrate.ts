@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 const url = process.env.DATABASE_URL;
+
 if (!url) {
   console.error("DATABASE_URL not set (check .env)");
   process.exit(1);
@@ -41,16 +42,20 @@ try {
   }
 
   let ranCount = 0;
+
   for (const file of files) {
     if (applied.has(file)) {
       console.log(`✓ ${file} (already applied)`);
       continue;
     }
+
     const sqlText = readFileSync(join(migrationsDir, file), "utf8");
+
     if (dryRun) {
       console.log(`would apply: ${file} (${sqlText.length} bytes)`);
       continue;
     }
+
     process.stdout.write(`applying ${file} ... `);
     await sql.begin(async (tx) => {
       await tx.unsafe(sqlText);

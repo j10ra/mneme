@@ -57,6 +57,7 @@ function err(id: unknown, code: number, message: string): string {
 
 let cfg: MnemeConfig | undefined;
 let cfgError: string | undefined;
+
 try {
   cfg = loadConfig();
 } catch (e) {
@@ -73,9 +74,11 @@ const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
 for await (const rawLine of rl) {
   const line = rawLine.trim();
+
   if (!line) continue;
 
   let req: { id?: unknown; method?: string };
+
   try {
     req = JSON.parse(line);
   } catch {
@@ -96,14 +99,17 @@ for await (const rawLine of rl) {
     );
     continue;
   }
+
   if (req.method === "notifications/initialized") {
     // Notification: no response.
     continue;
   }
+
   if (req.method === "ping") {
     process.stdout.write(ok(req.id, {}) + "\n");
     continue;
   }
+
   if (req.method === "tools/list") {
     process.stdout.write(ok(req.id, { tools: [TOOL_DEF] }) + "\n");
     continue;
@@ -119,6 +125,7 @@ for await (const rawLine of rl) {
         ) + "\n",
       );
     }
+
     continue;
   }
 
@@ -128,6 +135,7 @@ for await (const rawLine of rl) {
   // to the agent locally rather than forwarding SQL the server will
   // reject anyway.
   let bodyToForward = line;
+
   if (
     typeof (req as { method?: unknown }).method === "string" &&
     (req as { method: string }).method === "tools/call"
@@ -139,17 +147,23 @@ for await (const rawLine of rl) {
       params && params.name === "mneme_sql" && typeof params.arguments?.query === "string"
         ? (params.arguments.query as string)
         : null;
+
     if (sql) {
       const hasEmbed = /\bembed\(/i.test(sql);
+
       plog("mneme_sql: tools/call", { chars: sql.length, has_embed: hasEmbed });
       const result = await substituteEmbedsViaDaemon(cfg, sql);
+
       if (result.kind === "error") {
         plog(`tools/call: ${result.message}`);
+
         if (req.id !== undefined) {
           process.stdout.write(err(req.id, -32603, result.message) + "\n");
         }
+
         continue;
       }
+
       if (result.kind === "ok" && params) {
         const rewrittenReq = {
           ...(req as Record<string, unknown>),
@@ -161,6 +175,7 @@ for await (const rawLine of rl) {
             },
           },
         };
+
         bodyToForward = JSON.stringify(rewrittenReq);
         plog("tools/call: forwarding sanitized SQL with vector literals");
       }
@@ -178,24 +193,31 @@ for await (const rawLine of rl) {
       },
       body: bodyToForward,
     });
+
     if (resp.status === 204) continue; // notification — no response expected
 
     const text = await resp.text();
+
     if (resp.status >= 400 && req.id !== undefined) {
       let detail = text;
+
       try {
         const j = JSON.parse(text);
+
         detail = typeof j.error === "string" ? j.error : JSON.stringify(j);
       } catch {
         // keep raw text
       }
+
       process.stdout.write(err(req.id, -32603, `mneme upstream ${resp.status}: ${detail}`) + "\n");
       continue;
     }
+
     process.stdout.write(text + "\n");
   } catch (e) {
     if (req.id !== undefined) {
       const msg = e instanceof Error ? e.message : String(e);
+
       process.stdout.write(err(req.id, -32603, `mneme upstream error: ${msg}`) + "\n");
     }
   }

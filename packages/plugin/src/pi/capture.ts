@@ -33,6 +33,7 @@ const MIN_ASSISTANT_LEN = 200;
 
 export default function mnemeCapture(pi) {
   let cfg;
+
   try {
     cfg = loadConfig();
   } catch {
@@ -54,6 +55,7 @@ export default function mnemeCapture(pi) {
 
   pi.on("session_start", (_event, ctx) => {
     if (blocked(ctx)) return;
+
     try {
       registerProject(ctx.cwd);
     } catch {
@@ -64,6 +66,7 @@ export default function mnemeCapture(pi) {
   pi.on("input", (event, ctx) => {
     if (event?.source !== "interactive") return;
     const text = typeof event.text === "string" ? event.text.trim() : "";
+
     if (!text || blocked(ctx)) return;
     writeCapture(cfg, { source: "pi_prompt", ...scopeFor(ctx), content: text });
   });
@@ -71,12 +74,14 @@ export default function mnemeCapture(pi) {
   pi.on("message_end", (event, ctx) => {
     if (blocked(ctx)) return;
     const msg = event?.message;
+
     if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) return;
     const text = msg.content
       .filter((b) => b && b.type === "text" && typeof b.text === "string")
       .map((b) => b.text)
       .join("\n\n")
       .trim();
+
     if (text.length < MIN_ASSISTANT_LEN) return;
     writeCapture(cfg, {
       source: "pi_assistant",
@@ -94,6 +99,7 @@ export default function mnemeCapture(pi) {
       event.content,
       event.isError,
     );
+
     if (!observation) return; // oversize even after scrubbing — drop.
     writeCapture(cfg, {
       source: "pi_tool",

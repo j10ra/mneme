@@ -46,12 +46,15 @@ function reportingCall<TArgs extends unknown[], TResult>(
     try {
       const result = await fn(...args);
       const r = breaker.report("success");
+
       if (r.priorFailures > 0) {
         Logger.info("llm.pick: breaker reset", { provider: "openrouter" });
       }
+
       return result;
     } catch (e) {
       const r = breaker.report("failure");
+
       if (r.openedNow) {
         Logger.info("llm.pick: breaker opened", {
           provider: "openrouter",
@@ -59,6 +62,7 @@ function reportingCall<TArgs extends unknown[], TResult>(
           reopensAt: new Date(Date.now() + PICKER_COOLDOWN_MS).toISOString(),
         });
       }
+
       throw e;
     }
   };
@@ -93,12 +97,15 @@ export function pickDigest(): DigestInstance {
   // the gate that turns the whole worker off when the cloud path can't
   // serve the call.
   const available = env.HAS_OPENROUTER && !breaker.gate().open;
+
   if (available && provider.findSupersedes) {
     base.findSupersedes = reportingCall(provider.findSupersedes);
   }
+
   if (available && provider.judgeClusterMerge) {
     base.judgeClusterMerge = reportingCall(provider.judgeClusterMerge);
   }
+
   return base;
 }
 

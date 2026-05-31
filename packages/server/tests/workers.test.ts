@@ -23,6 +23,7 @@ const HAS_DB = Boolean(process.env.DATABASE_URL);
 describe.skipIf(!HAS_DB)("worker SQL smoke (requires DATABASE_URL)", () => {
   test("runKeepaliveOnce: SELECT 1 against the configured DB", async () => {
     const { runKeepaliveOnce } = await import("../src/worker/keepalive.ts");
+
     await runKeepaliveOnce();
   });
 });

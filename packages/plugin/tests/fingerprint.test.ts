@@ -12,6 +12,7 @@ describe("machineFingerprint", () => {
   test("returns a stable id on the host platform", () => {
     const id = machineFingerprint();
     const p = platform();
+
     if (p === "darwin" || p === "linux" || p === "win32") {
       expect(typeof id).toBe("string");
       expect((id ?? "").length).toBeGreaterThan(8);
@@ -23,6 +24,7 @@ describe("machineFingerprint", () => {
   test("is deterministic across calls", () => {
     const a = machineFingerprint();
     const b = machineFingerprint();
+
     expect(a).toBe(b);
   });
 });

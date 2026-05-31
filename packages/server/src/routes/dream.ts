@@ -19,7 +19,7 @@
 // opportunistically inside acquireDreamLock; an admin route can force-
 // clear earlier via /api/dream/clear-stale.
 
-import { Hono } from "hono";
+import type { Hono } from "hono";
 import { stream } from "hono/streaming";
 import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import {
@@ -52,6 +52,7 @@ export async function acquireDreamLock(
     ON CONFLICT (window_key) DO NOTHING
     RETURNING claimed_by_machine_id
   `;
+
   if (inserted.length > 0) {
     return { acquired: true, window_key: windowKey };
   }
@@ -66,6 +67,7 @@ export async function acquireDreamLock(
       AND claimed_at < now() - (${STALE_LOCK_AGE_MS}::bigint || ' milliseconds')::interval
     RETURNING claimed_by_machine_id
   `;
+
   if (reaped.length > 0) {
     Logger.info("dream: reaped stale lock", {
       window_key: windowKey,
@@ -77,6 +79,7 @@ export async function acquireDreamLock(
       ON CONFLICT (window_key) DO NOTHING
       RETURNING claimed_by_machine_id
     `;
+
     if (retry.length > 0) {
       return { acquired: true, window_key: windowKey };
     }
@@ -85,6 +88,7 @@ export async function acquireDreamLock(
   const existing = await sql<{ claimed_by_machine_id: string }[]>`
     SELECT claimed_by_machine_id FROM _ops.dream_runs WHERE window_key = ${windowKey}
   `;
+
   return {
     acquired: false,
     window_key: windowKey,
@@ -115,6 +119,7 @@ export async function abortDreamLock(windowKey: number, machineId: string): Prom
       AND claimed_by_machine_id = ${machineId}
       AND completed_at IS NULL
   `;
+
   return result.count;
 }
 
@@ -180,14 +185,18 @@ export function assembleRepos(
 
   for (const row of edgeRows) {
     const repoKey = row.repo ?? "__none__";
+
     addMemory(repoKey, row);
+
     if (row.neighbor_id) {
       repos[repoKey]!.edges.push([row.id, row.neighbor_id]);
     }
   }
+
   for (const n of neighborRows) {
     addMemory(n.repo ?? "__none__", n);
   }
+
   return repos;
 }
 
@@ -282,6 +291,7 @@ export async function fetchDreamSeedIds(machineId: string): Promise<string[]> {
     ORDER BY meta->>'last_dreamed_at' NULLS FIRST, created_at ASC
     LIMIT ${DREAM_MAX_CANDIDATES_PER_CYCLE}
   `;
+
   return rows.map((r) => r.id);
 }
 
@@ -294,6 +304,7 @@ export async function fetchDreamEdgeBatch(
   machineId: string,
 ): Promise<EdgeRow[]> {
   if (seedIds.length === 0) return [];
+
   return sql<EdgeRow[]>`
     WITH seeds AS (
       SELECT id, repo, embedding, content, kind, created_at
@@ -328,6 +339,7 @@ export async function fetchDreamEdgeBatch(
  *  trust these ids and just load content. */
 export async function fetchDreamNeighborContent(ids: string[]): Promise<NeighborRow[]> {
   if (ids.length === 0) return [];
+
   return sql<NeighborRow[]>`
     SELECT id, repo, content, kind, created_at
     FROM memories
@@ -377,10 +389,12 @@ export async function streamSeedBatches(args: {
 }): Promise<{ seenSeeds: Set<string>; neighborIds: Set<string> }> {
   const seenSeeds = new Set<string>();
   const neighborIds = new Set<string>();
+
   for (let i = 0; i < args.seedIds.length; i += args.batchSize) {
     if (args.stream.aborted) return { seenSeeds, neighborIds };
     const batch = args.seedIds.slice(i, i + args.batchSize);
     const edgeRows = await args.fetchEdges(batch, args.machineId);
+
     for (const row of edgeRows) {
       if (args.stream.aborted) return { seenSeeds, neighborIds };
       await args.stream.writeln(
@@ -402,9 +416,11 @@ export async function streamSeedBatches(args: {
       seenSeeds.add(row.id);
       if (row.neighbor_id) neighborIds.add(row.neighbor_id);
     }
+
     if (args.stream.aborted) return { seenSeeds, neighborIds };
     await args.stamp(batch);
   }
+
   return { seenSeeds, neighborIds };
 }
 
@@ -434,16 +450,22 @@ export function validateClustersBody(input: unknown): ClustersValidation {
   if (!input || typeof input !== "object") {
     return { ok: false, error: "body must be an object" };
   }
+
   const b = input as { window_key?: unknown; clusters?: unknown };
+
   if (typeof b.window_key !== "number") {
     return { ok: false, error: "window_key required" };
   }
+
   if (!Array.isArray(b.clusters)) {
     return { ok: false, error: "clusters[] required" };
   }
+
   for (let i = 0; i < b.clusters.length; i++) {
     const c = b.clusters[i] as Record<string, unknown> | undefined;
+
     if (!c) return { ok: false, error: `clusters[${i}] missing` };
+
     if (
       !Array.isArray(c.member_ids) ||
       c.member_ids.length === 0 ||
@@ -454,15 +476,19 @@ export function validateClustersBody(input: unknown): ClustersValidation {
         error: `clusters[${i}].member_ids must be a non-empty string array`,
       };
     }
+
     if (typeof c.title !== "string" || !c.title.trim()) {
       return { ok: false, error: `clusters[${i}].title required` };
     }
+
     if (typeof c.summary !== "string" || !c.summary.trim()) {
       return { ok: false, error: `clusters[${i}].summary required` };
     }
+
     if (typeof c.embedding_model !== "string" || !c.embedding_model.trim()) {
       return { ok: false, error: `clusters[${i}].embedding_model required` };
     }
+
     if (
       c.summary_embedding !== undefined &&
       (!Array.isArray(c.summary_embedding) || c.summary_embedding.length !== EMBEDDER_DIM)
@@ -473,6 +499,7 @@ export function validateClustersBody(input: unknown): ClustersValidation {
       };
     }
   }
+
   return { ok: true, body: b as ClustersBody };
 }
 
@@ -502,6 +529,7 @@ export async function writeClusters(
         FROM memories
         WHERE id = ${cluster.member_ids[0]!}
       `;
+
       if (!seed) continue;
 
       const meta = {
@@ -550,6 +578,7 @@ export async function writeClusters(
       // plus unmarked members would re-distill the same content
       // forever.
       let clusterId: string;
+
       if (clusterRow) {
         clusterId = clusterRow.id;
         written++;
@@ -557,6 +586,7 @@ export async function writeClusters(
         const [existing] = await tx<{ id: string }[]>`
           SELECT id FROM memories WHERE chunk_id = ${chunkId} LIMIT 1
         `;
+
         if (!existing) continue;
         clusterId = existing.id;
       }
@@ -574,6 +604,7 @@ export async function writeClusters(
       // archived member is still a valid supersede participant; a missing id
       // means a non-existent (hallucinated) id, which is a correct rejection.
       const pairs = cluster.supersede_pairs ?? [];
+
       if (pairs.length > 0) {
         const memberRows = await tx<{ id: string; created_at: Date }[]>`
           SELECT id::text AS id, created_at
@@ -581,6 +612,7 @@ export async function writeClusters(
           WHERE id = ANY(${cluster.member_ids})
         `;
         const { valid, rejected } = validateSupersedePairs(pairs, memberRows);
+
         for (const r of rejected) {
           Logger.warn("dream: supersede pair rejected", undefined, {
             reason: r.reason,
@@ -589,6 +621,7 @@ export async function writeClusters(
           });
           supersedesRejected++;
         }
+
         for (const pair of valid) {
           // Drop in_cluster atomically: a superseded memory is logically
           // retired, so it shouldn't keep claiming cluster membership.
@@ -605,6 +638,7 @@ export async function writeClusters(
   });
 
   await releaseDreamLock(body.window_key, machineId, written);
+
   return { written, supersedes, supersedes_rejected: supersedesRejected };
 }
 
@@ -617,6 +651,7 @@ export async function clearStaleDreamLocks(
       AND claimed_at < now() - (${maxAgeSeconds}::bigint || ' seconds')::interval
     RETURNING window_key
   `;
+
   return { cleared: rows.length, window_keys: rows.map((r) => Number(r.window_key)) };
 }
 
@@ -637,10 +672,12 @@ export function mountDreamRoutes(app: Hono): void {
           ? body.max_age_seconds
           : 60;
       const result = await clearStaleDreamLocks(maxAge);
+
       Logger.info("dream: stale locks cleared", {
         ...result,
         max_age_seconds: maxAge,
       });
+
       return c.json(result);
     },
   );
@@ -648,15 +685,21 @@ export function mountDreamRoutes(app: Hono): void {
   app.post("/api/dream/lock", mnemeRoute("api.dream.lock"), requireAuth("capture"), async (c) => {
     const body = (await c.req.json().catch(() => null)) as { window_key?: unknown } | null;
     const windowKey = body && typeof body.window_key === "number" ? body.window_key : NaN;
+
     if (!Number.isFinite(windowKey)) {
       return c.json({ error: "window_key required" }, 400);
     }
+
     const auth = currentAuth();
+
     if (!auth?.machineId) {
       return c.json({ error: "dream lock requires per-machine token" }, 400);
     }
+
     const result = await acquireDreamLock(windowKey, auth.machineId);
+
     if (result.acquired) return c.json(result);
+
     return c.json(result, 409);
   });
 
@@ -671,14 +714,19 @@ export function mountDreamRoutes(app: Hono): void {
     async (c) => {
       const body = (await c.req.json().catch(() => null)) as { window_key?: unknown } | null;
       const windowKey = body && typeof body.window_key === "number" ? body.window_key : NaN;
+
       if (!Number.isFinite(windowKey)) {
         return c.json({ error: "window_key required" }, 400);
       }
+
       const auth = currentAuth();
+
       if (!auth?.machineId) {
         return c.json({ error: "dream lock release requires per-machine token" }, 400);
       }
+
       const aborted = await abortDreamLock(windowKey, auth.machineId);
+
       return c.json({ window_key: windowKey, aborted });
     },
   );
@@ -689,21 +737,26 @@ export function mountDreamRoutes(app: Hono): void {
     requireAuth("capture"),
     async (c) => {
       const auth = currentAuth();
+
       if (!auth?.machineId) {
         return c.json({ error: "candidates require per-machine token" }, 400);
       }
+
       const machineId = auth.machineId;
       const windowKeyStr = c.req.query("window_key");
       const windowKey = windowKeyStr ? Number(windowKeyStr) : NaN;
+
       if (!Number.isFinite(windowKey)) {
         return c.json({ error: "window_key required" }, 400);
       }
+
       // Verify caller actually holds this window's lock.
       const rows = await sql<{ claimed_by_machine_id: string; completed_at: Date | null }[]>`
         SELECT claimed_by_machine_id, completed_at
         FROM _ops.dream_runs
         WHERE window_key = ${windowKey}
       `;
+
       if (
         !rows[0] ||
         rows[0].claimed_by_machine_id !== machineId ||
@@ -717,12 +770,15 @@ export function mountDreamRoutes(app: Hono): void {
       // even when the slice is dense. Buffered JSON path stays as a
       // backward-compat fallback for pre-1.1.41 daemons.
       const accept = c.req.header("accept") ?? "";
+
       if (accept.includes("application/x-ndjson")) {
         c.header("Content-Type", "application/x-ndjson; charset=utf-8");
         c.header("Cache-Control", "no-store");
+
         return stream(c, async (s) => {
           const seenSeeds = new Set<string>();
           const neighborIds = new Set<string>();
+
           try {
             await s.writeln(JSON.stringify({ t: "meta", window_key: windowKey }));
 
@@ -739,14 +795,17 @@ export function mountDreamRoutes(app: Hono): void {
                 fetchEdges: fetchDreamEdgeBatch,
                 stamp: stampDreamedSeeds,
               });
+
             for (const id of batchSeenSeeds) seenSeeds.add(id);
             for (const id of batchNeighborIds) neighborIds.add(id);
 
             const unseenNeighborIds = [...neighborIds].filter((id) => !seenSeeds.has(id));
+
             for (let i = 0; i < unseenNeighborIds.length; i += DREAM_STREAM_NEIGHBOR_BATCH) {
               if (s.aborted) return;
               const batch = unseenNeighborIds.slice(i, i + DREAM_STREAM_NEIGHBOR_BATCH);
               const nrows = await fetchDreamNeighborContent(batch);
+
               for (const row of nrows) {
                 await s.writeln(
                   JSON.stringify({
@@ -773,6 +832,7 @@ export function mountDreamRoutes(app: Hono): void {
             }
           } catch (err) {
             Logger.warn("dream candidates stream failed", err, { window_key: windowKey });
+
             try {
               await s.writeln(
                 JSON.stringify({
@@ -788,7 +848,9 @@ export function mountDreamRoutes(app: Hono): void {
       }
 
       const { candidates, seedIds } = await fetchDreamCandidates(windowKey, machineId);
+
       await stampDreamedSeeds(seedIds);
+
       return c.json(candidates);
     },
   );
@@ -799,11 +861,14 @@ export function mountDreamRoutes(app: Hono): void {
     requireAuth("capture"),
     async (c) => {
       const auth = currentAuth();
+
       if (!auth?.machineId) {
         return c.json({ error: "clusters submit requires per-machine token" }, 400);
       }
+
       const raw = await c.req.json().catch(() => null);
       const validation = validateClustersBody(raw);
+
       if (!validation.ok) return c.json({ error: validation.error }, 400);
 
       const rows = await sql<{ claimed_by_machine_id: string; completed_at: Date | null }[]>`
@@ -811,6 +876,7 @@ export function mountDreamRoutes(app: Hono): void {
         FROM _ops.dream_runs
         WHERE window_key = ${validation.body.window_key}
       `;
+
       if (
         !rows[0] ||
         rows[0].claimed_by_machine_id !== auth.machineId ||
@@ -820,10 +886,12 @@ export function mountDreamRoutes(app: Hono): void {
       }
 
       const result = await writeClusters(validation.body, auth.machineId);
+
       Logger.info("dream clusters written", {
         window_key: validation.body.window_key,
         ...result,
       });
+
       return c.json(result);
     },
   );

@@ -21,6 +21,7 @@ async function sha256Hex(input: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(input);
   const hash = await crypto.subtle.digest("SHA-256", data);
+
   return Array.from(new Uint8Array(hash))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -35,7 +36,9 @@ export async function hashKey(plaintext: string): Promise<string> {
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a, "utf8");
   const bb = Buffer.from(b, "utf8");
+
   if (ab.length !== bb.length) return false;
+
   return timingSafeEqual(ab, bb);
 }
 
@@ -51,15 +54,19 @@ export function requireAuth(scope: string): MiddlewareHandler {
   return async (c, next) => {
     if (!_sql) {
       Logger.error("auth not configured: call configureAuth(sql) before using requireAuth");
+
       return c.json({ error: "auth_misconfigured" }, 500);
     }
 
     const header = c.req.header("authorization") ?? "";
     const match = /^Bearer\s+(\S+)$/.exec(header);
+
     if (!match) {
       return c.json({ error: "unauthorized" }, 401);
     }
+
     const key = match[1];
+
     if (!key) {
       return c.json({ error: "unauthorized" }, 401);
     }
@@ -76,10 +83,12 @@ export function requireAuth(scope: string): MiddlewareHandler {
     // machine sharing a locked IP keeps working.
     const adminPassword = process.env.ADMIN_PASSWORD ?? "";
     const adminLocked = adminPassword ? adminLockActive(ip) : false;
+
     if (adminPassword && !adminLocked && safeEqual(key, adminPassword)) {
       clearIpFailures(ip);
       Logger.warn(`auth: admin token used directly (scope=${scope})`);
       const ctx = storage.getStore();
+
       if (ctx) {
         ctx.auth = {
           keyId: "admin",
@@ -88,7 +97,9 @@ export function requireAuth(scope: string): MiddlewareHandler {
           scopes: ["*"],
         };
       }
+
       await next();
+
       return;
     }
 
@@ -103,20 +114,25 @@ export function requireAuth(scope: string): MiddlewareHandler {
       LIMIT 1
     `;
     const row = rows[0];
+
     if (!row) {
       // Terminal miss — neither the admin password nor a valid key. This is
       // exactly what an admin-password guess looks like, so count it.
       if (adminPassword) {
         recordAdminFailure(ip);
+
         if (adminLocked) {
           Logger.warn(`auth: admin path locked, request refused (ip=${ip})`);
+
           return c.json({ error: "unauthorized" }, 401, {
             "Retry-After": String(adminLockRetryAfterSec(ip)),
           });
         }
       }
+
       return c.json({ error: "unauthorized" }, 401);
     }
+
     if (!row.scopes.includes(scope)) {
       return c.json({ error: "forbidden", required: scope }, 403);
     }
@@ -125,6 +141,7 @@ export function requireAuth(scope: string): MiddlewareHandler {
     clearIpFailures(ip);
 
     const ctx = storage.getStore();
+
     if (ctx) {
       ctx.auth = {
         keyId: row.id,

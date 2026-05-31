@@ -46,9 +46,11 @@ const REDACTED_DATA_PREFIX = "[redacted: ";
 export function scrub(input: string): string {
   if (!input) return input;
   let out = input.replace(PRIVATE_TAG_RE, "[private redacted]");
+
   for (const { name, re } of SECRET_PATTERNS) {
     out = out.replace(re, `[REDACTED:${name}]`);
   }
+
   return out;
 }
 
@@ -63,14 +65,17 @@ export function scrub(input: string): string {
 function isBinaryContentBlock(obj: Record<string, unknown>): boolean {
   if (obj.type !== "image" && obj.type !== "document") return false;
   const source = obj.source as Record<string, unknown> | undefined;
+
   if (!source || source.type !== "base64") return false;
   const data = source.data;
+
   return typeof data === "string" && !data.startsWith(REDACTED_DATA_PREFIX);
 }
 
 function redactBinarySource(obj: Record<string, unknown>): Record<string, unknown> {
   const source = obj.source as Record<string, unknown>;
   const bytes = (source.data as string).length;
+
   return {
     ...obj,
     source: {
@@ -86,16 +91,22 @@ function redactBinarySource(obj: Record<string, unknown>): Record<string, unknow
 export function scrubData(data: unknown): unknown {
   if (typeof data === "string") return scrub(data);
   if (Array.isArray(data)) return data.map(scrubData);
+
   if (data && typeof data === "object") {
     let obj = data as Record<string, unknown>;
+
     if (isBinaryContentBlock(obj)) {
       obj = redactBinarySource(obj);
     }
+
     const out: Record<string, unknown> = {};
+
     for (const [k, v] of Object.entries(obj)) {
       out[k] = scrubData(v);
     }
+
     return out;
   }
+
   return data;
 }

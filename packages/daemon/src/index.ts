@@ -69,11 +69,13 @@ async function readConfig(): Promise<DaemonConfig> {
   const path = join(homedir(), ".mneme", "config.json");
   const raw = await readFile(path, "utf8");
   const shaped = JSON.parse(raw) as PluginShapedConfig;
+
   if (!shaped.daemon) {
     throw new Error(
       "config.json has no `daemon` section; run /mneme:setup to install the daemon service",
     );
   }
+
   return {
     server_url: shaped.server.url.replace(/\/$/, ""),
     machine_id: shaped.machine.id,
@@ -96,6 +98,7 @@ export function pushBundleViaServer(serverUrl: string, token: string) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PUSH_FETCH_TIMEOUT_MS);
     let response: Response;
+
     try {
       response = await fetch(`${serverUrl}/api/bundle`, {
         method: "POST",
@@ -110,17 +113,21 @@ export function pushBundleViaServer(serverUrl: string, token: string) {
       if (controller.signal.aborted) {
         throw new Error(`push timed out after ${PUSH_FETCH_TIMEOUT_MS}ms`);
       }
+
       throw err;
     } finally {
       clearTimeout(timer);
     }
+
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
       const err = new Error(`push failed ${response.status}: ${detail.slice(0, 300)}`);
+
       // 4xx are permanent (bad request, auth); 5xx and network are transient.
       if (response.status >= 400 && response.status < 500) {
         Object.assign(err, { permanent: true });
       }
+
       throw err;
     }
   };
@@ -182,6 +189,7 @@ export async function startDaemon(): Promise<void> {
   });
 
   const rehydrated = await outbox.rehydrateFailed();
+
   if (rehydrated > 0) {
     Logger.info("outbox: rehydrated failed captures", { count: rehydrated });
   }
@@ -199,6 +207,7 @@ export async function startDaemon(): Promise<void> {
       if (!agent.distill) {
         throw new Error(`agent ${agent.name} does not support dream (no distill())`);
       }
+
       return agent.distill(memories);
     },
     embed: embedBatch,
@@ -227,6 +236,7 @@ export async function startDaemon(): Promise<void> {
       embed: embedBatch,
       outbox: dreamOutbox,
     });
+
     if (resumed.resumed > 0) {
       Logger.info("daemon: dream resume complete", resumed);
     }
@@ -235,6 +245,7 @@ export async function startDaemon(): Promise<void> {
   }
 
   const app = new Hono();
+
   mountOpsRoutes(app, runtime);
   mountCaptureRoute(app, runtime);
   mountEmbedRoute(app);
@@ -272,9 +283,11 @@ export async function startDaemon(): Promise<void> {
   function makeTick(name: string, fn: () => Promise<void>): () => Promise<void> {
     let isTicking = false;
     const traceName = `daemon.${name}_tick`;
+
     return async () => {
       if (isTicking) return;
       isTicking = true;
+
       try {
         await withRootTrace(traceName, "daemon", fn);
       } catch (err) {
@@ -318,6 +331,7 @@ export async function startDaemon(): Promise<void> {
       outbox.list("failed"),
     ]);
     let response: Response;
+
     try {
       // Legacy wire-shape field names; kept for older server compat.
       response = await fetch(`${config.server_url}/api/heartbeat`, {
@@ -339,10 +353,13 @@ export async function startDaemon(): Promise<void> {
         Logger.debug("heartbeat: skipped (offline)", {
           error: err instanceof Error ? err.message : String(err),
         });
+
         return;
       }
+
       throw err;
     }
+
     if (!response.ok) {
       throw new Error(`heartbeat ${response.status}`);
     }
@@ -382,6 +399,7 @@ export async function startDaemon(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     Logger.info(`daemon ${signal} — releasing dream lock + flushing traces`);
     const window = getActiveDreamWindow();
+
     if (window !== null) {
       try {
         const resp = await fetch(`${config.server_url}/api/dream/lock/release`, {
@@ -393,19 +411,23 @@ export async function startDaemon(): Promise<void> {
           body: JSON.stringify({ window_key: window }),
           signal: AbortSignal.timeout(2000),
         });
+
         if (resp.ok) Logger.info("daemon: released dream lock", { window_key: window });
         else Logger.warn(`dream lock release returned ${resp.status}`, { window_key: window });
       } catch (err) {
         Logger.warn("dream lock release on shutdown failed", err);
       }
     }
+
     try {
       await getTraceStore()?.stop();
     } catch (err) {
       Logger.warn("trace flush on shutdown failed", err);
     }
+
     process.exit(0);
   };
+
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
 }
@@ -423,28 +445,37 @@ const CACHE_WATCH_DEBOUNCE_MS = 5000;
 function isHigherVersion(candidate: string, baseline: string): boolean {
   const a = candidate.split(".").map(Number);
   const b = baseline.split(".").map(Number);
+
   for (let i = 0; i < 3; i++) {
     if ((a[i] ?? 0) > (b[i] ?? 0)) return true;
     if ((a[i] ?? 0) < (b[i] ?? 0)) return false;
   }
+
   return false;
 }
 
 function startCacheWatch(): void {
   const ownPath = process.argv[1];
+
   if (!ownPath || !ownPath.endsWith("daemon.js")) {
     Logger.info("daemon: cache watch skipped (not running from bundle)");
+
     return;
   }
+
   const ownVerDir = dirname(ownPath);
   const cacheParent = dirname(ownVerDir);
   const ownVersion = basename(ownVerDir);
+
   if (!VERSION_RE.test(ownVersion)) {
     Logger.info(`daemon: cache watch skipped (not a versioned dir: ${ownVersion})`);
+
     return;
   }
+
   if (!existsSync(cacheParent)) {
     Logger.warn(`daemon: cache watch skipped (parent missing: ${cacheParent})`);
+
     return;
   }
 
@@ -453,19 +484,24 @@ function startCacheWatch(): void {
   const checkAndRefresh = (): void => {
     try {
       let target: string | null = null;
+
       for (const entry of readdirSync(cacheParent)) {
         if (!VERSION_RE.test(entry)) continue;
+
         if (isHigherVersion(entry, ownVersion) && (!target || isHigherVersion(entry, target))) {
           target = entry;
         }
       }
+
       if (!target) return;
       const refreshScript = join(cacheParent, target, "src/daemon/refresh-daemon.ts");
+
       if (!existsSync(refreshScript)) {
         // /plugin update is mid-download; refresh-daemon.ts hasn't
         // arrived yet. Next watch event will re-trigger.
         return;
       }
+
       Logger.info("daemon: newer cache detected — self-refreshing", {
         from: ownVersion,
         to: target,
@@ -474,6 +510,7 @@ function startCacheWatch(): void {
         detached: true,
         stdio: "ignore",
       });
+
       child.unref();
     } catch (err) {
       Logger.warn("daemon: cache watch check failed", err);

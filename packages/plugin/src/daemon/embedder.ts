@@ -38,10 +38,13 @@ export async function embedViaDaemon(
       body: JSON.stringify({ texts: [text], source }),
       signal: AbortSignal.timeout(15_000),
     });
+
     if (!resp.ok) return null;
     const body = (await resp.json()) as { vectors?: number[][] };
+
     if (!Array.isArray(body.vectors) || body.vectors.length !== 1) return null;
     const vec = body.vectors[0];
+
     return Array.isArray(vec) && vec.length > 0 ? vec : null;
   } catch {
     return null;

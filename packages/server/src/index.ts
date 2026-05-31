@@ -64,11 +64,13 @@ const port = env.PORT;
 async function shutdown(signal: string): Promise<void> {
   Logger.info(`${signal} received, flushing traces and closing pool`);
   await stopWorker();
+
   try {
     await getTraceStore()?.stop();
   } finally {
     await sql.end({ timeout: 5 });
   }
+
   process.exit(0);
 }
 

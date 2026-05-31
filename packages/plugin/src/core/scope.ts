@@ -19,6 +19,7 @@ import type { MnemeConfig } from "./config.ts";
  */
 export function canonicalRepo(cwd?: string): string | null {
   const workdir = cwd ?? process.cwd();
+
   if (!workdir) return null;
 
   try {
@@ -27,11 +28,15 @@ export function canonicalRepo(cwd?: string): string | null {
       encoding: "utf8",
       cwd: workdir,
     }).trim();
+
     if (url) {
       const ssh = /^git@([^:]+):(.+?)(?:\.git)?$/.exec(url);
+
       if (ssh) return `${ssh[1]}/${ssh[2]}`;
       const https = /^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/.exec(url);
+
       if (https) return `${https[1]}/${https[2]}`;
+
       return url;
     }
   } catch {
@@ -39,7 +44,9 @@ export function canonicalRepo(cwd?: string): string | null {
   }
 
   const name = basename(workdir);
+
   if (!name || name === "/" || name === ".") return null;
+
   return `dir:${name}`;
 }
 
@@ -64,15 +71,20 @@ export function canonicalRepo(cwd?: string): string | null {
 export function repoForFile(filePath: string): string | null {
   if (!filePath || !isAbsolute(filePath)) return null;
   let dir = dirname(filePath);
+
   for (let i = 0; i < 32 && dir; i++) {
     if (existsSync(join(dir, ".git"))) {
       const repo = canonicalRepo(dir);
+
       return repo && !repo.startsWith("dir:") ? repo : null;
     }
+
     const parent = dirname(dir);
+
     if (parent === dir) break;
     dir = parent;
   }
+
   return null;
 }
 
@@ -98,9 +110,11 @@ export function discoverRepos(cwd: string): string[] {
   const out: string[] = [];
 
   const self = canonicalRepo(cwd);
+
   if (self) out.push(self);
 
   let entries: import("node:fs").Dirent[];
+
   try {
     entries = readdirSync(cwd, { withFileTypes: true });
   } catch {
@@ -111,24 +125,31 @@ export function discoverRepos(cwd: string): string[] {
     if (!entry.isDirectory()) continue;
     if (entry.name.startsWith(".")) continue;
     const child = join(cwd, entry.name);
+
     if (!existsSync(join(child, ".git"))) continue;
     const repo = canonicalRepo(child);
+
     if (repo && !repo.startsWith("dir:")) out.push(repo);
   }
 
   const wtDir = join(cwd, "wt");
+
   if (existsSync(wtDir)) {
     let wtEntries: import("node:fs").Dirent[];
+
     try {
       wtEntries = readdirSync(wtDir, { withFileTypes: true });
     } catch {
       return Array.from(new Set(out));
     }
+
     for (const entry of wtEntries) {
       if (!entry.isDirectory()) continue;
       const wt = join(wtDir, entry.name);
+
       if (!existsSync(join(wt, ".git"))) continue;
       const repo = canonicalRepo(wt);
+
       if (repo && !repo.startsWith("dir:")) out.push(repo);
     }
   }

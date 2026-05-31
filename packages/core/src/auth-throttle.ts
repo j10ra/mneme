@@ -15,6 +15,7 @@
 
 function numFromEnv(name: string, dflt: number): number {
   const v = Number(process.env[name]);
+
   return Number.isFinite(v) && v > 0 ? v : dflt;
 }
 
@@ -54,8 +55,10 @@ export function adminLockActive(ip: string, now: number = Date.now()): boolean {
   roll(globalBucket, now);
   if (globalBucket.lockedUntil && now < globalBucket.lockedUntil) return true;
   const b = perIp.get(ip);
+
   if (!b) return false;
   roll(b, now);
+
   return b.lockedUntil > 0 && now < b.lockedUntil;
 }
 
@@ -68,10 +71,12 @@ export function recordAdminFailure(ip: string, now: number = Date.now()): void {
   if (globalBucket.fails >= GLOBAL_MAX_FAILS) globalBucket.lockedUntil = now + WINDOW_MS;
 
   let b = perIp.get(ip);
+
   if (!b) {
     b = { fails: 0, first: now, lockedUntil: 0 };
     perIp.set(ip, b);
   }
+
   roll(b, now);
   if (!b.first) b.first = now;
   b.fails += 1;
@@ -91,6 +96,7 @@ export function clearIpFailures(ip: string): void {
 function prune(now: number): void {
   for (const [ip, b] of perIp) {
     const expired = b.lockedUntil ? now >= b.lockedUntil : b.first > 0 && now - b.first > WINDOW_MS;
+
     if (expired) perIp.delete(ip);
   }
 }
@@ -99,6 +105,7 @@ function prune(now: number): void {
  *  header. 0 when not locked. */
 export function adminLockRetryAfterSec(ip: string, now: number = Date.now()): number {
   const until = Math.max(globalBucket.lockedUntil, perIp.get(ip)?.lockedUntil ?? 0);
+
   return until > now ? Math.ceil((until - now) / 1000) : 0;
 }
 
@@ -106,14 +113,20 @@ export function adminLockRetryAfterSec(ip: string, now: number = Date.now()): nu
  *  edges set x-forwarded-for; cf-connecting-ip covers a Cloudflare front. */
 export function clientIp(getHeader: (name: string) => string | undefined): string {
   const cf = getHeader("cf-connecting-ip")?.trim();
+
   if (cf) return cf;
   const xff = getHeader("x-forwarded-for");
+
   if (xff) {
     const first = xff.split(",")[0]?.trim();
+
     if (first) return first;
   }
+
   const xr = getHeader("x-real-ip")?.trim();
+
   if (xr) return xr;
+
   return "unknown";
 }
 

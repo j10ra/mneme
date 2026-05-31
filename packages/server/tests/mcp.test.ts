@@ -49,6 +49,7 @@ describe("injectLimit — only a top-level LIMIT suppresses injection", () => {
 
   test("honors a top-level LIMIT with OFFSET", () => {
     const sql = "SELECT * FROM memories ORDER BY created_at DESC LIMIT 10 OFFSET 5";
+
     expect(injectLimit(sql)).toBe(sql);
   });
 
@@ -58,21 +59,25 @@ describe("injectLimit — only a top-level LIMIT suppresses injection", () => {
 
   test("#57: an inner CTE LIMIT does NOT count — default is still injected", () => {
     const sql = "WITH foo AS (SELECT 1 LIMIT 999999) SELECT * FROM memories";
+
     expect(injectLimit(sql)).toBe(`${sql} LIMIT 50`);
   });
 
   test("#57: a subquery LIMIT does NOT count — default is still injected", () => {
     const sql = "SELECT * FROM memories WHERE id IN (SELECT id FROM captures LIMIT 999999)";
+
     expect(injectLimit(sql)).toBe(`${sql} LIMIT 50`);
   });
 
   test("a LIMIT inside a string literal does NOT count", () => {
     const sql = "SELECT * FROM memories WHERE content = 'see LIMIT 5'";
+
     expect(injectLimit(sql)).toBe(`${sql} LIMIT 50`);
   });
 
   test("a top-level LIMIT ALL is left intact (no double-LIMIT syntax error)", () => {
     const sql = "SELECT * FROM memories LIMIT ALL";
+
     expect(injectLimit(sql)).toBe(sql);
   });
 });
@@ -117,11 +122,13 @@ describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () =
         arguments: { query: "SELECT 1 AS one" },
       },
     })) as { result: { content: { text: string }[]; isError: boolean } };
+
     expect(resp.result.isError).toBe(false);
     const payload = JSON.parse(resp.result.content[0]!.text) as {
       rows: { one: number }[];
       limit: number;
     };
+
     expect(payload.rows).toEqual([{ one: 1 }]);
     expect(payload.limit).toBe(50);
   });
@@ -145,6 +152,7 @@ describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () =
         },
       },
     })) as { result: { content: { text: string }[]; isError: boolean } };
+
     expect(resp.result.isError).toBe(false);
   });
 
@@ -159,6 +167,7 @@ describe.skipIf(!HAS_DB)("mneme.sql via readerSql (requires DATABASE_URL)", () =
         arguments: { query: "INSERT INTO memories (content) VALUES ('x')" },
       },
     })) as { result: { content: { text: string }[]; isError: boolean } };
+
     expect(resp.result.isError).toBe(true);
     expect(resp.result.content[0]!.text).toMatch(/forbidden|only SELECT/i);
   });
@@ -198,18 +207,22 @@ describe("extractUuidsFromSql", () => {
   });
   test("finds UUIDs inside `id = ANY(ARRAY[...])`", () => {
     const sql = `SELECT * FROM memories WHERE id = ANY(ARRAY['${UUID_A}', '${UUID_B}']::uuid[])`;
+
     expect(extractUuidsFromSql(sql).sort()).toEqual([UUID_A, UUID_B].sort());
   });
   test("finds UUIDs inside `id IN (...)`", () => {
     const sql = `SELECT * FROM memories WHERE id IN ('${UUID_A}', '${UUID_B}', '${UUID_C}')`;
+
     expect(extractUuidsFromSql(sql).sort()).toEqual([UUID_A, UUID_B, UUID_C].sort());
   });
   test("is case-insensitive and lowercases output", () => {
     const upper = UUID_A.toUpperCase();
+
     expect(extractUuidsFromSql(`WHERE id = '${upper}'`)).toEqual([UUID_A]);
   });
   test("deduplicates repeated UUIDs", () => {
     const sql = `WHERE id = '${UUID_A}' OR meta->>'related_to' LIKE '%${UUID_A}%'`;
+
     expect(extractUuidsFromSql(sql)).toEqual([UUID_A]);
   });
   test("returns [] when no UUIDs are present", () => {
@@ -241,6 +254,7 @@ describe("chooseReinforcement", () => {
       rows: rows3,
       total: 3,
     });
+
     expect(r).not.toBeNull();
     expect(r!.strength).toBe(1.0);
     expect(r!.ids.sort()).toEqual([UUID_A, UUID_B, UUID_C].sort());
@@ -253,6 +267,7 @@ describe("chooseReinforcement", () => {
       rows: [{ id: UUID_A, content: "x" }],
       total: 1,
     });
+
     expect(r).not.toBeNull();
     expect(r!.strength).toBe(1.0);
     expect(r!.ids).toEqual([UUID_A]);
@@ -265,6 +280,7 @@ describe("chooseReinforcement", () => {
       rows: rows3,
       total: 3,
     });
+
     expect(r).not.toBeNull();
     expect(r!.strength).toBe(0.4);
     expect(r!.ids.sort()).toEqual([UUID_A, UUID_B, UUID_C].sort());
@@ -280,6 +296,7 @@ describe("chooseReinforcement", () => {
       rows: wideRows,
       total: 30,
     });
+
     expect(r).toBeNull();
   });
 
@@ -290,6 +307,7 @@ describe("chooseReinforcement", () => {
       rows: [],
       total: 0,
     });
+
     expect(r).toBeNull();
   });
 
@@ -300,6 +318,7 @@ describe("chooseReinforcement", () => {
       rows: rows3,
       total: 3,
     });
+
     expect(r!.strength).toBe(1.0);
   });
 
@@ -310,6 +329,7 @@ describe("chooseReinforcement", () => {
       rows: [{ id: UUID_A }],
       total: 1,
     });
+
     expect(r!.strength).toBe(1.0);
     expect(r!.ids).toEqual([UUID_A]);
   });
@@ -321,6 +341,7 @@ describe("chooseReinforcement", () => {
       rows: [{ count: 7 }],
       total: 1,
     });
+
     expect(r).toBeNull();
   });
 
@@ -333,6 +354,7 @@ describe("chooseReinforcement", () => {
       rows: rows3,
       total: 30,
     });
+
     expect(r).toBeNull();
   });
 });
@@ -349,6 +371,7 @@ describe("stripInternalColumns", () => {
         dist: 0.42,
       },
     ]);
+
     expect(out).toEqual([
       { id: "x", content: "hello", embedding_model: "BAAI/bge-small-en-v1.5", dist: 0.42 },
     ]);
@@ -356,6 +379,7 @@ describe("stripInternalColumns", () => {
 
   test("returns rows untouched when neither column is present", () => {
     const rows = [{ id: "a", n: 7 }];
+
     expect(stripInternalColumns(rows)).toEqual(rows);
   });
 
@@ -381,6 +405,7 @@ describe.skipIf(!HAS_DB)(
 
     async function seed(): Promise<void> {
       const { sql } = await import("../src/infra/db.ts");
+
       await sql`
       INSERT INTO captures (id, content, content_sha256, source, machine_id, hostname, harness)
       VALUES (${CAPTURE_ID}, 'seed', ${`sha-${CAPTURE_ID}`}, 'test', ${MACHINE}, 'testhost', 'test')
@@ -434,16 +459,19 @@ describe.skipIf(!HAS_DB)(
 
     async function cleanup(): Promise<void> {
       const { sql } = await import("../src/infra/db.ts");
+
       await sql`DELETE FROM memories WHERE capture_id = ${CAPTURE_ID}`;
       await sql`DELETE FROM captures WHERE id = ${CAPTURE_ID}`;
     }
 
     test("bumping atoms propagates to their cluster; unclustered atom and archived-cluster member are isolated", async () => {
       const { sql } = await import("../src/infra/db.ts");
+
       try {
         await cleanup();
         await seed();
         const { reinforce } = await import("../src/services/mcp.ts");
+
         await reinforce({ strength: 1, ids: [ids.atomA, ids.atomB, ids.atomC] });
 
         const rows = await sql<{ id: string; rw: number }[]>`
@@ -453,6 +481,7 @@ describe.skipIf(!HAS_DB)(
         ORDER BY id
       `;
         const byId = new Map(rows.map((r) => [r.id, r.rw]));
+
         expect(byId.get(ids.atomA)).toBeCloseTo(1, 5);
         expect(byId.get(ids.atomB)).toBeCloseTo(1, 5);
         expect(byId.get(ids.atomC)).toBeCloseTo(1, 5);
@@ -467,6 +496,7 @@ describe.skipIf(!HAS_DB)(
 
     test("multiple atoms in the same cluster bump the cluster once per query, not once per atom", async () => {
       const { sql } = await import("../src/infra/db.ts");
+
       try {
         await cleanup();
         await seed();
@@ -477,11 +507,13 @@ describe.skipIf(!HAS_DB)(
         WHERE id = ${ids.atomB}::uuid
       `;
         const { reinforce } = await import("../src/services/mcp.ts");
+
         await reinforce({ strength: 1, ids: [ids.atomA, ids.atomB] });
 
         const [clusterRow] = await sql<{ rw: number }[]>`
         SELECT recall_weight AS rw FROM memories WHERE id = ${ids.cluster}::uuid
       `;
+
         // Cluster bumped ONCE (not 2x), because IN-clause dedupes.
         expect(clusterRow?.rw).toBeCloseTo(1, 5);
       } finally {
@@ -491,16 +523,19 @@ describe.skipIf(!HAS_DB)(
 
     test("cluster directly in the result set plus one of its atoms: cluster bumps once, not twice", async () => {
       const { sql } = await import("../src/infra/db.ts");
+
       try {
         await cleanup();
         await seed();
         const { reinforce } = await import("../src/services/mcp.ts");
+
         // atomA is in `cluster`; the result set also includes `cluster` itself.
         await reinforce({ strength: 1, ids: [ids.atomA, ids.cluster] });
 
         const [clusterRow] = await sql<{ rw: number }[]>`
         SELECT recall_weight AS rw FROM memories WHERE id = ${ids.cluster}::uuid
       `;
+
         // Cluster gets +1 from the direct hit; propagation skips it because
         // direct-hit exclusion in reinforce filters its id out of the
         // propagation set.

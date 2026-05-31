@@ -97,7 +97,9 @@ function stripTrailingSemicolon(sql: string): string {
 // LIMIT (an inner CTE/subquery LIMIT does not count — see TOP_LIMIT_RE).
 export function injectLimit(sql: string): string {
   const clean = stripTrailingSemicolon(sql);
+
   if (TOP_LIMIT_RE.test(clean)) return clean;
+
   return `${clean} LIMIT ${DEFAULT_LIMIT}`;
 }
 
@@ -107,6 +109,7 @@ export function injectLimit(sql: string): string {
 // `LIMIT ALL` carries no number, so it reports as the default.
 export function effectiveLimit(sql: string): number {
   const m = TOP_LIMIT_RE.exec(stripTrailingSemicolon(sql));
+
   return m && /^\d+$/.test(m[1]!) ? Number(m[1]) : DEFAULT_LIMIT;
 }
 
@@ -140,9 +143,12 @@ export function stripInternalColumns(rows: unknown[]): unknown[] {
   return rows.map((r) => {
     if (!r || typeof r !== "object") return r;
     const row = r as Record<string, unknown>;
+
     if (!INTERNAL_COLUMNS.some((c) => c in row)) return r;
     const copy = { ...row };
+
     for (const c of INTERNAL_COLUMNS) delete copy[c];
+
     return copy;
   });
 }
@@ -155,11 +161,14 @@ function capResult(rows: unknown[]): {
   // Strip before measuring so a fat vector can't push useful rows past the cap.
   const clean = stripInternalColumns(rows);
   const text = JSON.stringify(clean);
+
   if (text.length <= RESULT_BYTE_CAP) {
     return { rows: clean, truncated: false, total: clean.length };
   }
+
   const ratio = RESULT_BYTE_CAP / text.length;
   const keep = Math.max(1, Math.floor(clean.length * ratio));
+
   return { rows: clean.slice(0, keep), truncated: true, total: clean.length };
 }
 
@@ -188,18 +197,23 @@ export function hasRecallMarker(rawQuery: string): boolean {
 // regardless of which SQL clause it lived in.
 export function extractUuidsFromSql(sql: string): string[] {
   const out = new Set<string>();
+
   for (const m of sql.matchAll(UUID_GLOBAL_RE)) out.add(m[0]!.toLowerCase());
+
   return [...out];
 }
 
 export function extractRowIds(rows: unknown[]): string[] {
   const out = new Set<string>();
+
   for (const r of rows) {
     if (r && typeof r === "object" && "id" in r) {
       const id = (r as { id: unknown }).id;
+
       if (typeof id === "string" && UUID_TEST_RE.test(id)) out.add(id.toLowerCase());
     }
   }
+
   return [...out];
 }
 
@@ -217,18 +231,24 @@ export function chooseReinforcement(args: {
   // 1. /recall marker — user explicitly invoked, full strength on result ids.
   if (hasRecallMarker(args.rawQuery)) {
     const ids = extractRowIds(args.rows);
+
     return ids.length > 0 ? { strength: RECALL_LTP_FULL, ids } : null;
   }
+
   // 2. Explicit UUIDs in the query — LLM had to know them. Full strength.
   const explicit = extractUuidsFromSql(args.rewrittenSql);
+
   if (explicit.length > 0) {
     return { strength: RECALL_LTP_FULL, ids: explicit };
   }
+
   // 3. Anonymous but narrowed (total ≤ cap) — partial strength on result ids.
   if (args.total > 0 && args.total <= RECALL_LTP_PARTIAL_ROW_CAP) {
     const ids = extractRowIds(args.rows);
+
     return ids.length > 0 ? { strength: RECALL_LTP_PARTIAL, ids } : null;
   }
+
   // 4. Wide scan / no rows / no ids in projection — no-op.
   return null;
 }
@@ -261,6 +281,7 @@ export async function reinforce(r: Reinforcement): Promise<void> {
         bumped.map((b) => b.cluster_id).filter((v): v is string => v !== null && !directIds.has(v)),
       ),
     ];
+
     if (clusterIds.length === 0) return;
     // Cast the array, not the column: keeps the PK index usable, and
     // turns a bad UUID string in meta.in_cluster into an exception at
@@ -281,6 +302,7 @@ const runSql = mnemeFn(
     rawQuery: string,
   ): Promise<{ rows: unknown[]; truncated: boolean; total: number; limit: number }> => {
     const stripped = stripComments(rawQuery).trim();
+
     if (!stripped) throw new Error("empty query");
 
     // Single statement only (one optional trailing ;).
@@ -289,16 +311,20 @@ const runSql = mnemeFn(
       .split(/;/)
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
+
     if (statements.length !== 1) {
       throw new Error("exactly one SELECT statement required");
     }
+
     const single = statements[0]!;
 
     if (!/^\s*(SELECT|WITH)\b/i.test(single)) {
       throw new Error("only SELECT (or WITH ... SELECT) allowed");
     }
+
     if (FORBIDDEN_RE.test(single)) {
       const m = FORBIDDEN_RE.exec(single)!;
+
       throw new Error(`forbidden keyword: ${m[1]}`);
     }
 
@@ -324,6 +350,7 @@ const runSql = mnemeFn(
       rows: capped.rows,
       total: capped.total,
     });
+
     if (reinforcement) {
       void reinforce(reinforcement).catch((e) => {
         Logger.warn(`recall_weight reinforcement failed: ${errorMessageOf(e)}`);
@@ -340,6 +367,7 @@ const runSql = mnemeFn(
 function ok(id: JsonRpcId, result: unknown): JsonRpcSuccess {
   return { jsonrpc: "2.0", id, result };
 }
+
 function err(id: JsonRpcId, code: number, message: string, data?: unknown): JsonRpcError {
   return { jsonrpc: "2.0", id, error: { code, message, data } };
 }
@@ -368,15 +396,20 @@ export async function dispatch(req: JsonRpcRequest): Promise<JsonRpcResponse | n
     case "tools/call": {
       const name = req.params?.name as string | undefined;
       const args = (req.params?.arguments ?? {}) as Record<string, unknown>;
+
       if (name !== TOOL_NAME && name !== LEGACY_TOOL_NAME) {
         return err(id, ERR_METHOD_NOT_FOUND, `unknown tool: ${name}`);
       }
+
       const query = args.query;
+
       if (typeof query !== "string") {
         return err(id, ERR_INVALID_PARAMS, "tools/call.arguments.query must be a string");
       }
+
       try {
         const result = await runSql(query);
+
         return ok(id, {
           content: [
             {
@@ -388,7 +421,9 @@ export async function dispatch(req: JsonRpcRequest): Promise<JsonRpcResponse | n
         });
       } catch (e) {
         const msg = errorMessageOf(e);
+
         Logger.warn(`mneme.sql failed: ${msg}`);
+
         return ok(id, {
           content: [{ type: "text", text: `error: ${msg}` }],
           isError: true,
@@ -405,12 +440,16 @@ export async function handleHttp(body: unknown): Promise<JsonRpcResponse | null 
   // Handle batch (array) or single request.
   if (Array.isArray(body)) {
     const results: JsonRpcResponse[] = [];
+
     for (const item of body) {
       const r = await dispatchOne(item);
+
       if (r) results.push(r);
     }
+
     return results;
   }
+
   return dispatchOne(body);
 }
 
@@ -418,14 +457,18 @@ async function dispatchOne(body: unknown): Promise<JsonRpcResponse | null> {
   if (!body || typeof body !== "object") {
     return err(null, ERR_INVALID, "request must be a JSON object");
   }
+
   const req = body as JsonRpcRequest;
+
   if (req.jsonrpc !== "2.0" || typeof req.method !== "string") {
     return err(req.id ?? null, ERR_INVALID, "missing jsonrpc/method");
   }
+
   try {
     return await dispatch(req);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+
     return err(req.id ?? null, ERR_INTERNAL, msg);
   }
 }

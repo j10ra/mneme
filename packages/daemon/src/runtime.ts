@@ -99,7 +99,9 @@ export async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", buf);
   const bytes = new Uint8Array(digest);
   let hex = "";
+
   for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+
   return hex;
 }
 
@@ -153,6 +155,7 @@ export function createRuntime(deps: DaemonDeps) {
   async function handleCapture(body: CaptureBody): Promise<HandleCaptureResult> {
     for (const field of REQUIRED_STRING_FIELDS) {
       const v = body[field];
+
       if (typeof v !== "string" || !v.trim()) {
         return { ok: false, error: `${field} required` };
       }
@@ -164,6 +167,7 @@ export function createRuntime(deps: DaemonDeps) {
 
     await deps.outbox.writeRaw(id, cleaned);
     lastCapturedWriteAt = now();
+
     return { ok: true, id };
   }
 
@@ -176,6 +180,7 @@ export function createRuntime(deps: DaemonDeps) {
 
   async function runBatchedEmbed(): Promise<void> {
     const ids = await deps.outbox.list("observations");
+
     if (ids.length === 0) return;
 
     type Loaded = {
@@ -184,24 +189,29 @@ export function createRuntime(deps: DaemonDeps) {
       memories: ExtractedMemory[];
     };
     const loaded: Loaded[] = [];
+
     for (const id of ids) {
       try {
         const data = (await deps.outbox.read(id, "observations")) as {
           capture: CaptureBody;
           memories: ExtractedMemory[];
         };
+
         loaded.push({ id, capture: data.capture, memories: data.memories });
       } catch {
         // file vanished mid-tick (e.g. parallel run); skip
       }
     }
+
     if (loaded.length === 0) return;
 
     // Flatten texts with origin pointers so we can fan vectors back out.
     const flatTexts: string[] = [];
     const origin: { fileIdx: number; memIdx: number }[] = [];
+
     for (let f = 0; f < loaded.length; f++) {
       const memories = loaded[f]!.memories;
+
       for (let m = 0; m < memories.length; m++) {
         flatTexts.push(memories[m]!.content);
         origin.push({ fileIdx: f, memIdx: m });
@@ -210,10 +220,12 @@ export function createRuntime(deps: DaemonDeps) {
 
     // Single embed call (chunked at EMBED_BATCH_CAP for memory bounds).
     const allVectors: number[][] = [];
+
     if (flatTexts.length > 0) {
       for (let i = 0; i < flatTexts.length; i += EMBED_BATCH_CAP) {
         const chunk = flatTexts.slice(i, i + EMBED_BATCH_CAP);
         const part = await deps.embed(chunk);
+
         allVectors.push(...part);
       }
     }
@@ -222,12 +234,14 @@ export function createRuntime(deps: DaemonDeps) {
     for (let f = 0; f < loaded.length; f++) {
       const file = loaded[f]!;
       const enriched: Memory[] = [];
+
       for (let m = 0; m < file.memories.length; m++) {
         const mem = file.memories[m]!;
         const flatIdx = origin.findIndex((o) => o.fileIdx === f && o.memIdx === m);
         const vector = flatIdx >= 0 ? allVectors[flatIdx] : undefined;
         const contentHash = await sha256Hex(mem.content);
         const chunkId = await sha256Hex(`${contentHash}:${embedderModel}`);
+
         enriched.push({
           ...mem,
           content_hash: contentHash,
@@ -240,6 +254,7 @@ export function createRuntime(deps: DaemonDeps) {
           },
         });
       }
+
       try {
         await deps.outbox.transition(file.id, "observations", "embedded", {
           capture: file.capture,
@@ -248,6 +263,7 @@ export function createRuntime(deps: DaemonDeps) {
       } catch (err) {
         if (asPermanent(err)) {
           const reason = err instanceof Error ? err.message : String(err);
+
           await deps.outbox.markFailed(file.id, "observations", reason);
         }
       }
@@ -256,18 +272,22 @@ export function createRuntime(deps: DaemonDeps) {
 
   async function runParallelPush(): Promise<void> {
     const ids = await deps.outbox.list("embedded");
+
     if (ids.length === 0) return;
 
     for (let i = 0; i < ids.length; i += PUSH_CONCURRENCY) {
       const slice = ids.slice(i, i + PUSH_CONCURRENCY);
+
       await Promise.all(
         slice.map(async (id) => {
           let data: unknown;
+
           try {
             data = await deps.outbox.read(id, "embedded");
           } catch {
             return; // vanished mid-tick
           }
+
           try {
             const stage = data as { capture: CaptureBody; memories: Memory[] };
             const captureSha = await sha256Hex(stage.capture.content);
@@ -275,6 +295,7 @@ export function createRuntime(deps: DaemonDeps) {
               capture: { ...stage.capture, content_sha256: captureSha },
               memories: stage.memories,
             };
+
             await deps.push(bundle);
             await deps.outbox.delete(id, "embedded");
             Logger.info("bundle pushed", {
@@ -286,6 +307,7 @@ export function createRuntime(deps: DaemonDeps) {
           } catch (err) {
             if (asPermanent(err)) {
               const reason = err instanceof Error ? err.message : String(err);
+
               await deps.outbox.markFailed(id, "embedded", reason);
             }
           }
@@ -312,9 +334,12 @@ export function createRuntime(deps: DaemonDeps) {
 
   async function loadSessionLedger(sessionId: string): Promise<Set<string>> {
     const file = shasFile(sessionId);
+
     if (!existsSync(file)) return new Set();
+
     try {
       const buf = await fsReadFile(file, "utf8");
+
       return new Set(buf.split("\n").filter(Boolean));
     } catch {
       return new Set();
@@ -323,10 +348,12 @@ export function createRuntime(deps: DaemonDeps) {
 
   async function appendLedger(sessionId: string, keys: string[]): Promise<void> {
     if (keys.length === 0) return;
+
     try {
       if (!existsSync(SHAS_DIR)) {
         await mkdir(SHAS_DIR, { recursive: true, mode: 0o700 });
       }
+
       await appendFile(shasFile(sessionId), `${keys.join("\n")}\n`, {
         mode: 0o600,
       });
@@ -356,6 +383,7 @@ export function createRuntime(deps: DaemonDeps) {
    */
   async function runDedup(): Promise<{ kept: number; dropped: number }> {
     const ids = await deps.outbox.list("captured");
+
     if (ids.length === 0) return { kept: 0, dropped: 0 };
 
     type Entry = {
@@ -365,6 +393,7 @@ export function createRuntime(deps: DaemonDeps) {
       uuid: string | null;
     };
     const entries: Entry[] = [];
+
     for (const id of ids) {
       try {
         const capture = (await deps.outbox.read(id, "captured")) as CaptureBody;
@@ -372,10 +401,9 @@ export function createRuntime(deps: DaemonDeps) {
         const contentSha = await sha256Hex(capture.content);
         const meta = (capture.raw_meta ?? {}) as Record<string, unknown>;
         const uuid = typeof meta.message_uuid === "string" ? meta.message_uuid : null;
+
         entries.push({ id, sessionId, contentSha, uuid });
-      } catch {
-        continue; // vanished mid-tick
-      }
+      } catch {}
     }
 
     const ledgers = new Map<string, Set<string>>();
@@ -388,31 +416,39 @@ export function createRuntime(deps: DaemonDeps) {
         kept++;
         continue;
       }
+
       let ledger = ledgers.get(e.sessionId);
+
       if (!ledger) {
         ledger = await loadSessionLedger(e.sessionId);
         ledgers.set(e.sessionId, ledger);
       }
+
       let tickSeen = seenInTick.get(e.sessionId);
+
       if (!tickSeen) {
         tickSeen = new Set();
         seenInTick.set(e.sessionId, tickSeen);
       }
+
       const shaKey = `sha:${e.contentSha}`;
       const uuidKey = e.uuid ? `uuid:${e.uuid}` : null;
       const isDup =
         ledger.has(shaKey) ||
         tickSeen.has(shaKey) ||
         (uuidKey !== null && (ledger.has(uuidKey) || tickSeen.has(uuidKey)));
+
       if (isDup) {
         try {
           await deps.outbox.delete(e.id, "captured");
         } catch {
           // file vanished; treat as dropped
         }
+
         dropped++;
         continue;
       }
+
       tickSeen.add(shaKey);
       if (uuidKey) tickSeen.add(uuidKey);
       kept++;
@@ -421,6 +457,7 @@ export function createRuntime(deps: DaemonDeps) {
     if (dropped > 0) {
       Logger.info("dedup", { kept, dropped });
     }
+
     return { kept, dropped };
   }
 
@@ -435,16 +472,19 @@ export function createRuntime(deps: DaemonDeps) {
     }>,
   ): Promise<void> {
     const bySession = new Map<string, string[]>();
+
     for (const c of captures) {
       if (!c.session_id) continue;
       const sha = await sha256Hex(c.content);
       const meta = c.raw_meta ?? {};
       const uuid = typeof meta.message_uuid === "string" ? meta.message_uuid : null;
       const arr = bySession.get(c.session_id) ?? [];
+
       arr.push(`sha:${sha}`);
       if (uuid) arr.push(`uuid:${uuid}`);
       bySession.set(c.session_id, arr);
     }
+
     for (const [sessionId, keys] of bySession) {
       await appendLedger(sessionId, keys);
     }
@@ -452,6 +492,7 @@ export function createRuntime(deps: DaemonDeps) {
 
   async function runCoalescedExtract(): Promise<void> {
     const ids = await deps.outbox.list("captured");
+
     if (ids.length === 0) return;
 
     // Gate: full enough OR quiet long enough OR oldest is old enough.
@@ -460,6 +501,7 @@ export function createRuntime(deps: DaemonDeps) {
     const oldestTs = ids
       .map((id) => {
         const m = id.match(/^(\d+)-/);
+
         return m ? Number(m[1]) : Infinity;
       })
       .reduce((a, b) => Math.min(a, b), Infinity);
@@ -473,15 +515,15 @@ export function createRuntime(deps: DaemonDeps) {
     }
 
     const entries: Array<{ id: string; ts: number; capture: CaptureBody }> = [];
+
     for (const id of ids) {
       try {
         const capture = (await deps.outbox.read(id, "captured")) as CaptureBody;
         const tsMatch = id.match(/^(\d+)-/);
         const ts = tsMatch ? Number(tsMatch[1]) : 0;
+
         entries.push({ id, ts, capture });
-      } catch {
-        continue; // file vanished mid-tick; next tick retries
-      }
+      } catch {}
     }
 
     // Earliest first so each batch's seed is the oldest member.
@@ -492,6 +534,7 @@ export function createRuntime(deps: DaemonDeps) {
       if (processed.has(seed.id)) continue;
 
       const batch: typeof entries = [seed];
+
       for (const candidate of entries) {
         if (candidate.id === seed.id) continue;
         if (processed.has(candidate.id)) continue;
@@ -500,12 +543,14 @@ export function createRuntime(deps: DaemonDeps) {
         const sameRepo = candidate.capture.repo === seed.capture.repo;
         const samePrivate = candidate.capture.private === seed.capture.private;
         const inWindow = Math.abs(candidate.ts - seed.ts) <= COALESCE_WINDOW_MS;
+
         if (sameSession && sameRepo && samePrivate && inWindow) {
           batch.push(candidate);
         }
       }
 
       const extractStartedAt = Date.now();
+
       Logger.info("extract starting", {
         size: batch.length,
         session: seed.capture.session_id ?? null,
@@ -513,6 +558,7 @@ export function createRuntime(deps: DaemonDeps) {
       });
 
       let memories: ExtractedMemory[];
+
       try {
         memories = await deps.extract(batch.map((e) => e.capture));
         Logger.info("extract finished", {
@@ -537,6 +583,7 @@ export function createRuntime(deps: DaemonDeps) {
               // Don't fail the rest of the batch on a single move error.
             }
           }
+
           continue;
         }
 
@@ -546,12 +593,15 @@ export function createRuntime(deps: DaemonDeps) {
         // visible in stderr long before any escalation fires.
         const exhausted: typeof entries = [];
         const stillRetrying: typeof entries = [];
+
         for (const entry of batch) {
           const next = (transientRetries.get(entry.id) ?? 0) + 1;
+
           transientRetries.set(entry.id, next);
           if (next >= maxRetries) exhausted.push(entry);
           else stillRetrying.push(entry);
         }
+
         Logger.warn("extract batch transient failure", err, {
           size: batch.length,
           retrying: stillRetrying.length,
@@ -560,6 +610,7 @@ export function createRuntime(deps: DaemonDeps) {
           session: seed.capture.session_id ?? null,
           repo: seed.capture.repo ?? null,
         });
+
         for (const entry of exhausted) {
           try {
             await deps.outbox.markFailed(
@@ -573,13 +624,16 @@ export function createRuntime(deps: DaemonDeps) {
             // best-effort
           }
         }
+
         continue;
       }
 
       const transitioned: typeof entries = [];
+
       for (let i = 0; i < batch.length; i++) {
         const entry = batch[i]!;
         const isSeed = i === 0;
+
         try {
           await deps.outbox.transition(entry.id, "captured", "observations", {
             capture: entry.capture,
@@ -590,10 +644,12 @@ export function createRuntime(deps: DaemonDeps) {
         } catch (err) {
           if (asPermanent(err)) {
             const reason = err instanceof Error ? err.message : String(err);
+
             await deps.outbox.markFailed(entry.id, "captured", reason);
           }
         }
       }
+
       // Now that these captures have made it into observations/, write
       // their dedup keys to the ledger so future ticks (or future
       // sessions) drop dupes of the same content/uuid.

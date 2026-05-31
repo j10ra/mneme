@@ -25,22 +25,27 @@ afterEach(async () => {
 describe("outbox", () => {
   test("writeRaw lands a file in captured/", async () => {
     const outbox = createOutbox(root);
+
     await outbox.writeRaw("abc-001", { content: "hello" });
 
     const ids = await outbox.list("captured");
+
     expect(ids).toContain("abc-001");
   });
 
   test("read returns the parsed file content", async () => {
     const outbox = createOutbox(root);
+
     await outbox.writeRaw("abc-002", { content: "hello", n: 42 });
 
     const data = await outbox.read("abc-002", "captured");
+
     expect(data).toEqual({ content: "hello", n: 42 });
   });
 
   test("transition moves the file from one state to another", async () => {
     const outbox = createOutbox(root);
+
     await outbox.writeRaw("abc-003", { content: "x" });
 
     await outbox.transition("abc-003", "captured", "observations", {
@@ -54,11 +59,13 @@ describe("outbox", () => {
     const data = (await outbox.read("abc-003", "observations")) as {
       memories: unknown[];
     };
+
     expect(data.memories).toHaveLength(1);
   });
 
   test("delete removes the file from its state", async () => {
     const outbox = createOutbox(root);
+
     await outbox.writeRaw("abc-004", { content: "x" });
     await outbox.delete("abc-004", "captured");
 
@@ -67,6 +74,7 @@ describe("outbox", () => {
 
   test("markFailed moves the file to failed/ and records the reason", async () => {
     const outbox = createOutbox(root);
+
     await outbox.writeRaw("abc-005", { content: "x" });
 
     await outbox.markFailed("abc-005", "captured", "extract failed: 5xx loop");
@@ -75,11 +83,13 @@ describe("outbox", () => {
     expect(await outbox.list("failed")).toContain("abc-005");
 
     const failureFiles = await readdir(join(root, "failed"));
+
     expect(failureFiles).toContain("abc-005.error.txt");
   });
 
   test("transition rejects when source file does not exist", async () => {
     const outbox = createOutbox(root);
+
     await expect(
       outbox.transition("does-not-exist", "captured", "observations", {}),
     ).rejects.toThrow();
@@ -87,19 +97,23 @@ describe("outbox", () => {
 
   test("list returns an empty array when the state directory is empty", async () => {
     const outbox = createOutbox(root);
+
     expect(await outbox.list("embedded")).toEqual([]);
   });
 
   test("temp .tmp files are not surfaced by list", async () => {
     const outbox = createOutbox(root);
+
     await outbox.writeRaw("abc-006", { content: "x" });
     // The transition writes through a `.<id>.json.tmp` file before
     // renaming. list() must ignore dotfiles / .tmp leftovers so a
     // crash mid-transition never produces phantom queue entries.
     const fs = await import("node:fs/promises");
+
     await fs.writeFile(join(root, "captured", ".stale.json.tmp"), "{}");
 
     const ids = await outbox.list("captured");
+
     expect(ids).toEqual(["abc-006"]);
   });
 });

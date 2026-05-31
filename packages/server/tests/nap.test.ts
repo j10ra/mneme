@@ -19,10 +19,12 @@ describe("forEachIdBatch", () => {
       2,
       (cursor) => {
         cursors.push(cursor);
+
         return Promise.resolve(batches.shift() ?? []);
       },
       (ids) => {
         applied.push(ids);
+
         return Promise.resolve(ids.length);
       },
     );
@@ -39,9 +41,11 @@ describe("forEachIdBatch", () => {
       () => Promise.resolve([]),
       () => {
         applyCalls++;
+
         return Promise.resolve(0);
       },
     );
+
     expect(affected).toBe(0);
     expect(applyCalls).toBe(0);
   });
@@ -128,6 +132,7 @@ describe.skipIf(!HAS_DB)("napArchiveDeadClusters (requires DATABASE_URL)", () =>
       await seed();
       const { napArchiveDeadClusters } = await import("../src/worker/nap.ts");
       const count = await napArchiveDeadClusters();
+
       expect(count).toBe(2);
 
       const rows = await sql<{ id: string; archived: boolean }[]>`
@@ -137,6 +142,7 @@ describe.skipIf(!HAS_DB)("napArchiveDeadClusters (requires DATABASE_URL)", () =>
         ORDER BY id
       `;
       const byId = new Map(rows.map((r) => [r.id, r.archived]));
+
       expect(byId.get(ids.superseded)).toBe(true);
       expect(byId.get(ids.dead)).toBe(true);
       expect(byId.get(ids.live)).toBe(false);
@@ -265,6 +271,7 @@ describe.skipIf(!HAS_DB)("napArchiveOrphanedMembers (requires DATABASE_URL)", ()
       await seed();
       const { napArchiveOrphanedMembers } = await import("../src/worker/nap.ts");
       const count = await napArchiveOrphanedMembers();
+
       expect(count).toBe(1);
 
       const rows = await sql<{ id: string; archived: boolean }[]>`
@@ -274,6 +281,7 @@ describe.skipIf(!HAS_DB)("napArchiveOrphanedMembers (requires DATABASE_URL)", ()
         ORDER BY id
       `;
       const byId = new Map(rows.map((r) => [r.id, r.archived]));
+
       expect(byId.get(ids.orphan_atom)).toBe(true);
       expect(byId.get(ids.live_atom)).toBe(false);
       expect(byId.get(ids.unclustered_atom)).toBe(false);

@@ -14,9 +14,12 @@ type Runtime = ReturnType<typeof createRuntime>;
 export function mountCaptureRoute(app: Hono, runtime: Runtime): void {
   app.post("/capture", mnemeRoute("daemon.capture"), async (c) => {
     const body = await c.req.json().catch(() => null);
+
     if (!body) return c.json({ error: "invalid_json" }, 400);
     const result = await runtime.handleCapture(body as never);
+
     if (!result.ok) return c.json({ error: result.error }, 400);
+
     return c.json({ id: result.id });
   });
 }

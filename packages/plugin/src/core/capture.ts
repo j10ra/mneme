@@ -27,6 +27,7 @@ export const MAX_CAPTURE_BYTES = 64 * 1024;
  *  harness layers its own static skip-list on top (CC: TodoWrite, Skill, …). */
 export function isRecursiveTool(toolName: unknown): boolean {
   if (typeof toolName !== "string") return false;
+
   return /mneme/i.test(toolName) || /claude[-_]?mem/i.test(toolName);
 }
 
@@ -56,20 +57,29 @@ export function defaultOutboxDir(): string {
  *  longest-first for safe prefix handling; skip secrets under 8 chars. */
 export function buildLocalRedactor(cfg: MnemeConfig): (s: string) => string {
   const secrets = new Set<string>();
+
   if (cfg.auth?.key) secrets.add(cfg.auth.key);
   const fromEnv = process.env.MNEME_ADMIN_PASSWORD;
+
   if (fromEnv) secrets.add(fromEnv);
+
   if (cfg.admin?.secret) {
     const pw = decryptAdminPassword(cfg.admin.secret);
+
     if (pw) secrets.add(pw);
   }
+
   const list = [...secrets].filter((s) => s.length >= 8).sort((a, b) => b.length - a.length);
+
   if (list.length === 0) return (s) => s;
+
   return (s) => {
     let out = s;
+
     for (const sec of list) {
       if (out.includes(sec)) out = out.split(sec).join("[REDACTED:mneme_secret]");
     }
+
     return out;
   };
 }
@@ -99,7 +109,9 @@ export function scrubAndRedact(
   body: Record<string, unknown>,
 ): Record<string, unknown> {
   const cleaned = scrubData(body) as Record<string, unknown>;
+
   redactInPlace(cleaned, buildLocalRedactor(cfg));
+
   return cleaned;
 }
 
@@ -113,11 +125,14 @@ export function writeToOutbox(
   try {
     const content = typeof cleaned.content === "string" ? cleaned.content : "";
     const id = `${Date.now()}-${sha256Hex(content).slice(0, 8)}`;
+
     if (!existsSync(outboxDir)) mkdirSync(outboxDir, { recursive: true, mode: 0o700 });
     const tmp = join(outboxDir, `.${id}.json.tmp`);
     const final = join(outboxDir, `${id}.json`);
+
     writeFileSync(tmp, JSON.stringify(cleaned));
     renameSync(tmp, final);
+
     return true;
   } catch {
     return false;
@@ -155,6 +170,7 @@ export function buildToolObservation(
     result: scrubData(result),
     isError: Boolean(isError),
   });
+
   return observation.length > MAX_CAPTURE_BYTES ? null : observation;
 }
 

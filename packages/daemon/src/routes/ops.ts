@@ -23,6 +23,7 @@ export function mountOpsRoutes(app: Hono, runtime: Runtime): void {
     void runtime.flush().catch((err) => {
       Logger.error("flush failed", err);
     });
+
     return c.json({ ok: true, accepted: true }, 202);
   });
 }

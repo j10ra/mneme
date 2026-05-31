@@ -24,6 +24,7 @@ describe("embed", () => {
     // Empty input must short-circuit before spawning the worker so
     // callers can cheaply ask for an empty batch.
     const result = await embedBatch([]);
+
     expect(result).toEqual([]);
   });
 
@@ -31,12 +32,14 @@ describe("embed", () => {
     "embedBatch returns 384-dim normalized vectors via subprocess",
     async () => {
       const result = await embedBatch(["hello world", "the quick brown fox"]);
+
       expect(result).toHaveLength(2);
       expect(result[0]).toHaveLength(EMBEDDER_DIM);
       expect(result[1]).toHaveLength(EMBEDDER_DIM);
 
       // L2-normalized vectors have magnitude 1.
       const magnitude = Math.sqrt(result[0]!.reduce((s, x) => s + x * x, 0));
+
       expect(magnitude).toBeCloseTo(1.0, 2);
     },
     120_000,
@@ -48,10 +51,12 @@ describe("embed", () => {
       // Warm the worker, then force-dispose with idleMs=0.
       await embedBatch(["warmup"]);
       const disposed = await disposeIfIdle(0);
+
       expect(disposed).toBe(true);
 
       // Second call must succeed (re-spawn path).
       const result = await embedBatch(["after dispose"]);
+
       expect(result).toHaveLength(1);
       expect(result[0]).toHaveLength(EMBEDDER_DIM);
     },

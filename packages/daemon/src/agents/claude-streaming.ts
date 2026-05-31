@@ -80,7 +80,9 @@ class StreamingClaudeSession {
         this.inputResolver = null;
         if (this.inputClosed) return;
       }
+
       const next = this.inputBuffer.shift();
+
       if (next) yield next;
     }
   }
@@ -120,8 +122,10 @@ class StreamingClaudeSession {
       message: { role: "user", content: prompt },
       parent_tool_use_id: null,
     });
+
     if (this.inputResolver) {
       const r = this.inputResolver;
+
       this.inputResolver = null;
       r();
     }
@@ -141,18 +145,25 @@ class StreamingClaudeSession {
       if (Date.now() - start > TURN_TIMEOUT_MS) {
         throw new Error(`streaming-claude: turn timed out after ${TURN_TIMEOUT_MS}ms`);
       }
+
       const result = await session.next();
+
       if (result.done) {
         throw new Error("streaming-claude: query stream closed mid-turn");
       }
+
       const msg = result.value as { type: string; [k: string]: unknown };
+
       if (msg.type === "assistant") {
         const errField = (msg as { error?: unknown }).error;
+
         if (typeof errField === "string") {
           assistantError = errField;
           continue;
         }
+
         const content = (msg.message as { content?: unknown } | undefined)?.content;
+
         if (typeof content === "string") {
           response += content;
         } else if (Array.isArray(content)) {
@@ -171,13 +182,16 @@ class StreamingClaudeSession {
         if ((msg as { subtype?: string }).subtype !== "success") {
           const detail =
             (msg as { error?: unknown }).error ?? (msg as { subtype?: unknown }).subtype;
+
           throw new Error(
             `streaming-claude: non-success result — ${typeof detail === "string" ? detail : JSON.stringify(detail).slice(0, 200)}`,
           );
         }
+
         if (assistantError && !response.trim()) {
           throw new Error(`streaming-claude: assistant error — ${assistantError}`);
         }
+
         return response;
       }
     }
@@ -189,16 +203,20 @@ class StreamingClaudeSession {
   async ask(prompt: string): Promise<string> {
     const previous = this.lock;
     let release: () => void;
+
     this.lock = new Promise<void>((resolve) => {
       release = resolve;
     });
     await previous;
+
     try {
       if (this.shouldRecycle()) {
         await this.teardown();
       }
+
       this.start();
       this.pushInput(prompt);
+
       try {
         return await this.readTurnText();
       } catch (err) {
@@ -220,11 +238,14 @@ class StreamingClaudeSession {
 
   private async teardown(): Promise<void> {
     this.inputClosed = true;
+
     if (this.inputResolver) {
       const r = this.inputResolver;
+
       this.inputResolver = null;
       r();
     }
+
     if (this.querySession) {
       try {
         await this.querySession.interrupt();
@@ -232,6 +253,7 @@ class StreamingClaudeSession {
         // best-effort
       }
     }
+
     this.querySession = null;
     this.startedAt = 0;
     this.inputBuffer = [];
@@ -247,10 +269,12 @@ const sessions = new Map<string, StreamingClaudeSession>();
 function sessionFor(model: string, systemPrompt: string): StreamingClaudeSession {
   const key = `${model}::${systemPrompt.slice(0, 64)}`;
   let s = sessions.get(key);
+
   if (!s) {
     s = new StreamingClaudeSession(model, systemPrompt);
     sessions.set(key, s);
   }
+
   return s;
 }
 

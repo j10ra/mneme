@@ -16,15 +16,15 @@
       "**/*.json",
       "**/*.jsonc",
       "**/*.css",
-      "!**/node_modules/**",
-      "!**/dist/**",
-      "!**/.bun/**",
-      "!**/.claude/**",
-      "!packages/plugin/dashboard/dist/**",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/.bun",
+      "!**/.claude",
+      "!packages/plugin/dashboard/dist",
       "!packages/plugin/src/core/scrub.ts",
       "!packages/plugin/embed-worker.js",
       "!packages/plugin/daemon.js",
-      "!migrations/**",
+      "!migrations",
       "!**/*.min.js",
       "!**/bundle.js"
     ]
@@ -65,7 +65,27 @@
     }
   },
   "linter": {
-    "enabled": false
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "a11y": {
+        "noStaticElementInteractions": "warn",
+        "useFocusableInteractive": "warn",
+        "noLabelWithoutControl": "warn",
+        "useSemanticElements": "warn",
+        "useAriaPropsForRole": "warn",
+        "noSvgWithoutTitle": "warn"
+      },
+      "correctness": {
+        "useExhaustiveDependencies": "warn"
+      },
+      "suspicious": {
+        "useIterableCallbackReturn": "warn",
+        "noAssignInExpressions": "warn",
+        "noImplicitAnyLet": "warn",
+        "noArrayIndexKey": "warn"
+      }
+    }
   },
   "assist": {
     "enabled": true,

@@ -33,6 +33,7 @@ const WINDOW_MINUTES = DREAM_WINDOW_HOURS * 60;
 // (server-side lock prevents concurrent claims), so module-scope state
 // is sufficient. Null when no cycle is in flight.
 let activeWindow: number | null = null;
+
 export function getActiveDreamWindow(): number | null {
   return activeWindow;
 }
@@ -46,44 +47,58 @@ export function computeWindowKey(date = new Date()): number {
 // machine_id maps to a different minute-mark via this hash.
 export function computeCronOffsetMinutes(machineId: string): number {
   let h = 0;
+
   for (let i = 0; i < machineId.length; i++) {
     h = (h * 31 + machineId.charCodeAt(i)) | 0;
   }
+
   const u = h >>> 0;
+
   return u % WINDOW_MINUTES;
 }
 
 export function buildComponents(nodes: string[], edges: Array<[string, string]>): string[][] {
   const parent = new Map<string, string>();
+
   for (const id of nodes) parent.set(id, id);
 
   const find = (x: string): string => {
     let root = x;
+
     while (parent.get(root) !== root) root = parent.get(root)!;
     let cur = x;
+
     while (parent.get(cur) !== root) {
       const next = parent.get(cur)!;
+
       parent.set(cur, root);
       cur = next;
     }
+
     return root;
   };
+
   const union = (a: string, b: string): void => {
     const ra = find(a);
     const rb = find(b);
+
     if (ra !== rb) parent.set(ra, rb);
   };
+
   for (const [a, b] of edges) {
     if (parent.has(a) && parent.has(b)) union(a, b);
   }
 
   const groups = new Map<string, string[]>();
+
   for (const id of nodes) {
     const root = find(id);
     const list = groups.get(root);
+
     if (list) list.push(id);
     else groups.set(root, [id]);
   }
+
   return [...groups.values()];
 }
 
@@ -157,14 +172,19 @@ async function lockWindow(
     },
     body: JSON.stringify({ window_key: windowKey }),
   });
+
   if (response.status === 200) return { acquired: true };
+
   if (response.status === 409) {
     const body = (await response.json().catch(() => ({}))) as {
       heldBy?: string;
     };
+
     return { acquired: false, heldBy: body.heldBy };
   }
+
   const detail = await response.text().catch(() => "");
+
   throw new Error(`lock returned ${response.status}: ${detail.slice(0, 500)}`);
 }
 
@@ -180,14 +200,19 @@ async function fetchCandidates(
       Accept: "application/x-ndjson",
     },
   });
+
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
+
     throw new Error(`candidates returned ${response.status}: ${detail.slice(0, 500)}`);
   }
+
   const contentType = response.headers.get("content-type") ?? "";
+
   if (contentType.includes("application/x-ndjson")) {
     return parseNdjsonCandidates(response, windowKey);
   }
+
   // Old server -- buffered JSON path. Backward-compat for one release.
   return (await response.json()) as DreamCandidatesResponse;
 }
@@ -234,17 +259,21 @@ export async function parseNdjsonCandidates(
   const handleFrame = (line: string): void => {
     if (!line.trim()) return;
     let msg: { t?: string; [k: string]: unknown };
+
     try {
       msg = JSON.parse(line);
     } catch {
       throw new Error(`candidates: malformed NDJSON line: ${line.slice(0, 120)}`);
     }
+
     switch (msg.t) {
       case "meta":
         receivedWindowKey = msg.window_key as number;
         break;
+
       case "edge": {
         const repoKey = (msg.repo as string | null) ?? "__none__";
+
         addMemory(repoKey, {
           id: msg.id as string,
           content: msg.content as string,
@@ -252,12 +281,15 @@ export async function parseNdjsonCandidates(
           created_at: msg.created_at as string,
         });
         const neighborId = msg.neighbor_id as string | null;
+
         if (neighborId) {
           repos[repoKey] ??= { seeds: [], edges: [] };
           repos[repoKey]!.edges.push([msg.id as string, neighborId]);
         }
+
         break;
       }
+
       case "neighbor":
         addMemory((msg.repo as string | null) ?? "__none__", {
           id: msg.id as string,
@@ -291,17 +323,21 @@ export async function parseNdjsonCandidates(
 
   while (true) {
     const { value, done } = await reader.read();
+
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     let nl: number;
+
     while ((nl = buf.indexOf("\n")) >= 0) {
       const line = buf.slice(0, nl);
+
       buf = buf.slice(nl + 1);
       handleFrame(line);
       // Count frames here (we don't reach into handleFrame's switch).
       if (line.includes('"t":"edge"')) edgeFrames++;
       else if (line.includes('"t":"neighbor"')) neighborFrames++;
     }
+
     if (Date.now() - lastProgressAt >= PROGRESS_LOG_INTERVAL_MS) {
       lastProgressAt = Date.now();
       Logger.info("dream: candidates streaming", {
@@ -312,6 +348,7 @@ export async function parseNdjsonCandidates(
       });
     }
   }
+
   // Producers usually terminate with \n, but be defensive about a
   // trailing line without one.
   if (buf.trim()) handleFrame(buf);
@@ -319,14 +356,17 @@ export async function parseNdjsonCandidates(
   if (errorMessage) {
     throw new Error(`candidates stream errored: ${errorMessage}`);
   }
+
   if (!sawDone) {
     throw new Error("candidates stream ended without done frame");
   }
+
   if (receivedWindowKey !== expectedWindowKey) {
     throw new Error(
       `candidates window_key mismatch: expected ${expectedWindowKey}, got ${receivedWindowKey}`,
     );
   }
+
   return { window_key: receivedWindowKey, repos };
 }
 
@@ -343,34 +383,42 @@ async function submitClusters(
     },
     body: JSON.stringify({ window_key: windowKey, clusters }),
   });
+
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
+
     throw new Error(`clusters returned ${response.status}: ${detail.slice(0, 500)}`);
   }
+
   return (await response.json()) as { written: number; supersedes: number };
 }
 
 export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> {
   const cycleStart = Date.now();
   const windowKey = deps.windowKey ?? computeWindowKey();
+
   Logger.info("dream: cycle start", { window_key: windowKey });
   Logger.info("dream: attempting lock", { window_key: windowKey });
 
   const lock = await lockWindow(deps, windowKey);
+
   if (!lock.acquired) {
     Logger.info("dream: skipped (lock held)", {
       window_key: windowKey,
       held_by: lock.heldBy ?? "unknown",
     });
+
     return { skipped: true, reason: `held by ${lock.heldBy ?? "unknown"}` };
   }
+
   Logger.info("dream: lock acquired", { window_key: windowKey });
   activeWindow = windowKey;
 
-  let t = Date.now();
+  const t = Date.now();
   const candidates = await fetchCandidates(deps, windowKey);
   const repoCount = Object.keys(candidates.repos).length;
   const seedCount = Object.values(candidates.repos).reduce((sum, r) => sum + r.seeds.length, 0);
+
   Logger.info("dream: candidates fetched", {
     repos: repoCount,
     seeds: seedCount,
@@ -385,12 +433,14 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
 
   for (const [repo, repoData] of Object.entries(candidates.repos)) {
     const seedById = new Map<string, DreamSeed>();
+
     for (const s of repoData.seeds) seedById.set(s.id, s);
 
     const components = buildComponents([...seedById.keys()], repoData.edges);
     const eligible = components.filter(
       (c) => c.length >= DREAM_MIN_CLUSTER_SIZE && c.length <= DREAM_MAX_CLUSTER_SIZE,
     );
+
     if (eligible.length > 0) {
       Logger.info("dream: clusters found in repo", {
         repo,
@@ -403,6 +453,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
       if (memberIds.length < DREAM_MIN_CLUSTER_SIZE || memberIds.length > DREAM_MAX_CLUSTER_SIZE) {
         continue;
       }
+
       const cluster_id = await clusterIdFor(memberIds);
 
       // Idempotency: if a prior cycle already distilled this exact
@@ -413,12 +464,14 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
           cluster_id,
         );
         const existsEmbedded = (await deps.outbox.list(windowKey, "embedded")).includes(cluster_id);
+
         if (existsDistilled || existsEmbedded) {
           Logger.info("dream: cluster already persisted, skipping distill", {
             size: memberIds.length,
             stage: existsEmbedded ? "embedded" : "distilled",
           });
           const stage = existsEmbedded ? "embedded" : "distilled";
+
           distilledClusters.push(await deps.outbox.read(windowKey, stage, cluster_id));
           continue;
         }
@@ -426,6 +479,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
 
       const memberMemories: Memory[] = memberIds.map((id) => {
         const s = seedById.get(id)!;
+
         return {
           content: s.content,
           content_hash: "",
@@ -436,10 +490,13 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
           meta: {},
         };
       });
+
       Logger.info("dream: distilling cluster", { size: memberIds.length });
       const tDistill = Date.now();
+
       try {
         const distilled = await deps.distill(memberMemories);
+
         Logger.info("dream: distilled", {
           size: memberIds.length,
           title: distilled.title,
@@ -450,10 +507,12 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
         // supersede outputs are equally precious; persist them
         // together in the same distilled/<id>.json record.
         let supersede_pairs: SupersedePair[] | undefined;
+
         if (deps.findSupersedes && memberIds.length >= 2) {
           try {
             const candidates: SupersedeCandidate[] = memberIds.map((id) => {
               const s = seedById.get(id)!;
+
               return {
                 id,
                 content: s.content,
@@ -461,6 +520,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
                 created_at: s.created_at,
               };
             });
+
             supersede_pairs = await deps.findSupersedes(candidates);
           } catch (err) {
             Logger.warn("dream supersede pass failed", err, { memberIds });
@@ -480,6 +540,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
         if (deps.outbox) {
           await deps.outbox.put(windowKey, "distilled", cluster);
         }
+
         distilledClusters.push(cluster);
       } catch (err) {
         Logger.warn("dream distill failed for cluster", err, { memberIds });
@@ -494,14 +555,17 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
   for (const cluster of distilledClusters) {
     if (cluster.summary_embedding) continue; // resumed from embedded/, already done
     if (!deps.embed) continue; // tests skip embed
+
     try {
       const [vec] = await deps.embed([cluster.summary]);
+
       if (vec) cluster.summary_embedding = vec;
     } catch (err) {
       Logger.warn("dream: cluster summary embed failed", err, {
         cluster_id: cluster.cluster_id,
       });
     }
+
     if (deps.outbox) {
       await deps.outbox.transition(windowKey, "distilled", "embedded", cluster);
     }
@@ -523,6 +587,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
 
   Logger.info("dream: submitting clusters", { count: submissions.length });
   const result = await submitClusters(deps, windowKey, submissions);
+
   Logger.info("dream: clusters written", {
     submitted: submissions.length,
     written: result.written,
@@ -536,6 +601,7 @@ export async function runDreamCycle(deps: DreamDeps): Promise<DreamCycleResult> 
     for (const cluster of distilledClusters) {
       await deps.outbox.delete(windowKey, "embedded", cluster.cluster_id);
     }
+
     await deps.outbox.cleanupWindow(windowKey);
   }
 
@@ -574,6 +640,7 @@ export async function resumeDreamCycles(
     const distilledIds = await deps.outbox.list(windowKey, "distilled");
     const embeddedIds = await deps.outbox.list(windowKey, "embedded");
     const totalQueued = distilledIds.length + embeddedIds.length;
+
     if (totalQueued === 0) {
       await deps.outbox.cleanupWindow(windowKey);
       continue;
@@ -588,23 +655,28 @@ export async function resumeDreamCycles(
     // Walk distilled/ first - embed each, transition to embedded/.
     for (const id of distilledIds) {
       const cluster = await deps.outbox.read(windowKey, "distilled", id);
+
       if (!cluster.summary_embedding && deps.embed) {
         try {
           const [vec] = await deps.embed([cluster.summary]);
+
           if (vec) cluster.summary_embedding = vec;
         } catch (err) {
           Logger.warn("dream: resume embed failed", err, { cluster_id: id });
         }
       }
+
       await deps.outbox.transition(windowKey, "distilled", "embedded", cluster);
     }
 
     // Now everything's in embedded/. Re-submit as one batch.
     const allIds = await deps.outbox.list(windowKey, "embedded");
     const clusters: DistilledCluster[] = [];
+
     for (const id of allIds) {
       clusters.push(await deps.outbox.read(windowKey, "embedded", id));
     }
+
     const submissions: ClusterSubmission[] = clusters.map((c) => ({
       member_ids: c.member_ids,
       title: c.title,
@@ -622,6 +694,7 @@ export async function resumeDreamCycles(
         windowKey,
         submissions,
       );
+
       Logger.info("dream: resume submitted", {
         window_key: windowKey,
         submitted: submissions.length,
@@ -629,10 +702,12 @@ export async function resumeDreamCycles(
       });
       resumedClusters += submissions.length;
       writtenClusters += result.written;
+
       // Success - drop the files.
       for (const id of allIds) {
         await deps.outbox.delete(windowKey, "embedded", id);
       }
+
       await deps.outbox.cleanupWindow(windowKey);
     } catch (err) {
       Logger.warn("dream: resume submit failed, files retained", err, {

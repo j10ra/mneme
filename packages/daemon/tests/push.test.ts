@@ -43,9 +43,11 @@ describe("pushBundleViaServer", () => {
     globalThis.fetch = ((_url: string, init?: RequestInit): Promise<Response> => {
       return new Promise((_resolve, reject) => {
         const signal = init?.signal;
+
         if (signal) {
           signal.addEventListener("abort", () => {
             const err = new Error("aborted");
+
             err.name = "AbortError";
             reject(err);
           });
@@ -54,6 +56,7 @@ describe("pushBundleViaServer", () => {
     }) as unknown as typeof fetch;
 
     const push = pushBundleViaServer("https://example", "tok");
+
     // Use a small fake timer wrapper by relying on setTimeout(0) for test.
     // The default timeout in the wrapper is 30s; we just race long enough
     // to confirm the controller fires AND the wrapper translates it.
@@ -69,6 +72,7 @@ describe("pushBundleViaServer", () => {
     globalThis.fetch = (async () =>
       new Response("bad token", { status: 401 })) as unknown as typeof fetch;
     const push = pushBundleViaServer("https://example", "tok");
+
     try {
       await push(bundle);
       throw new Error("expected rejection");
@@ -82,6 +86,7 @@ describe("pushBundleViaServer", () => {
     globalThis.fetch = (async () =>
       new Response("oops", { status: 502 })) as unknown as typeof fetch;
     const push = pushBundleViaServer("https://example", "tok");
+
     try {
       await push(bundle);
       throw new Error("expected rejection");
@@ -94,6 +99,7 @@ describe("pushBundleViaServer", () => {
   test("resolves cleanly on 200 ok", async () => {
     globalThis.fetch = (async () => new Response("ok", { status: 200 })) as unknown as typeof fetch;
     const push = pushBundleViaServer("https://example", "tok");
+
     await expect(push(bundle)).resolves.toBeUndefined();
   });
 });

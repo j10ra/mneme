@@ -19,6 +19,7 @@ describe("plugin scrub bundle", () => {
     const committed = readFileSync(join(repoRoot, "packages/plugin/src/core/scrub.ts"), "utf8");
 
     const tmp = mkdtempSync(join(tmpdir(), "mneme-bundle-"));
+
     try {
       const out = join(tmp, "scrub.ts");
       const result = spawnSync(
@@ -37,8 +38,10 @@ describe("plugin scrub bundle", () => {
         ],
         { cwd: repoRoot, stdio: "pipe" },
       );
+
       expect(result.status).toBe(0);
       const fresh = readFileSync(out, "utf8");
+
       expect(committed).toBe(fresh);
     } finally {
       rmSync(tmp, { recursive: true, force: true });

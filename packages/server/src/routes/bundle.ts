@@ -15,7 +15,7 @@
 // a UUID) runs inside the same transaction, preserving the existing
 // /api/capture semantic without a separate /api/pin route.
 
-import { Hono } from "hono";
+import type { Hono } from "hono";
 import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql } from "../infra/db.ts";
 import { actuateRawMeta } from "../lib/actuate.ts";
@@ -66,14 +66,18 @@ export function validateBundleBody(input: unknown): ValidationResult {
   if (!input || typeof input !== "object") {
     return { ok: false, error: "body must be an object" };
   }
+
   const body = input as { capture?: unknown; memories?: unknown };
 
   if (!body.capture || typeof body.capture !== "object") {
     return { ok: false, error: "capture required" };
   }
+
   const cap = body.capture as Record<string, unknown>;
+
   for (const field of REQUIRED_CAPTURE_STRINGS) {
     const v = cap[field];
+
     if (typeof v !== "string" || !v.trim()) {
       return { ok: false, error: `capture.${field} required` };
     }
@@ -82,21 +86,27 @@ export function validateBundleBody(input: unknown): ValidationResult {
   if (!Array.isArray(body.memories)) {
     return { ok: false, error: "memories[] required" };
   }
+
   for (let i = 0; i < body.memories.length; i++) {
     const m = body.memories[i] as Record<string, unknown> | undefined;
+
     if (!m) return { ok: false, error: `memories[${i}] missing` };
+
     if (typeof m.content !== "string") {
       return { ok: false, error: `memories[${i}].content required` };
     }
+
     if (typeof m.chunk_id !== "string" || m.chunk_id.length !== 64) {
       return { ok: false, error: `memories[${i}].chunk_id must be a 64-char sha256 hex` };
     }
+
     if (!Array.isArray(m.embedding) || m.embedding.length !== EMBEDDER_DIM) {
       return {
         ok: false,
         error: `memories[${i}].embedding must be ${EMBEDDER_DIM}-dim`,
       };
     }
+
     if (typeof m.kind !== "string") {
       return { ok: false, error: `memories[${i}].kind required` };
     }
@@ -160,6 +170,7 @@ export async function insertBundle(bundle: BundleBody, machineId: string): Promi
             importance = GREATEST(memories.importance, EXCLUDED.importance)
         RETURNING id, (xmax = 0) AS created
       `;
+
       memoryIds.push(memRows[0]!.id);
       deduped.push(!memRows[0]!.created);
     }
@@ -176,22 +187,26 @@ export function mountBundleRoute(app: Hono): void {
   app.post("/api/bundle", mnemeRoute("api.bundle"), requireAuth("capture"), async (c) => {
     const raw = await c.req.json().catch(() => null);
     const validation = validateBundleBody(raw);
+
     if (!validation.ok) {
       return c.json({ error: validation.error }, 400);
     }
 
     const auth = currentAuth();
     const machineId = auth?.machineId;
+
     if (!machineId) {
       return c.json({ error: "bundle requires per-machine token" }, 400);
     }
 
     const result = await insertBundle(validation.bundle, machineId);
+
     Logger.info("bundle inserted", {
       capture_id: result.capture_id,
       memory_count: result.memory_ids.length,
       deduped_count: result.deduped.filter(Boolean).length,
     });
+
     return c.json(result);
   });
 }

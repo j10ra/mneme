@@ -16,7 +16,7 @@
 //                 Fine to read here because the endpoint runs in the same
 //                 process as pick.ts.
 
-import { Hono } from "hono";
+import type { Hono } from "hono";
 import { mnemeRoute, requireAuth } from "@mneme/core";
 import { sql } from "../infra/db.ts";
 import { EMBEDDER_DIM } from "../infra/config.ts";
@@ -49,15 +49,18 @@ export async function forceWorkerRun(name: string): Promise<ForceRunResult> {
   if (!isForceableWorker(name)) {
     return { ok: false, status: 400, error: "unknown worker" };
   }
+
   const rows = await sql<{ next_run_at: Date }[]>`
     UPDATE _ops.worker_runs
     SET next_run_at = now(), last_status = NULL, last_error = NULL
     WHERE job_name = ${name}
     RETURNING next_run_at
   `;
+
   if (rows.length === 0) {
     return { ok: false, status: 404, error: "worker not registered" };
   }
+
   return { ok: true, job: name, next_run_at: rows[0]!.next_run_at };
 }
 
@@ -169,6 +172,7 @@ export function mountOpsRoutes(app: Hono): void {
         workers: workerRows.map((r) => {
           const lastRunMs = r.last_run_at ? new Date(r.last_run_at).getTime() : null;
           const nextRunMs = new Date(r.next_run_at).getTime();
+
           return {
             name: r.job_name,
             schedule_ms: Number(r.schedule_ms),
@@ -183,6 +187,7 @@ export function mountOpsRoutes(app: Hono): void {
         }),
         daemons: daemonRows.map((r) => {
           const postedMs = new Date(r.posted_at).getTime();
+
           return {
             machine_id: r.machine_id,
             machine_name: r.machine_name,
@@ -325,19 +330,23 @@ export function mountOpsRoutes(app: Hono): void {
       // Parse qvec (caller pre-embedded the search text). Reject early on
       // malformed input rather than passing a bad literal to Postgres.
       let vecLit: string | null = null;
+
       if (qvecRaw) {
         const parts = qvecRaw.split(",");
+
         if (parts.length !== EMBEDDER_DIM) {
           return c.json(
             { error: `qvec must be ${EMBEDDER_DIM} comma-separated floats, got ${parts.length}` },
             400,
           );
         }
+
         for (const p of parts) {
           if (!Number.isFinite(Number(p))) {
             return c.json({ error: "qvec contains non-numeric values" }, 400);
           }
         }
+
         vecLit = `[${parts.join(",")}]`;
       }
 
@@ -353,6 +362,7 @@ export function mountOpsRoutes(app: Hono): void {
       `;
 
       let rows: MemoryRow[];
+
       if (vecLit) {
         rows = (await sql<MemoryRow[]>`
           WITH q_vec AS (SELECT ${vecLit}::vector AS v),
@@ -435,9 +445,11 @@ export function mountOpsRoutes(app: Hono): void {
         FROM memories
         WHERE id = ${id}::uuid AND archived_at IS NULL
       `;
+
       if (!seedRow?.has_embedding) {
         return c.json({ related: [] });
       }
+
       const rows = (await sql<
         { id: string; content_preview: string; distance: number; kind: string | null }[]
       >`
@@ -461,6 +473,7 @@ export function mountOpsRoutes(app: Hono): void {
         distance: number;
         kind: string | null;
       }>;
+
       return c.json({ related: rows });
     },
   );
@@ -524,6 +537,7 @@ export function mountOpsRoutes(app: Hono): void {
         kind: string | null;
         depth: number;
       }>;
+
       return c.json({ parents, children });
     },
   );
@@ -549,6 +563,7 @@ export function mountOpsRoutes(app: Hono): void {
         SELECT meta->>'in_cluster' AS cluster_id
         FROM memories WHERE id = ${id}::uuid
       `;
+
       if (!focal) return c.json({ nodes: [], edges: [], cluster_id: null });
       const clusterId = focal.cluster_id;
 
@@ -585,6 +600,7 @@ export function mountOpsRoutes(app: Hono): void {
 
       // Collect every referenced id (deduped) and fetch full node rows.
       const ids = new Set<string>([id]);
+
       if (clusterId) ids.add(clusterId);
       for (const s of siblings) ids.add(s.id);
       for (const r of related) ids.add(r.target);
@@ -616,6 +632,7 @@ export function mountOpsRoutes(app: Hono): void {
 
       const present = new Set(nodes.map((n) => n.id));
       const edges: GraphEdge[] = [];
+
       // Cluster hub edges: focal + each sibling → theme node.
       if (clusterId && present.has(clusterId)) {
         for (const memberId of [id, ...siblings.map((s) => s.id)]) {
@@ -624,9 +641,11 @@ export function mountOpsRoutes(app: Hono): void {
           }
         }
       }
+
       for (const r of related) {
         if (present.has(r.target)) edges.push({ source: id, target: r.target, type: "related" });
       }
+
       for (const s of supersede) {
         if (!s.id || !present.has(s.id)) continue;
         // Direction is always old → new (source superseded_by target).
@@ -677,7 +696,9 @@ export function mountOpsRoutes(app: Hono): void {
         raw_meta: unknown;
       }>;
       const row = rows[0];
+
       if (!row) return c.json({ error: "capture not found" }, 404);
+
       return c.json({ capture: row });
     },
   );
@@ -725,7 +746,9 @@ export function mountOpsRoutes(app: Hono): void {
         LIMIT 1
       `) as unknown as Array<Record<string, unknown>>;
       const row = rows[0];
+
       if (!row) return c.json({ error: "memory not found" }, 404);
+
       return c.json({ memory: row });
     },
   );
@@ -784,6 +807,7 @@ export function mountOpsRoutes(app: Hono): void {
         last_at: Date | string;
         sample_machine_ids: string[];
       }>;
+
       return c.json({ clusters: rows });
     },
   );
@@ -826,6 +850,7 @@ export function mountOpsRoutes(app: Hono): void {
     //   - else:      ranked top-N by importance (then edge_count).
     let ids: string[];
     let depthByNode: Map<string, number> | null = null;
+
     if (focal) {
       const bfsRows = (await sql<Array<{ id: string; depth: number }>>`
           WITH RECURSIVE candidates AS (
@@ -853,6 +878,7 @@ export function mountOpsRoutes(app: Hono): void {
           FROM bfs
           GROUP BY id
         `) as unknown as Array<{ id: string; depth: number }>;
+
       ids = bfsRows.map((r) => r.id);
       depthByNode = new Map(bfsRows.map((r) => [r.id, r.depth]));
     } else {
@@ -877,8 +903,10 @@ export function mountOpsRoutes(app: Hono): void {
           ORDER BY importance DESC NULLS LAST, edge_count DESC, created_at DESC
           LIMIT ${topN}
         `) as unknown as Array<{ id: string }>;
+
       ids = ranked.map((r) => r.id);
     }
+
     if (ids.length === 0) {
       return c.json({
         nodes: [],
@@ -909,6 +937,7 @@ export function mountOpsRoutes(app: Hono): void {
         ) k ON TRUE
         WHERE m.id = ANY(${ids}::uuid[])
       `) as unknown as Array<GraphNode>;
+
     // Stamp BFS depth onto nodes when focal mode.
     if (depthByNode) {
       for (const n of nodes) {
@@ -937,11 +966,13 @@ export function mountOpsRoutes(app: Hono): void {
       `) as unknown as Array<{ source: string; target: string }>;
 
     const edges: Array<GraphEdge> = [];
+
     for (const r of relatedRows) {
       if (idSet.has(r.target)) {
         edges.push({ source: r.source, target: r.target, type: "related" });
       }
     }
+
     for (const r of supersedeRows) {
       if (idSet.has(r.target)) {
         edges.push({ source: r.source, target: r.target, type: "supersede" });
@@ -971,7 +1002,9 @@ export function mountOpsRoutes(app: Hono): void {
     requireAuth("admin"),
     async (c) => {
       const r = await forceWorkerRun(c.req.param("name"));
+
       if (!r.ok) return c.json({ error: r.error }, r.status);
+
       return c.json({ queued: true, job: r.job, next_run_at: r.next_run_at });
     },
   );
@@ -1019,11 +1052,13 @@ type MemoryRow = {
 function parseTs(raw: string | null, fallback: Date): Date {
   if (!raw) return fallback;
   const d = new Date(raw);
+
   return Number.isNaN(d.getTime()) ? fallback : d;
 }
 
 function csv(raw: string | null): string[] {
   if (!raw) return [];
+
   return raw
     .split(",")
     .map((s) => s.trim())
@@ -1032,6 +1067,7 @@ function csv(raw: string | null): string[] {
 
 function clamp(n: number, lo: number, hi: number, fallback: number): number {
   if (!Number.isFinite(n)) return fallback;
+
   return Math.min(hi, Math.max(lo, Math.floor(n)));
 }
 
@@ -1058,8 +1094,10 @@ function clusterStatusClause(values: string[]): ReturnType<typeof sql> {
   // by using sql with array spread is unsupported. Build a recursive
   // chain instead.
   let combined = fragments[0]!;
+
   for (let i = 1; i < fragments.length; i++) {
     combined = sql`${combined} OR ${fragments[i]!}`;
   }
+
   return sql`AND (${combined})`;
 }

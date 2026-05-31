@@ -54,14 +54,18 @@ export function parseCommandFile(raw: string): {
 } {
   if (!raw.startsWith("---")) return { description: "", argumentHint: "", body: raw };
   const end = raw.indexOf("\n---", 3);
+
   if (end === -1) return { description: "", argumentHint: "", body: raw };
   const fm = raw.slice(3, end);
   const body = raw.slice(end + 4).replace(/^\n+/, "");
   const meta: Record<string, string> = {};
+
   for (const line of fm.split("\n")) {
     const m = line.match(/^([a-zA-Z-]+):\s*(.*)$/);
+
     if (m?.[1]) meta[m[1]] = (m[2] ?? "").trim().replace(/^["']|["']$/g, "");
   }
+
   return {
     description: meta.description ?? "",
     argumentHint: meta["argument-hint"] ?? "",
@@ -86,12 +90,15 @@ export function substituteArgs(body: string, args: string): string {
   const all = args.trim();
   const parts = all.length ? all.split(/\s+/) : [];
   let out = body.split("$ARGUMENTS").join(all).split("$@").join(all);
+
   out = out.replace(/\$\{@:(\d+)(?::(\d+))?\}/g, (_m, n: string, l?: string) => {
     const start = Number(n) - 1;
     const slice = l ? parts.slice(start, start + Number(l)) : parts.slice(start);
+
     return slice.join(" ");
   });
   out = out.replace(/\$(\d+)/g, (_m, n: string) => parts[Number(n) - 1] ?? "");
+
   return out;
 }
 
@@ -99,6 +106,7 @@ export function substituteArgs(body: string, args: string): string {
  *  an already-registered command, in which case prefix with `mneme-`. */
 export function resolveCommandName(base: string, taken: Set<string>): string {
   if (RESERVED_PI_COMMANDS.has(base) || taken.has(base)) return `mneme-${base}`;
+
   return base;
 }
 
@@ -106,28 +114,36 @@ export function resolveCommandName(base: string, taken: Set<string>): string {
  *  is deferred to the caller, which holds the live registered-command set). */
 export function loadCommandSpecs(commandsDir: string, pluginRoot: string): CommandSpec[] {
   let files: string[];
+
   try {
     files = readdirSync(commandsDir).filter((f) => f.endsWith(".md"));
   } catch {
     return [];
   }
+
   const specs: CommandSpec[] = [];
+
   for (const file of files.sort()) {
     const base = file.replace(/\.md$/, "");
+
     if (SKIP_COMMANDS.has(base)) continue;
     let raw: string;
+
     try {
       raw = readFileSync(join(commandsDir, file), "utf8");
     } catch {
       continue;
     }
+
     const { description, argumentHint, body } = parseCommandFile(raw);
     const desc = description || `Mneme: ${base}`;
+
     specs.push({
       base,
       description: argumentHint ? `${desc}  ${argumentHint}` : desc,
       body: adaptForPi(body, pluginRoot),
     });
   }
+
   return specs;
 }

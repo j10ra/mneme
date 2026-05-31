@@ -103,15 +103,18 @@ export class TraceStore {
       clearInterval(this.timer);
       this.timer = null;
     }
+
     // Drop in-flight pending entries: their trace never finalized, so they'd
     // FK-violate if forced through. Surface the count for visibility.
     const orphanedSpans = [...this.pendingSpans.values()].reduce((n, list) => n + list.length, 0);
     const orphanedLogs = [...this.pendingLogs.values()].reduce((n, list) => n + list.length, 0);
+
     if (orphanedSpans > 0 || orphanedLogs > 0) {
       process.stderr.write(
         `[mneme/core] trace store stop: dropped ${orphanedSpans} pending span(s) and ${orphanedLogs} pending log(s) from in-flight traces\n`,
       );
     }
+
     this.pendingSpans.clear();
     this.pendingLogs.clear();
     await this.flush();
@@ -126,15 +129,19 @@ export class TraceStore {
     // the flush-ready buffers alongside the trace itself. flush() will then
     // insert all three in one tx, in the right order.
     const spans = this.pendingSpans.get(t.traceId);
+
     if (spans) {
       this.spanBuffer.push(...spans);
       this.pendingSpans.delete(t.traceId);
     }
+
     const logs = this.pendingLogs.get(t.traceId);
+
     if (logs) {
       this.logBuffer.push(...logs);
       this.pendingLogs.delete(t.traceId);
     }
+
     this.traceBuffer.push(t);
     this.markFinalized(t.traceId);
     this.maybeFlushOverflow();
@@ -146,6 +153,7 @@ export class TraceStore {
       input: this.scrub(s.input),
       output: this.scrub(s.output),
     };
+
     // Late span for an already-finalized trace: skip the pending bucket.
     // Trace row is already in flight, FK will be satisfied. Without this,
     // any escaping async task (or a route that pushes its rootSpan after
@@ -153,29 +161,37 @@ export class TraceStore {
     if (this.recentlyFinalized.has(s.traceId)) {
       this.spanBuffer.push(scrubbed);
       this.maybeFlushOverflow();
+
       return;
     }
+
     let bucket = this.pendingSpans.get(s.traceId);
+
     if (!bucket) {
       // Cap concurrent in-flight traces. Drop the oldest bucket if exceeded.
       if (this.pendingSpans.size >= MAX_PENDING_TRACES) {
         const firstKey = this.pendingSpans.keys().next().value as string | undefined;
+
         if (firstKey !== undefined) {
           const dropped = this.pendingSpans.get(firstKey)?.length ?? 0;
+
           this.pendingSpans.delete(firstKey);
           process.stderr.write(
             `[mneme/core] trace store: dropped ${dropped} pending span(s) for stale trace ${firstKey} (MAX_PENDING_TRACES exceeded)\n`,
           );
         }
       }
+
       bucket = [];
       this.pendingSpans.set(s.traceId, bucket);
     }
+
     if (bucket.length >= MAX_PENDING_SPANS_PER_TRACE) {
       // Trace producing too many spans without finalizing. Drop oldest in the
       // bucket — keep recent activity, lose ancient context.
       bucket.shift();
     }
+
     bucket.push(scrubbed);
     this.maybeFlushOverflow();
   }
@@ -187,31 +203,41 @@ export class TraceStore {
     if (!l.traceId) {
       this.logBuffer.push(l);
       this.maybeFlushOverflow();
+
       return;
     }
+
     if (this.recentlyFinalized.has(l.traceId)) {
       this.logBuffer.push(l);
       this.maybeFlushOverflow();
+
       return;
     }
+
     let bucket = this.pendingLogs.get(l.traceId);
+
     if (!bucket) {
       if (this.pendingLogs.size >= MAX_PENDING_TRACES) {
         const firstKey = this.pendingLogs.keys().next().value as string | undefined;
+
         if (firstKey !== undefined) {
           const dropped = this.pendingLogs.get(firstKey)?.length ?? 0;
+
           this.pendingLogs.delete(firstKey);
           process.stderr.write(
             `[mneme/core] trace store: dropped ${dropped} pending log(s) for stale trace ${firstKey} (MAX_PENDING_TRACES exceeded)\n`,
           );
         }
       }
+
       bucket = [];
       this.pendingLogs.set(l.traceId, bucket);
     }
+
     if (bucket.length >= MAX_PENDING_SPANS_PER_TRACE) {
       bucket.shift();
     }
+
     bucket.push(l);
     this.maybeFlushOverflow();
   }
@@ -222,15 +248,19 @@ export class TraceStore {
     if (this.recentlyFinalized.has(traceId)) {
       this.recentlyFinalized.delete(traceId);
     }
+
     this.recentlyFinalized.set(traceId, true);
+
     if (this.recentlyFinalized.size > RECENT_TRACE_LRU_SIZE) {
       const oldest = this.recentlyFinalized.keys().next().value as string | undefined;
+
       if (oldest !== undefined) this.recentlyFinalized.delete(oldest);
     }
   }
 
   private maybeFlushOverflow(): void {
     const total = this.traceBuffer.length + this.spanBuffer.length + this.logBuffer.length;
+
     if (total >= this.maxBatchSize) {
       void this.flush();
     }
@@ -259,6 +289,7 @@ export class TraceStore {
             )}
           `;
         }
+
         if (spans.length > 0) {
           await sql`
             INSERT INTO _ops.spans ${sql(
@@ -278,6 +309,7 @@ export class TraceStore {
             )}
           `;
         }
+
         if (logs.length > 0) {
           await sql`
             INSERT INTO _ops.logs ${sql(
@@ -315,12 +347,15 @@ export function summarizeIO(data: unknown): {
   size: number;
 } {
   if (data === undefined || data === null) return { value: null, size: 0 };
+
   try {
     const json = JSON.stringify(data);
     const size = json.length;
+
     if (size > MAX_BODY_BYTES) {
       return { value: { _truncated: true, size }, size };
     }
+
     return { value: data, size };
   } catch {
     return { value: { _unserializable: true }, size: 0 };

@@ -16,12 +16,11 @@
 // config stale. Admin debugging that needs to rename another machine goes
 // via direct DB.
 
-import { Hono } from "hono";
+import type { Hono } from "hono";
 import type postgres from "postgres";
 import { currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql, sha256Hex } from "../infra/db.ts";
 
-// eslint-disable-next-line @typescript-eslint/ban-types
 type SqlClient = postgres.ISql<{}>;
 
 function generateToken(machineName: string): string {
@@ -33,6 +32,7 @@ function generateToken(machineName: string): string {
   const hex = Array.from(random)
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+
   return `mneme_pat_${safeName}_${hex}`;
 }
 
@@ -56,6 +56,7 @@ async function deleteMachineKeys(machineId: string, client: SqlClient): Promise<
   const result = await client`
     DELETE FROM _ops.api_keys WHERE machine_id = ${machineId}
   `;
+
   return result.count;
 }
 
@@ -78,11 +79,13 @@ export async function registerOrRotate(input: {
       LIMIT 1
     `;
     const row = existing[0];
+
     if (row) {
       const reusedId = row.machine_id;
       const reusedName = row.name;
       const token = generateToken(reusedName);
       const keyHash = await sha256Hex(token);
+
       // Single transaction so the old token is never valid alongside
       // the new one and the unique fingerprint index never sees both.
       await sql.begin(async (tx) => {
@@ -93,6 +96,7 @@ export async function registerOrRotate(input: {
           VALUES (${keyHash}, ${reusedName}, ${reusedId}, ${fingerprint})
         `;
       });
+
       return {
         machine_id: reusedId,
         machine_name: reusedName,
@@ -105,11 +109,13 @@ export async function registerOrRotate(input: {
   const machineId = crypto.randomUUID();
   const token = generateToken(machineName);
   const keyHash = await sha256Hex(token);
+
   await sql`
     INSERT INTO _ops.api_keys
       (key_hash, name, machine_id, machine_fingerprint)
     VALUES (${keyHash}, ${machineName}, ${machineId}, ${fingerprint})
   `;
+
   return {
     machine_id: machineId,
     machine_name: machineName,
@@ -151,6 +157,7 @@ export function mountAuthRoutes(app: Hono): void {
         typeof body?.machine_name === "string" && body.machine_name.trim()
           ? body.machine_name.trim()
           : "";
+
       if (!machineName) return c.json({ error: "machine_name required" }, 400);
       const fingerprint =
         typeof body?.machine_fingerprint === "string" && body.machine_fingerprint.trim()
@@ -158,6 +165,7 @@ export function mountAuthRoutes(app: Hono): void {
           : null;
 
       const result = await registerOrRotate({ machineName, fingerprint });
+
       return c.json(result);
     },
   );
@@ -172,9 +180,11 @@ export function mountAuthRoutes(app: Hono): void {
     } | null;
     const machineId =
       typeof body?.machine_id === "string" && body.machine_id.trim() ? body.machine_id.trim() : "";
+
     if (!machineId) return c.json({ error: "machine_id required" }, 400);
 
     const revoked = await deleteMachineKeys(machineId, sql);
+
     return c.json({ machine_id: machineId, revoked });
   });
 
@@ -197,9 +207,11 @@ export function mountAuthRoutes(app: Hono): void {
   app.post("/api/auth/rename", mnemeRoute("api.auth.rename"), requireAuth("capture"), async (c) => {
     const auth = currentAuth();
     const machineId = auth?.machineId;
+
     if (!machineId) {
       return c.json({ error: "self-rename requires a per-machine token, not admin" }, 400);
     }
+
     const body = (await c.req.json().catch(() => null)) as {
       machine_name?: unknown;
     } | null;
@@ -207,6 +219,7 @@ export function mountAuthRoutes(app: Hono): void {
       typeof body?.machine_name === "string" && body.machine_name.trim()
         ? body.machine_name.trim()
         : "";
+
     if (!machineName) return c.json({ error: "machine_name required" }, 400);
 
     const result = await sql<{ id: string; name: string }[]>`
@@ -215,9 +228,11 @@ export function mountAuthRoutes(app: Hono): void {
         WHERE machine_id = ${machineId} AND revoked_at IS NULL
         RETURNING id, name
       `;
+
     if (result.length === 0) {
       return c.json({ error: "no active key for this machine" }, 404);
     }
+
     return c.json({
       machine_id: machineId,
       machine_name: machineName,
@@ -271,6 +286,7 @@ export function mountAuthRoutes(app: Hono): void {
         LEFT JOIN _ops.daemon_heartbeats h ON h.machine_id::text = k.machine_id
         ORDER BY k.created_at DESC
       `;
+
       return c.json({ machines: rows });
     },
   );

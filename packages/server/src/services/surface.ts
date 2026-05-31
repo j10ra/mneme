@@ -47,8 +47,10 @@ const EMPTY_SURFACE: Surface = {
 // {items, total} in one round trip — lets the renderer show "(3 of 12)"
 // without a follow-up count query.
 type Row = SurfaceItem & { total_count: string };
+
 const toSection = (rows: Row[]): SurfaceSection => {
   const first = rows[0];
+
   return {
     items: rows.map(({ total_count: _t, ...r }) => r),
     total: first ? Number(first.total_count) : 0,
@@ -239,6 +241,7 @@ async function computeDelta(
     LIMIT 1
   `;
   const cut = cutRows[0];
+
   if (!cut) return null;
   const since = cut.created_at;
 
@@ -277,7 +280,9 @@ async function loadMachineNames(machineIds: string[]): Promise<Map<string, strin
     ORDER BY machine_id, revoked_at NULLS FIRST, created_at DESC
   `;
   const m = new Map<string, string>();
+
   for (const r of rows) m.set(r.machine_id, slugify(r.name));
+
   return m;
 }
 
@@ -316,17 +321,22 @@ const glyph = (kind: string | null): string => (kind && KIND_GLYPH[kind]) || "�
 function relativeTime(d: Date): string {
   const ms = Date.now() - d.getTime();
   const days = Math.floor(ms / 86_400_000);
+
   if (days === 0) {
     const hours = Math.floor(ms / 3_600_000);
+
     return hours === 0 ? "just now" : `${hours}h ago`;
   }
+
   if (days === 1) return "1d ago";
   if (days < 14) return `${days}d ago`;
+
   return d.toISOString().slice(0, 10);
 }
 
 const sectionHeader = (title: string, section: SurfaceSection): string => {
   const shown = section.items.length;
+
   return shown >= section.total
     ? `## ${title} (${shown})`
     : `## ${title} (${shown} of ${section.total})`;
@@ -344,9 +354,11 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
   ];
   const machineCount = new Set(allItems.map((i) => i.machine_id)).size;
   const showMachine = machineCount > 1;
+
   const tag = (item: SurfaceItem): string => {
     if (!showMachine) return "";
     const n = names.get(item.machine_id);
+
     return n ? ` · @${n}` : "";
   };
 
@@ -371,14 +383,17 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
   // "what's new" at the most-recent summary boundary; supersede count tells
   // the agent the rank-down machinery has been doing work.
   const deltaParts: string[] = [];
+
   if (s.delta) {
     deltaParts.push(
       `Since last session (${relativeTime(s.delta.since)}): ${s.delta.captures} captures, ${s.delta.memories} memories`,
     );
   }
+
   if (s.supersededCount > 0) {
     deltaParts.push(`${s.supersededCount} superseded all-time`);
   }
+
   if (deltaParts.length > 0) {
     lines.push(`_${deltaParts.join(" · ")}_`);
   }
@@ -388,6 +403,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
   if (s.pinned.items.length > 0) {
     lines.push("");
     lines.push(sectionHeader("Pinned", s.pinned));
+
     for (const i of s.pinned.items) {
       lines.push(
         `- [${i.id}] ${glyph(i.kind)} ${i.importance.toFixed(2)} ${collapse(i.content)}${tag(i)}`,
@@ -398,6 +414,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
   if (s.rules.items.length > 0) {
     lines.push("");
     lines.push(sectionHeader("Rules", s.rules));
+
     for (const i of s.rules.items) {
       lines.push(`- [${i.id}] ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`);
     }
@@ -406,8 +423,10 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
   if (s.themes.items.length > 0) {
     lines.push("");
     lines.push(sectionHeader("Themes", s.themes));
+
     for (const i of s.themes.items) {
       const title = i.cluster_title ? `**${collapse(i.cluster_title)}** — ` : "";
+
       lines.push(`- [${i.id}] ${glyph(i.kind)} ${title}${collapse(i.content)}${tag(i)}`);
     }
   }
@@ -415,6 +434,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
   if (s.decisions.items.length > 0) {
     lines.push("");
     lines.push(sectionHeader("Recent (last 14 days)", s.decisions));
+
     for (const i of s.decisions.items) {
       lines.push(
         `- [${i.id}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`,
@@ -425,6 +445,7 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
   if (s.sessions.items.length > 0) {
     lines.push("");
     lines.push(sectionHeader("Recent sessions", s.sessions));
+
     for (const i of s.sessions.items) {
       lines.push(
         `- [${i.id}] ${relativeTime(i.created_at)} · ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`,
@@ -435,5 +456,6 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
   // No content sections beyond the header? Don't render anything; an empty
   // surface lets the agent start clean instead of showing a useless header.
   if (lines.length === sectionsBefore) return "";
+
   return `${lines.join("\n")}\n`;
 }

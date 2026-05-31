@@ -52,10 +52,13 @@ function workerScriptPath(): string {
   // <plugin-root>, where build-plugin.ts deposits embed-worker.js
   // alongside daemon.js.
   const fromEnv = process.env.MNEME_PLUGIN_ROOT;
+
   if (fromEnv && fromEnv.trim()) {
     const p = join(fromEnv.trim(), "embed-worker.js");
+
     if (existsSync(p)) return p;
   }
+
   // Dev / fallback resolution: walk known relative shapes from this
   // module's URL. Mirrors routes/dashboard.ts.
   const here = dirname(fileURLToPath(import.meta.url));
@@ -67,9 +70,11 @@ function workerScriptPath(): string {
     // dev from workspace root
     join(here, "..", "..", "..", "packages", "plugin", "embed-worker.js"),
   ];
+
   for (const p of candidates) {
     if (existsSync(p)) return p;
   }
+
   throw new Error(`embed-worker not found. Checked MNEME_PLUGIN_ROOT and ${candidates.join(", ")}`);
 }
 
@@ -78,6 +83,7 @@ function failPending(err: Error): void {
     inflight.reject(err);
     inflight = null;
   }
+
   while (queue.length > 0) queue.shift()!.reject(err);
 }
 
@@ -88,6 +94,7 @@ async function ensureChild(): Promise<ChildHandle> {
   // unit files only put a minimal PATH on the env, so plain "bun" won't
   // resolve; `process.execPath` is bulletproof.
   const bunBin = process.execPath;
+
   Logger.info("embedder: spawning worker", { script, bun: bunBin });
   const proc = Bun.spawn([bunBin, script], {
     stdin: "pipe",
@@ -97,13 +104,16 @@ async function ensureChild(): Promise<ChildHandle> {
     stderr: "inherit",
     env: process.env as Record<string, string>,
   });
+
   if (!proc.stdin || !proc.stdout) {
     throw new Error("embed-worker spawn did not return stdio pipes");
   }
+
   const handle: ChildHandle = {
     proc,
     stdin: proc.stdin as unknown as ChildHandle["stdin"],
   };
+
   child = handle;
 
   readLoop = readStdoutLoop(handle).catch((err) => {
@@ -116,6 +126,7 @@ async function ensureChild(): Promise<ChildHandle> {
   // requests so callers see a clear error instead of hanging forever.
   void proc.exited.then((code) => {
     if (child === handle) child = null;
+
     if (code !== 0 && code !== null) {
       Logger.warn("embed-worker exited unexpectedly", { code });
       failPending(new Error(`embed-worker exited (code=${code})`));
@@ -129,34 +140,43 @@ async function readStdoutLoop(handle: ChildHandle): Promise<void> {
   const reader = (handle.proc.stdout as ReadableStream<Uint8Array>).getReader();
   const decoder = new TextDecoder();
   let buf = "";
+
   while (true) {
     const { done, value } = await reader.read();
+
     if (done) return;
     buf += decoder.decode(value, { stream: true });
     let nl;
+
     while ((nl = buf.indexOf("\n")) !== -1) {
       const line = buf.slice(0, nl).trim();
+
       buf = buf.slice(nl + 1);
       if (!line) continue;
       const handler = inflight;
+
       inflight = null;
+
       if (!handler) {
         Logger.warn("embedder: stray response from worker", {
           preview: line.slice(0, 200),
         });
         continue;
       }
+
       try {
         const resp = JSON.parse(line) as {
           vectors?: number[][];
           error?: string;
         };
+
         if (resp.error) handler.reject(new Error(resp.error));
         else if (resp.vectors) handler.resolve(resp.vectors);
         else handler.reject(new Error("invalid embed-worker response"));
       } catch (err) {
         handler.reject(err as Error);
       }
+
       pumpQueue();
     }
   }
@@ -165,9 +185,11 @@ async function readStdoutLoop(handle: ChildHandle): Promise<void> {
 function pumpQueue(): void {
   if (inflight || queue.length === 0 || !child) return;
   const next = queue.shift()!;
+
   inflight = next;
   const line = JSON.stringify({ texts: next.texts }) + "\n";
   const enc = new TextEncoder();
+
   try {
     child.stdin.write(enc.encode(line));
     // FileSink buffers writes; flush so the worker actually receives
@@ -176,14 +198,17 @@ function pumpQueue(): void {
   } catch (err) {
     if (inflight === next) inflight = null;
     next.reject(err instanceof Error ? err : new Error(String(err)));
+
     return;
   }
+
   lastUsedAt = Date.now();
 }
 
 export async function embedBatch(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
   await ensureChild();
+
   return new Promise<number[][]>((resolve, reject) => {
     queue.push({ texts, resolve, reject });
     pumpQueue();
@@ -200,6 +225,7 @@ export async function disposeIfIdle(idleMs: number = PIPELINE_IDLE_MS): Promise<
   });
 
   const handle = child;
+
   child = null;
 
   // Closing stdin signals the worker's `for await (chunk of stdin)`
@@ -217,15 +243,18 @@ export async function disposeIfIdle(idleMs: number = PIPELINE_IDLE_MS): Promise<
     setTimeout(() => resolve("timeout"), DISPOSE_GRACE_MS),
   );
   const winner = await Promise.race([handle.proc.exited, timeout]);
+
   if (winner === "timeout") {
     Logger.warn("embed-worker did not exit on stdin close, sending SIGTERM");
     handle.proc.kill();
     await handle.proc.exited;
   }
+
   // Allow the read loop to wind down (reader will see done=true).
   if (readLoop) {
     await readLoop.catch(() => {});
     readLoop = null;
   }
+
   return true;
 }

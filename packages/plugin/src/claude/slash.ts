@@ -30,9 +30,11 @@ import { baseScope } from "../core/scope.ts";
 
 async function readStdin(): Promise<string> {
   let buf = "";
+
   for await (const chunk of process.stdin as AsyncIterable<Buffer | string>) {
     buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
   }
+
   return buf.trim();
 }
 
@@ -50,16 +52,21 @@ async function readStdin(): Promise<string> {
  *  Returns null only if all three rungs are empty. */
 async function resolveAdminPassword(cfg: MnemeConfig): Promise<string | null> {
   const fromEnv = process.env.MNEME_ADMIN_PASSWORD;
+
   if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
+
   if (cfg.admin?.secret) {
     const decrypted = decryptAdminPassword(cfg.admin.secret);
+
     if (decrypted) return decrypted;
     process.stderr.write(
       "mneme: admin secret decrypt failed (fingerprint changed?), falling back to stdin\n",
     );
   }
+
   if (process.stdin.isTTY) return null;
   const fromStdin = await readStdin();
+
   return fromStdin || null;
 }
 
@@ -78,11 +85,13 @@ async function postCapture(
     },
     body: JSON.stringify(body),
   });
+
   if (!resp.ok) {
     throw new Error(
       `POST /api/capture failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
     );
   }
+
   return (await resp.json()) as CaptureResult;
 }
 
@@ -100,14 +109,17 @@ async function postMemory(cfg: MnemeConfig, body: Record<string, unknown>): Prom
     },
     body: JSON.stringify(body),
   });
+
   if (!resp.ok) {
     throw new Error(`POST /api/memory failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
   }
+
   return (await resp.json()) as MemoryResult;
 }
 
 async function memory(): Promise<void> {
   const text = await readStdin();
+
   if (!text) throw new Error("no memory text on stdin");
   const cfg = loadConfig();
   const r = await postCapture(cfg, {
@@ -115,6 +127,7 @@ async function memory(): Promise<void> {
     source: "manual:/memory",
     content: text,
   });
+
   console.log(`✓ memory captured (id ${r.id}${r.deduped ? ", deduped" : ""})`);
 }
 
@@ -129,15 +142,19 @@ const MAX_SLUG_LEN = 60;
 
 function validateSlug(slug: string): string {
   const cleaned = slug.trim().toLowerCase();
+
   if (cleaned.length === 0) throw new Error("handoff slug required");
+
   if (cleaned.length > MAX_SLUG_LEN) {
     throw new Error(`handoff slug too long (${cleaned.length} > ${MAX_SLUG_LEN})`);
   }
+
   if (!SLUG_RE.test(cleaned)) {
     throw new Error(
       `invalid handoff slug "${cleaned}". Use kebab-case, 2-6 lowercase segments (e.g. "dream-streaming", "config-audit-2026-05-23").`,
     );
   }
+
   return cleaned;
 }
 
@@ -147,6 +164,7 @@ function validateSlug(slug: string): string {
 async function handoff(slugArg: string): Promise<void> {
   const slug = validateSlug(slugArg);
   const text = await readStdin();
+
   if (!text) throw new Error("no handoff text on stdin");
   const cfg = loadConfig();
   // Embed via local daemon so the handoff is semantically searchable
@@ -166,6 +184,7 @@ async function handoff(slugArg: string): Promise<void> {
     handoff_slug: slug,
   });
   const shortId = r.id.slice(0, 8);
+
   console.log(
     `✓ ${r.created ? "handoff saved" : "handoff updated"} as \`${slug}\` (id ${shortId})`,
   );
@@ -185,7 +204,9 @@ async function pin(input: string): Promise<void> {
       content: `pin ${input}`,
       raw_meta: { kind: "pin", target: input, value: true },
     });
+
     console.log(`✓ pinned memory ${input} (request id ${r.id})`);
+
     return;
   }
 
@@ -203,6 +224,7 @@ async function pin(input: string): Promise<void> {
     embedding_model: EMBEDDER_MODEL,
     ...(embedding ? { embedding } : {}),
   });
+
   console.log(
     `✓ ${r.created ? "wrote and pinned" : "re-pinned"} memory ${r.id}: "${input.slice(0, 80)}${input.length > 80 ? "…" : ""}"`,
   );
@@ -210,11 +232,13 @@ async function pin(input: string): Promise<void> {
 
 async function unpin(input: string): Promise<void> {
   if (!input) throw new Error("unpin requires a memory id");
+
   if (!UUID_RE.test(input)) {
     throw new Error(
       `unpin requires a memory uuid (got: "${input}"). Use mneme.sql to search pinned memories first, then unpin by id.`,
     );
   }
+
   const cfg = loadConfig();
   const r = await postCapture(cfg, {
     ...baseScope(cfg),
@@ -222,6 +246,7 @@ async function unpin(input: string): Promise<void> {
     content: `unpin ${input}`,
     raw_meta: { kind: "pin", target: input, value: false },
   });
+
   console.log(`✓ unpinned memory ${input} (request id ${r.id})`);
 }
 
@@ -231,11 +256,13 @@ async function unpin(input: string): Promise<void> {
  *  get the flag flip. */
 async function archive(input: string, value = true): Promise<void> {
   if (!input) throw new Error("archive requires a memory id");
+
   if (!UUID_RE.test(input)) {
     throw new Error(
       `archive requires a memory uuid (got: "${input}"). Use mneme.sql to find the id first, then archive by uuid.`,
     );
   }
+
   const cfg = loadConfig();
   const verb = value ? "archive" : "unarchive";
   const r = await postCapture(cfg, {
@@ -244,6 +271,7 @@ async function archive(input: string, value = true): Promise<void> {
     content: `${verb} ${input}`,
     raw_meta: { kind: "archive", target: input, value },
   });
+
   console.log(`✓ ${verb}d memory ${input} (request id ${r.id})`);
 }
 
@@ -251,25 +279,30 @@ async function archive(input: string, value = true): Promise<void> {
  *  actuation channel. value=false (via unsupersede) clears the flag. */
 async function supersede(oldId: string, newId: string, value = true): Promise<void> {
   if (!oldId) throw new Error("supersede requires the superseded memory id");
+
   if (!UUID_RE.test(oldId)) {
     throw new Error(
       `supersede requires a memory uuid for the old id (got: "${oldId}"). Resolve it with mneme.sql first.`,
     );
   }
+
   if (value) {
     if (!newId) throw new Error("supersede requires the replacement memory id");
+
     if (!UUID_RE.test(newId)) {
       throw new Error(
         `supersede requires a memory uuid for the new id (got: "${newId}"). Resolve it with mneme.sql first.`,
       );
     }
   }
+
   const cfg = loadConfig();
   const raw_meta = value
     ? { kind: "supersede", target: oldId, new_id: newId, value: true }
     : { kind: "supersede", target: oldId, value: false };
   const content = value ? `supersede ${oldId} by ${newId}` : `unsupersede ${oldId}`;
   const r = await postCapture(cfg, { ...baseScope(cfg), source: "manual", content, raw_meta });
+
   console.log(
     value
       ? `✓ superseded ${oldId} by ${newId} (request id ${r.id})`
@@ -316,10 +349,13 @@ async function setup(url: string, adminPassword: string, name?: string): Promise
       ...(fingerprint ? { machine_fingerprint: fingerprint } : {}),
     }),
   });
+
   if (!resp.ok) {
     const detail = (await resp.text()).slice(0, 200);
+
     throw new Error(`POST /api/auth/register failed: ${resp.status} ${detail}`);
   }
+
   const reg = (await resp.json()) as RegisterResponse;
 
   const cfgDir = join(homedir(), ".mneme");
@@ -327,6 +363,7 @@ async function setup(url: string, adminPassword: string, name?: string): Promise
 
   // Preserve only `projects[]` from any prior config — the rest is replaced.
   let existing: Partial<MnemeConfig> = {};
+
   if (existsSync(cfgPath)) {
     try {
       existing = JSON.parse(readFileSync(cfgPath, "utf8")) as Partial<MnemeConfig>;
@@ -350,6 +387,7 @@ async function setup(url: string, adminPassword: string, name?: string): Promise
   // keeps typing the password each time. Most likely cause is a
   // platform that machineFingerprint() doesn't support.
   let adminBlock: { secret: string } | undefined;
+
   try {
     adminBlock = { secret: encryptAdminPassword(adminPassword) };
   } catch (e) {
@@ -384,13 +422,17 @@ async function setup(url: string, adminPassword: string, name?: string): Promise
   } else {
     console.log("✓ registered with mneme server (fresh machine_id)");
   }
+
   console.log(`  server:  ${config.server.url}`);
   console.log(`  machine: ${reg.machine_name} (${reg.machine_id})`);
   console.log(`  token:   ${reg.token.slice(0, 22)}…`);
+
   if (!fingerprint) {
     console.log("  fingerprint: none (re-installs on this platform create new rows)");
   }
+
   console.log("✓ wrote ~/.mneme/config.json (mode 600)");
+
   if (adminBlock) {
     console.log("  admin:   stored encrypted (AES-GCM, machine-fingerprint-derived key)");
   }
@@ -405,12 +447,14 @@ async function setup(url: string, adminPassword: string, name?: string): Promise
   // reading the env was making the whole install path skip silently.
   const pluginRoot =
     process.env.CLAUDE_PLUGIN_ROOT ?? dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+
   if (pluginRoot) {
     const installResult = await installDaemonService({
       pluginRoot,
       daemonPort,
       bunPath: process.execPath,
     });
+
     if (installResult.ok) {
       console.log(
         `✓ daemon service installed (${installResult.platform}, ${installResult.servicePath})`,
@@ -469,36 +513,46 @@ function parseFrontmatter(raw: string): Record<string, string> {
   // `:` becomes the string, trimmed.
   if (!raw.startsWith("---")) return {};
   const close = raw.indexOf("\n---", 4);
+
   if (close === -1) return {};
   const body = raw.slice(4, close);
   const out: Record<string, string> = {};
+
   for (const line of body.split("\n")) {
     const trimmed = line.trim();
+
     if (!trimmed || trimmed.startsWith("#")) continue;
     const colon = trimmed.indexOf(":");
+
     if (colon === -1) continue;
     const key = trimmed.slice(0, colon).trim();
     const value = trimmed.slice(colon + 1).trim();
+
     if (key) out[key] = value;
   }
+
   return out;
 }
 
 async function help(): Promise<void> {
   const root = pluginRoot();
   const dir = join(root, "commands");
+
   if (!existsSync(dir)) {
     throw new Error(`commands directory not found: ${dir}`);
   }
+
   const files = readdirSync(dir)
     .filter((f) => f.endsWith(".md"))
     .sort();
 
   const entries: SlashEntry[] = [];
+
   for (const file of files) {
     const raw = readFileSync(join(dir, file), "utf8");
     const fm = parseFrontmatter(raw);
     const name = basename(file, ".md");
+
     entries.push({
       name,
       description: fm.description ?? "(no description)",
@@ -517,22 +571,28 @@ async function help(): Promise<void> {
   // updating this groupings list.
   const handled = new Set(["user", "admin"]);
   const other = entries.filter((e) => !handled.has(e.scope));
+
   if (other.length > 0) groups.push({ label: "Other", rows: other });
 
   console.log("# Mneme slash commands");
   console.log("");
+
   for (const g of groups) {
     if (g.rows.length === 0) continue;
     console.log(`## ${g.label}`);
     console.log("");
     console.log("| command | what it does | usage |");
     console.log("|---|---|---|");
+
     for (const e of g.rows) {
       const usage = e.argHint ? `\`/mneme:${e.name} ${e.argHint}\`` : `\`/mneme:${e.name}\``;
+
       console.log(`| \`/mneme:${e.name}\` | ${e.description} | ${usage} |`);
     }
+
     console.log("");
   }
+
   console.log(
     "Tip: every slash (except `/mneme:setup` on a fresh machine) reads `~/.mneme/config.json` for the per-machine token.",
   );
@@ -543,10 +603,13 @@ async function help(): Promise<void> {
  *  password. The daemon binds to 127.0.0.1 only so the URL is local. */
 async function dashboard(): Promise<void> {
   const cfg = loadConfig();
+
   if (!cfg.daemon?.port) {
     throw new Error("no daemon configured (run /mneme:setup first)");
   }
+
   const url = `http://127.0.0.1:${cfg.daemon.port}/dashboard`;
+
   console.log(url);
 
   // Best-effort browser open. Silent failure is fine — the URL is
@@ -564,6 +627,7 @@ async function dashboard(): Promise<void> {
       stdout: "ignore",
       stderr: "ignore",
     });
+
     // Don't await — fire-and-forget; the spawn returning means the
     // launcher accepted the URL even if the browser is still starting.
     proc.unref();
@@ -612,6 +676,7 @@ function fmtAge(ms: number | null): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
   if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+
   return `${Math.round(ms / 86_400_000)}d`;
 }
 
@@ -622,34 +687,41 @@ function fmtAge(ms: number | null): string {
 async function status(): Promise<void> {
   const cfg = loadConfig();
   const adminPassword = await resolveAdminPassword(cfg);
+
   if (!adminPassword) {
     throw new Error(
       "admin password required: /api/_ops/status is admin-only (#50). Set MNEME_ADMIN_PASSWORD or re-run /mneme:setup to store it encrypted.",
     );
   }
+
   const resp = await fetch(serverUrl(cfg, "/api/_ops/status"), {
     headers: { Authorization: `Bearer ${adminPassword}` },
   });
+
   if (!resp.ok) {
     throw new Error(
       `GET /api/_ops/status failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
     );
   }
+
   const r = (await resp.json()) as StatusResponse;
 
   console.log(`# /mneme:status — ${r.generated_at}`);
   console.log("");
   console.log("## Workers");
+
   if (!r.workers.length) {
     console.log("(none registered)");
   } else {
     console.log("| job | last run | status | duration | next | overdue |");
     console.log("|---|---|---|---|---|---|");
+
     for (const w of r.workers) {
       const dur = w.last_duration_ms !== null ? `${w.last_duration_ms}ms` : "-";
       const overdue = w.overdue_ms > 0 ? fmtAge(w.overdue_ms) : "-";
       const status = w.last_status ?? "-";
       const err = w.last_error ? ` (${w.last_error.slice(0, 40)})` : "";
+
       console.log(
         `| ${w.name} | ${fmtAge(w.since_last_run_ms)} ago | ${status}${err} | ${dur} | in ${fmtAge(Math.max(0, new Date(w.next_run_at).getTime() - Date.now()))} | ${overdue} |`,
       );
@@ -658,6 +730,7 @@ async function status(): Promise<void> {
 
   console.log("");
   console.log("## Daemons");
+
   if (!r.daemons.length) {
     console.log("(no heartbeats)");
   } else {
@@ -665,12 +738,14 @@ async function status(): Promise<void> {
       "| machine | pending | extracted | embedded | failed | last processed | last seen |",
     );
     console.log("|---|---|---|---|---|---|---|");
+
     for (const d of r.daemons) {
       const label = d.machine_name ?? d.machine_id.slice(0, 8);
       const lastProc = d.last_processed_at
         ? fmtAge(Date.now() - new Date(d.last_processed_at).getTime())
         : "never";
       const seen = `${fmtAge(d.since_posted_ms)} ago${d.stale ? " ⚠ stale" : ""}`;
+
       console.log(
         `| ${label} | ${d.outbox_pending} | ${d.outbox_extracted} | ${d.outbox_embedded} | ${d.outbox_failed} | ${lastProc} ago | ${seen} |`,
       );
@@ -682,6 +757,7 @@ async function status(): Promise<void> {
   const lastWin = r.dream.last_window_at
     ? `${fmtAge(Date.now() - new Date(r.dream.last_window_at).getTime())} ago`
     : "never";
+
   console.log(`- last window: ${lastWin}`);
   console.log(`- last cluster count: ${r.dream.last_cluster_count ?? "-"}`);
   console.log(
@@ -690,12 +766,14 @@ async function status(): Promise<void> {
 
   console.log("");
   console.log("## Breakers");
+
   for (const [name, b] of Object.entries(r.breakers)) {
     const state = b.open
       ? `⚠ open (reopens in ${fmtAge(b.reopensInMs)})`
       : b.failures > 0
         ? `closed (${b.failures} recent failures)`
         : "closed";
+
     console.log(`- ${name}: ${state}`);
   }
 }
@@ -718,19 +796,25 @@ async function machines(): Promise<void> {
   const resp = await fetch(serverUrl(cfg, "/api/auth/machines"), {
     headers: { Authorization: `Bearer ${cfg.auth.key}` },
   });
+
   if (!resp.ok) {
     throw new Error(
       `GET /api/auth/machines failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
     );
   }
+
   const { machines: rows } = (await resp.json()) as { machines: MachineRow[] };
+
   if (!rows.length) {
     console.log("(no machines registered)");
+
     return;
   }
+
   for (const r of rows) {
     const status = r.revoked_at ? `revoked ${r.revoked_at.slice(0, 10)}` : "active";
     const lastUsed = r.last_used_at ? r.last_used_at.replace("T", " ").slice(0, 16) : "never";
+
     console.log(
       `${r.machine_id ?? "-"}  ${r.name.padEnd(20)}  ${status.padEnd(20)}  last used ${lastUsed}`,
     );
@@ -754,16 +838,19 @@ async function rename(machineName: string): Promise<void> {
     },
     body: JSON.stringify({ machine_name: machineName }),
   });
+
   if (!resp.ok) {
     throw new Error(
       `POST /api/auth/rename failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
     );
   }
+
   const r = (await resp.json()) as {
     machine_id: string;
     machine_name: string;
     renamed: number;
   };
+
   console.log(`✓ renamed this machine → "${r.machine_name}" (${r.machine_id})`);
 
   // Local sync. Nothing in the runtime reads machine.name from config (hooks
@@ -780,6 +867,7 @@ async function revoke(machineId: string): Promise<void> {
   if (!machineId) throw new Error("machine_id required");
   const cfg = loadConfig();
   const adminPassword = await resolveAdminPassword(cfg);
+
   if (!adminPassword) throw new Error("admin password required");
   const resp = await fetch(serverUrl(cfg, "/api/auth/revoke"), {
     method: "POST",
@@ -789,12 +877,15 @@ async function revoke(machineId: string): Promise<void> {
     },
     body: JSON.stringify({ machine_id: machineId }),
   });
+
   if (!resp.ok) {
     throw new Error(
       `POST /api/auth/revoke failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`,
     );
   }
+
   const r = (await resp.json()) as { machine_id: string; revoked: number };
+
   console.log(`✓ revoked ${r.revoked} key(s) for machine ${r.machine_id}`);
 }
 
@@ -815,6 +906,7 @@ function parseSetupArgs(args: string[]): {
     allowPositionals: true,
     strict: false,
   });
+
   return {
     url: (values["server-url"] as string | undefined) ?? positionals[0] ?? "",
     adminPassword: (values["admin-password"] as string | undefined) ?? positionals[1] ?? "",
@@ -824,58 +916,77 @@ function parseSetupArgs(args: string[]): {
 
 async function main(): Promise<void> {
   const cmd = process.argv[2];
+
   // One INFO line per slash invocation so the dashboard log panel
   // shows which command ran without needing CC's transcript. Args are
   // omitted (might contain memory text/uuids the user just typed) —
   // only the command name is logged.
   plog("INFO", `slash.${cmd ?? "unknown"}`, "invoked");
+
   switch (cmd) {
     case "setup": {
       const { url, adminPassword, name } = parseSetupArgs(process.argv.slice(3));
+
       await setup(url, adminPassword, name);
+
       return;
     }
+
     case "memory":
       await memory();
+
       return;
     case "handoff":
       await handoff(process.argv[3] ?? "");
+
       return;
     case "pin":
       await pin(process.argv[3] ?? "");
+
       return;
     case "unpin":
       await unpin(process.argv[3] ?? "");
+
       return;
     case "archive":
       await archive(process.argv[3] ?? "", true);
+
       return;
     case "unarchive":
       await archive(process.argv[3] ?? "", false);
+
       return;
     case "supersede":
       await supersede(process.argv[3] ?? "", process.argv[4] ?? "", true);
+
       return;
     case "unsupersede":
       await supersede(process.argv[3] ?? "", "", false);
+
       return;
     case "machines":
       await machines();
+
       return;
     case "status":
       await status();
+
       return;
     case "help":
       await help();
+
       return;
     case "dashboard":
       await dashboard();
+
       return;
     case "revoke":
       await revoke(process.argv[3] ?? "");
+
       return;
     case "rename":
       await rename(process.argv[3] ?? "");
+
       return;
     default:
       console.error(`unknown subcommand: ${cmd}`);

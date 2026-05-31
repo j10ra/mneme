@@ -50,8 +50,10 @@ describe("loadConfig self-healing migration (claudeOauthToken strip)", () => {
   test("strips claudeOauthToken from in-memory result AND rewrites disk", async () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "mneme-cfg-home-"));
     const mnemeDir = join(fakeHome, ".mneme");
+
     mkdirSync(mnemeDir, { mode: 0o700 });
     const cfgPath = join(mnemeDir, "config.json");
+
     writeFileSync(
       cfgPath,
       JSON.stringify({
@@ -77,23 +79,27 @@ describe("loadConfig self-healing migration (claudeOauthToken strip)", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
+
     expect(proc.exitCode).toBe(0);
 
     const stdout = new TextDecoder().decode(proc.stdout);
     const inMem = JSON.parse(stdout.trim()) as {
       daemon?: { claudeOauthToken?: string };
     };
+
     expect(inMem.daemon?.claudeOauthToken).toBeUndefined();
 
     const onDisk = JSON.parse(readFileSync(cfgPath, "utf8")) as {
       daemon?: { claudeOauthToken?: string };
     };
+
     expect(onDisk.daemon?.claudeOauthToken).toBeUndefined();
   });
 
   test("leaves clean configs untouched", async () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "mneme-cfg-clean-"));
     const mnemeDir = join(fakeHome, ".mneme");
+
     mkdirSync(mnemeDir, { mode: 0o700 });
     const cfgPath = join(mnemeDir, "config.json");
     const cleanConfig = {
@@ -102,6 +108,7 @@ describe("loadConfig self-healing migration (claudeOauthToken strip)", () => {
       machine: { id: "m" },
       daemon: { port: 5390, agent_provider: "claude" },
     };
+
     writeFileSync(cfgPath, JSON.stringify(cleanConfig), { mode: 0o600 });
     chmodSync(cfgPath, 0o600);
     const beforeMtime = readFileSync(cfgPath);
@@ -113,9 +120,11 @@ describe("loadConfig self-healing migration (claudeOauthToken strip)", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
+
     expect(proc.exitCode).toBe(0);
 
     const afterMtime = readFileSync(cfgPath);
+
     expect(afterMtime.toString()).toBe(beforeMtime.toString());
   });
 });

@@ -38,19 +38,24 @@ const NETWORK_ERROR_MESSAGE_PATTERNS = [
 export function isNetworkOfflineError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const e = err as { code?: unknown; cause?: unknown; message?: unknown };
+
   if (typeof e.code === "string" && NETWORK_ERROR_CODES.has(e.code)) return true;
+
   // Wrapped errors (Node 22's fetch wraps the underlying socket error in
   // err.cause). Recurse into cause once.
   if (e.cause && typeof e.cause === "object") {
     const c = e.cause as { code?: unknown };
+
     if (typeof c.code === "string" && NETWORK_ERROR_CODES.has(c.code)) {
       return true;
     }
   }
+
   if (typeof e.message === "string") {
     for (const re of NETWORK_ERROR_MESSAGE_PATTERNS) {
       if (re.test(e.message)) return true;
     }
   }
+
   return false;
 }

@@ -18,6 +18,7 @@ Greek muse of memory. Personal cross-machine memory layer for one user, three ma
 | Reason about how memories get refined | [`docs/workers/nap.md`](./docs/workers/nap.md), [`docs/workers/dream.md`](./docs/workers/dream.md), [`docs/workers/digest.md`](./docs/workers/digest.md) |
 | Read the schema or design a query | [`docs/data-model.md`](./docs/data-model.md), [`packages/plugin/skills/using-mneme/SKILL.md`](./packages/plugin/skills/using-mneme/SKILL.md) |
 | How agents read | [`docs/recall.md`](./docs/recall.md), [`docs/surface.md`](./docs/surface.md) |
+| Code style, formatting, naming, lint enforcement | [`docs/conventions.md`](./docs/conventions.md) |
 
 ### Operations (the code is the doc)
 

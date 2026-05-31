@@ -22,11 +22,14 @@ export function findClaudeExecutable(): string {
   // existsSync guard: a baked-in path that no longer exists must fall
   // through to live lookups, not be handed to the SDK.
   const fromEnv = process.env.CLAUDE_EXECUTABLE_PATH;
+
   if (fromEnv && existsSync(fromEnv)) {
     return fromEnv;
   }
+
   const which = spawnSync("which", ["claude"], { encoding: "utf8" });
   const fromPath = which.stdout?.trim();
+
   if (fromPath && existsSync(fromPath)) return fromPath;
 
   const fallbacks = [
@@ -35,8 +38,10 @@ export function findClaudeExecutable(): string {
     `${homedir()}/.local/bin/claude`,
     `${homedir()}/.bun/bin/claude`,
   ];
+
   try {
     const nvmRoot = `${homedir()}/.nvm/versions/node`;
+
     if (existsSync(nvmRoot)) {
       for (const v of readdirSync(nvmRoot)) {
         fallbacks.push(`${nvmRoot}/${v}/bin/claude`);
@@ -45,9 +50,11 @@ export function findClaudeExecutable(): string {
   } catch {
     // ignore
   }
+
   for (const candidate of fallbacks) {
     if (existsSync(candidate)) return candidate;
   }
+
   throw new Error(
     "claude executable not found. Install Claude Code or set CLAUDE_EXECUTABLE_PATH.",
   );

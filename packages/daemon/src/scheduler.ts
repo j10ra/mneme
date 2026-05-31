@@ -57,6 +57,7 @@ export function register(job: RegisteredJob): void {
 async function loadState(): Promise<State> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
+
     return JSON.parse(raw) as State;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
@@ -70,6 +71,7 @@ async function loadState(): Promise<State> {
 async function saveState(s: State): Promise<void> {
   await mkdir(dirname(STATE_PATH), { recursive: true });
   const tmp = `${STATE_PATH}.tmp`;
+
   await writeFile(tmp, JSON.stringify(s, null, 2));
   await rename(tmp, STATE_PATH);
 }
@@ -77,8 +79,10 @@ async function saveState(s: State): Promise<void> {
 function syncRegistry(s: State): State {
   const out: State = {};
   const now = new Date().toISOString();
+
   for (const job of registry.values()) {
     const existing = s[job.name];
+
     if (existing) {
       out[job.name] = { ...existing, schedule_ms: job.scheduleMs };
     } else {
@@ -92,6 +96,7 @@ function syncRegistry(s: State): State {
       };
     }
   }
+
   return out;
 }
 
@@ -107,6 +112,7 @@ function recoverStaleClaims(s: State): { state: State; recovered: number } {
   const now = Date.now();
   const out = { ...s };
   let recovered = 0;
+
   for (const [name, row] of Object.entries(out)) {
     const nextRunAt = new Date(row.next_run_at).getTime();
     const lastRunAt = row.last_run_at ? new Date(row.last_run_at).getTime() : null;
@@ -120,6 +126,7 @@ function recoverStaleClaims(s: State): { state: State; recovered: number } {
       recovered++;
     }
   }
+
   return { state: out, recovered };
 }
 
@@ -131,8 +138,10 @@ async function tick(): Promise<void> {
   // Doing the schedule-advance BEFORE the run means a long-running job
   // can't be re-fired by the next tick while it's still in-flight.
   const due: string[] = [];
+
   for (const job of registry.values()) {
     const row = state[job.name];
+
     if (!row) continue;
     if (new Date(row.next_run_at).getTime() > now) continue;
     state[job.name] = {
@@ -141,15 +150,18 @@ async function tick(): Promise<void> {
     };
     due.push(job.name);
   }
+
   if (due.length === 0) return;
   await saveState(state);
 
   for (const name of due) {
     const job = registry.get(name);
+
     if (!job) continue;
     const t0 = Date.now();
     let status: "ok" | "failed" = "ok";
     let errorMsg: string | null = null;
+
     try {
       await job.run();
     } catch (e) {
@@ -157,7 +169,9 @@ async function tick(): Promise<void> {
       errorMsg = e instanceof Error ? e.message : String(e);
       Logger.error("scheduler: job failed", e, { job: name });
     }
+
     const elapsed = Date.now() - t0;
+
     state[name] = {
       ...state[name]!,
       last_run_at: new Date().toISOString(),
@@ -186,10 +200,13 @@ export async function startScheduler(): Promise<void> {
 
   try {
     const loaded = await loadState();
+
     state = syncRegistry(loaded);
     const { state: recoveredState, recovered } = recoverStaleClaims(state);
+
     state = recoveredState;
     await saveState(state);
+
     if (recovered > 0) {
       Logger.info("scheduler: recovered stale claims", { count: recovered });
     }
@@ -210,6 +227,7 @@ export async function startScheduler(): Promise<void> {
 
 export function stopScheduler(): void {
   stopped = true;
+
   if (timer) {
     clearInterval(timer);
     timer = null;

@@ -35,6 +35,7 @@ export default function mneme(pi: ExtensionAPI) {
     }),
     execute: async (_toolCallId, params: { query: string }) => {
       let cfg: ReturnType<typeof loadConfig>;
+
       try {
         cfg = loadConfig();
       } catch (e) {
@@ -43,7 +44,9 @@ export default function mneme(pi: ExtensionAPI) {
             "Register it first (e.g. via Claude Code's /mneme:setup) so ~/.mneme/config.json exists.",
         );
       }
+
       const text = await callMnemeSql(cfg, params.query);
+
       return { content: [{ type: "text" as const, text }], details: undefined };
     },
   });

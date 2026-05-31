@@ -23,6 +23,7 @@ let originalEnv: Record<string, string | undefined>;
 
 beforeEach(() => {
   originalEnv = {};
+
   for (const k of ENV_KEYS) {
     originalEnv[k] = process.env[k];
     delete process.env[k];
@@ -77,12 +78,14 @@ describe("buildExtractPrompt", () => {
       sampleCapture,
       { ...sampleCapture, content: "Second capture about TEI." },
     ]);
+
     expect(prompt).toContain("Postgres advisory locks");
     expect(prompt).toContain("TEI");
   });
 
   test("instructs the model to return JSON observations", () => {
     const prompt = buildExtractPrompt([sampleCapture]);
+
     expect(prompt).toMatch(/observations/i);
     expect(prompt).toMatch(/json/i);
   });
@@ -101,6 +104,7 @@ describe("parseExtractResponse", () => {
       ],
     });
     const memories = parseExtractResponse(response);
+
     expect(memories).toHaveLength(1);
     expect(memories[0]!.content).toContain("advisory locks");
     expect(memories[0]!.kind).toBe("decision");
@@ -115,6 +119,7 @@ describe("parseExtractResponse", () => {
       }) +
       "\n```";
     const memories = parseExtractResponse(wrapped);
+
     expect(memories).toHaveLength(1);
   });
 
@@ -136,6 +141,7 @@ describe("parseExtractResponse", () => {
       }) +
       "\n```\n\nThese captures contain enough decisions worth carrying forward.";
     const memories = parseExtractResponse(wrapped);
+
     expect(memories).toHaveLength(1);
     expect(memories[0]!.content).toContain("advisory locks");
   });
@@ -148,12 +154,14 @@ describe("parseExtractResponse", () => {
       }) +
       "\n\nLet me know if you need more.";
     const memories = parseExtractResponse(wrapped);
+
     expect(memories).toHaveLength(1);
     expect(memories[0]!.content).toBe("a useful fact");
   });
 
   test("returns an empty array when observations is empty", () => {
     const response = JSON.stringify({ observations: [] });
+
     expect(parseExtractResponse(response)).toEqual([]);
   });
 
@@ -169,6 +177,7 @@ describe("parseExtractResponse", () => {
       ],
     });
     const memories = parseExtractResponse(response);
+
     expect(memories[0]!.importance).toBeCloseTo(0.1, 5);
     expect(memories[1]!.importance).toBeCloseTo(1.0, 5);
   });
@@ -178,6 +187,7 @@ describe("parseExtractResponse", () => {
       observations: [{ content: "x", kind: "note", importance: 0.5 }],
     });
     const memories = parseExtractResponse(response);
+
     expect(memories[0]!.topics).toEqual([]);
   });
 
@@ -190,6 +200,7 @@ describe("parseExtractResponse", () => {
       ],
     });
     const memories = parseExtractResponse(response);
+
     expect(memories).toHaveLength(1);
     expect(memories[0]!.content).toBe("valid");
   });
@@ -198,6 +209,7 @@ describe("parseExtractResponse", () => {
 describe("claudeProvider.isAvailable", () => {
   test("reports available with detail describing the active auth path", async () => {
     const status = await claudeProvider.isAvailable();
+
     // We don't actually invoke `claude` here; just verify the shape and
     // that the detail mentions the auth mode.
     expect(status).toHaveProperty("available");
@@ -230,6 +242,7 @@ describe("buildSupersedePrompt", () => {
       },
     ];
     const prompt = buildSupersedePrompt(cands);
+
     expect(prompt).toContain("11111111");
     expect(prompt).toContain("22222222");
     expect(prompt).toContain("14B");
@@ -250,6 +263,7 @@ describe("parseSupersedeResponse", () => {
       ],
     });
     const pairs = parseSupersedeResponse(response);
+
     expect(pairs).toHaveLength(1);
     expect(pairs[0]!.old_id).toContain("11111111");
     expect(pairs[0]!.reason).toContain("7B");
@@ -265,6 +279,7 @@ describe("parseSupersedeResponse", () => {
     const response = JSON.stringify({
       pairs: [{ old_id: same, new_id: same, reason: "bogus" }],
     });
+
     expect(parseSupersedeResponse(response)).toEqual([]);
   });
 
@@ -284,6 +299,7 @@ describe("parseSupersedeResponse", () => {
       ],
     });
     const pairs = parseSupersedeResponse(response);
+
     expect(pairs).toHaveLength(1);
     expect(pairs[0]!.reason).toBe("valid");
   });
@@ -296,7 +312,9 @@ describe("claudeProvider.extract (live)", () => {
       const result = await claudeProvider.extract({
         captures: [sampleCapture],
       });
+
       expect(Array.isArray(result)).toBe(true);
+
       // No strict assertion on count — Claude may legitimately decide
       // the capture has nothing to extract. We just want to verify the
       // pipeline runs without error.

@@ -38,23 +38,28 @@ export function findClaudeBinary(): string | null {
       return process.env.CLAUDE_EXECUTABLE_PATH;
     }
   }
+
   // 2. Walk the install-time shell PATH (`which`/`where`). Slash
   //    commands run inside CC's spawn context, which has the user's
   //    interactive PATH — so this catches nvm / asdf / pyenv-shimmed
   //    install locations.
   const probe = process.platform === "win32" ? "where" : "which";
+
   try {
     const r = spawnSync(probe, ["claude"], { encoding: "utf8" });
+
     if (r.status === 0) {
       const first = (r.stdout ?? "")
         .split(/\r?\n/)
         .map((s) => s.trim())
         .find((s) => s.length > 0);
+
       if (first && existsSync(first)) return first;
     }
   } catch {
     // probe missing or PATH lookup failed; fall through to fallbacks
   }
+
   // 3. Well-known install locations — same set as the runtime
   //    fallback in agents/claude.ts plus the nvm sweep that catches
   //    the most common Linux install path that the runtime list
@@ -66,6 +71,7 @@ export function findClaudeBinary(): string | null {
     `${homedir()}/.bun/bin/claude`,
   ];
   const nvmRoot = `${homedir()}/.nvm/versions/node`;
+
   try {
     if (existsSync(nvmRoot)) {
       for (const v of readdirSync(nvmRoot)) {
@@ -75,6 +81,7 @@ export function findClaudeBinary(): string | null {
   } catch {
     // ignore
   }
+
   for (const c of candidates) {
     try {
       if (existsSync(c)) return c;
@@ -82,6 +89,7 @@ export function findClaudeBinary(): string | null {
       // ignore
     }
   }
+
   return null;
 }
 
@@ -117,6 +125,7 @@ export function buildLaunchdPlist(cfg: DaemonInstallConfig): string {
   // dashboard/dist/ deterministically, regardless of how Bun bundles
   // import.meta.url. cfg.pluginRoot is already known at install time.
   const pluginRootEnv = `\n    <key>MNEME_PLUGIN_ROOT</key>\n    <string>${cfg.pluginRoot}</string>`;
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -158,6 +167,7 @@ export function buildSystemdUnit(cfg: DaemonInstallConfig): string {
   // MNEME_PLUGIN_ROOT lets the dashboard route resolve dist/ paths
   // deterministically across Bun bundle / dev source layouts.
   const pluginRootLine = `\nEnvironment=MNEME_PLUGIN_ROOT=${cfg.pluginRoot}`;
+
   return `[Unit]
 Description=Mneme daemon (per-machine extract + push)
 After=network-online.target
@@ -180,6 +190,7 @@ WantedBy=default.target
 export function buildWindowsTaskXml(cfg: DaemonInstallConfig): string {
   const daemonEntry = join(cfg.pluginRoot, "daemon.js");
   const label = cfg.serviceLabel ?? DEFAULT_LABEL;
+
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -243,13 +254,16 @@ export function isDaemonConfigStale(
   // us (forward slash on darwin/linux, backslash on win32).
   const expectedDaemonEntry = join(pluginRoot, "daemon.js");
   const cfgPath = serviceConfigPath(platform);
+
   if (!fs.existsSync(cfgPath)) return false;
   let content: string;
+
   try {
     content = fs.readFileSync(cfgPath, "utf8");
   } catch {
     return false;
   }
+
   switch (platform) {
     case "darwin":
       // launchd plist: `<string>{daemonEntry}</string>` is the third
@@ -276,6 +290,7 @@ function requireFs(): {
   readFileSync: (p: string, enc: "utf8") => string;
 } {
   const fs = require("node:fs");
+
   return { existsSync: fs.existsSync, readFileSync: fs.readFileSync };
 }
 
@@ -288,8 +303,10 @@ export function isWSL(): boolean {
   if (process.platform !== "linux") return false;
   if (process.env.WSL_DISTRO_NAME) return true;
   if (process.env.WSL_INTEROP) return true;
+
   try {
     const { readFileSync } = require("node:fs");
+
     return /microsoft/i.test(readFileSync("/proc/version", "utf8"));
   } catch {
     return false;
@@ -375,6 +392,7 @@ export function depsSignature(pkgJson: string): string {
       peerDependencies: pkg.peerDependencies ?? {},
       trustedDependencies: pkg.trustedDependencies ?? [],
     };
+
     return JSON.stringify(sig);
   } catch {
     return pkgJson;
@@ -396,6 +414,7 @@ export function depsSignature(pkgJson: string): string {
 export function pluginDepsStoreDir(pkgJson: string): string {
   const { createHash } = require("node:crypto");
   const hash = createHash("sha256").update(depsSignature(pkgJson)).digest("hex").slice(0, 16);
+
   return join(homedir(), ".mneme", "deps", hash);
 }
 
@@ -407,19 +426,23 @@ export function pluginDepsStoreDir(pkgJson: string): string {
 export function isPopulatedNodeModules(nmPath: string, pkgJson: string): boolean {
   const { existsSync, readdirSync, realpathSync, statSync } = require("node:fs");
   let real: string;
+
   try {
     real = realpathSync(nmPath);
     if (!statSync(real).isDirectory()) return false;
   } catch {
     return false; // missing path or dangling symlink
   }
+
   let deps: Record<string, unknown>;
+
   try {
     deps = (JSON.parse(pkgJson).dependencies ?? {}) as Record<string, unknown>;
   } catch {
     // Unparseable package.json: fall back to a bare non-empty check.
     return readdirSync(real).length > 0;
   }
+
   return Object.keys(deps).every((name) => existsSync(join(real, name)));
 }
 
@@ -445,10 +468,13 @@ async function ensurePluginDeps(
   const { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } =
     await import("node:fs");
   const pkgPath = join(pluginRoot, "package.json");
+
   if (!existsSync(pkgPath)) {
     return { ok: false, error: `plugin package.json not found at ${pkgPath}` };
   }
+
   let pkgJson: string;
+
   try {
     pkgJson = readFileSync(pkgPath, "utf8");
   } catch (err) {
@@ -469,7 +495,9 @@ async function ensurePluginDeps(
     } catch (err) {
       return { ok: false, error: `cannot prepare deps store ${storeDir}: ${asMessage(err)}` };
     }
+
     const install = await runBunInstall(bunPath, storeDir);
+
     if (!install.ok) return install;
   }
 
@@ -478,13 +506,16 @@ async function ensurePluginDeps(
   //    symlink from the old sibling-reuse scheme — must be cleared
   //    first: both `bun` and symlinkSync choke on a dangling link.
   let linkOk = false;
+
   try {
     linkOk = realpathSync(nm) === realpathSync(storeNm);
   } catch {
     // nm missing or dangling — leave linkOk false
   }
+
   if (!linkOk) {
     rmSync(nm, { recursive: true, force: true });
+
     try {
       // 'junction' is the cross-platform-safe choice: on win32 it's
       // a directory junction (no admin needed); on posix node ignores
@@ -520,6 +551,7 @@ async function runBunInstall(
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stderr = "";
+
     proc.stderr.on("data", (b) => (stderr += b.toString()));
     const timer = setTimeout(() => {
       try {
@@ -527,11 +559,13 @@ async function runBunInstall(
       } catch {
         // ignore
       }
+
       resolve({
         code: -1,
         stderr: `bun install timed out after ${INSTALL_TIMEOUT_MS / 1000}s (corp proxy / network issue?)`,
       });
     }, INSTALL_TIMEOUT_MS);
+
     proc.on("close", (code) => {
       clearTimeout(timer);
       resolve({ code, stderr });
@@ -541,9 +575,11 @@ async function runBunInstall(
       resolve({ code: -1, stderr: "spawn failed" });
     });
   });
+
   if (result.code !== 0) {
     return { ok: false, error: `bun install failed: ${result.stderr.slice(0, 400)}` };
   }
+
   return { ok: true };
 }
 
@@ -571,6 +607,7 @@ export async function installDaemonService(cfg: DaemonInstallConfig): Promise<In
   // Surfacing this early gives a clear error instead of a launchd
   // failure 30s later when the daemon process can't find its entry.
   const daemonBundle = joinPath(cfg.pluginRoot, "daemon.js");
+
   if (!existsSync(daemonBundle)) {
     return {
       ok: false,
@@ -595,6 +632,7 @@ export async function installDaemonService(cfg: DaemonInstallConfig): Promise<In
       probe.on("close", (code) => resolve(code));
       probe.on("error", () => resolve(-1));
     });
+
     if (probeResult !== 0 && probeResult !== 1) {
       // 0 = running, 1 = degraded; both mean systemd-user works.
       return {
@@ -612,6 +650,7 @@ export async function installDaemonService(cfg: DaemonInstallConfig): Promise<In
   // Populate node_modules at pluginRoot before launchctl load, so the
   // daemon process has its native externals resolvable at startup.
   const depsResult = await ensurePluginDeps(cfg.pluginRoot, cfg.bunPath);
+
   if (!depsResult.ok) {
     return {
       ok: false,
@@ -626,6 +665,7 @@ export async function installDaemonService(cfg: DaemonInstallConfig): Promise<In
   try {
     mkdirSync(dirname(servicePath), { recursive: true, mode: 0o755 });
     const logsDir = `${homedir()}/.mneme/logs`;
+
     mkdirSync(logsDir, { recursive: true, mode: 0o755 });
     writeFileSync(servicePath, config, { mode: 0o644 });
   } catch (err) {
@@ -641,6 +681,7 @@ export async function installDaemonService(cfg: DaemonInstallConfig): Promise<In
 
   const cmds = startCommandsFor(platform);
   const ran: string[] = [];
+
   for (const cmd of cmds) {
     const result = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
       // shell: true picks /bin/sh on darwin/linux and cmd.exe on
@@ -651,11 +692,14 @@ export async function installDaemonService(cfg: DaemonInstallConfig): Promise<In
         shell: true,
       });
       let stderr = "";
+
       proc.stderr.on("data", (b) => (stderr += b.toString()));
       proc.on("close", (code) => resolve({ code, stderr }));
       proc.on("error", () => resolve({ code: -1, stderr: "spawn failed" }));
     });
+
     ran.push(cmd);
+
     if (result.code !== 0) {
       return {
         ok: false,
@@ -682,9 +726,12 @@ export function pickFreePortDeterministic(machineId: string): number {
   // across machines that might share a tunnel (rare for daemons but
   // cheap insurance). Range: 49152-65535 (ephemeral / dynamic).
   let h = 0;
+
   for (let i = 0; i < machineId.length; i++) {
     h = (h * 31 + machineId.charCodeAt(i)) | 0;
   }
+
   const u = h >>> 0;
+
   return 49152 + (u % (65535 - 49152));
 }

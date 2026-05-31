@@ -17,14 +17,17 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
 
     try {
       const a = await acquireDreamLock(windowKey, machineA);
+
       expect(a.acquired).toBe(true);
 
       const b = await acquireDreamLock(windowKey, machineB);
+
       expect(b.acquired).toBe(false);
       if (!b.acquired) expect(b.heldBy).toBe(machineA);
     } finally {
       await releaseDreamLock(windowKey, machineA, 0);
       const { sql } = await import("../src/infra/db.ts");
+
       await sql`DELETE FROM _ops.dream_runs WHERE window_key = ${windowKey}`;
     }
   });
@@ -44,6 +47,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
         FROM _ops.dream_runs
         WHERE window_key = ${windowKey}
       `;
+
       expect(rows[0]?.completed_at).not.toBeNull();
       expect(rows[0]?.cluster_count).toBe(7);
     } finally {
@@ -65,16 +69,20 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
 
       // Wrong machine: no-op
       const wrongMachine = await abortDreamLock(windowKey, machineB);
+
       expect(wrongMachine).toBe(0);
 
       // Right machine: deletes
       const own = await abortDreamLock(windowKey, machineA);
+
       expect(own).toBe(1);
 
       // Verify A's row is gone, B's is intact
       const a = await sql`SELECT 1 FROM _ops.dream_runs WHERE window_key = ${windowKey}`;
+
       expect(a.length).toBe(0);
       const b = await sql`SELECT 1 FROM _ops.dream_runs WHERE window_key = ${otherWindow}`;
+
       expect(b.length).toBe(1);
     } finally {
       await sql`DELETE FROM _ops.dream_runs WHERE window_key IN (${windowKey}, ${otherWindow})`;
@@ -94,11 +102,13 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
       await releaseDreamLock(windowKey, machineA, 3);
       // Already completed — abort must be a no-op (filter: completed_at IS NULL).
       const aborted = await abortDreamLock(windowKey, machineA);
+
       expect(aborted).toBe(0);
 
       const rows = await sql<{ completed_at: Date | null }[]>`
         SELECT completed_at FROM _ops.dream_runs WHERE window_key = ${windowKey}
       `;
+
       expect(rows[0]?.completed_at).not.toBeNull();
     } finally {
       await sql`DELETE FROM _ops.dream_runs WHERE window_key = ${windowKey}`;
@@ -131,6 +141,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
         FROM _ops.daemon_heartbeats
         WHERE machine_id = ${machineId}
       `;
+
       expect(rows).toHaveLength(1);
       expect(rows[0]?.outbox_pending).toBe(0);
       expect(rows[0]?.outbox_extracted).toBe(1);
@@ -141,6 +152,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
 
   test("validateClustersBody catches missing fields", async () => {
     const { validateClustersBody } = await import("../src/routes/dream.ts");
+
     expect(validateClustersBody({}).ok).toBe(false);
     expect(validateClustersBody({ window_key: 1, clusters: [] }).ok).toBe(true);
     expect(
@@ -165,6 +177,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
         VALUES (${captureId}, 'seed', ${`sha-${captureId}`}, 'test',
                 '00000000-0000-0000-0000-00000000d001', 'testhost', 'test')
       `;
+
       for (const id of [idA, idB]) {
         await sql`
           INSERT INTO memories (id, capture_id, chunk_id, content, content_hash,
@@ -180,7 +193,9 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
         SELECT id::text AS id, meta->>'last_dreamed_at' AS stamped
         FROM memories WHERE id = ANY(${[idA, idB]})
       `;
+
       expect(rows).toHaveLength(2);
+
       for (const r of rows) {
         expect(r.stamped).not.toBeNull();
         expect(Number.isNaN(new Date(r.stamped!).getTime())).toBe(false);
@@ -208,6 +223,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
         VALUES (${captureId}, 'seed', ${`sha-${captureId}`}, 'test',
                 ${machineId}, 'testhost', 'test')
       `;
+
       const insert = async (
         id: string,
         opts: { meta?: Record<string, unknown>; archived?: boolean } = {},
@@ -225,12 +241,14 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
           )
         `;
       };
+
       await insert(idEligibleA);
       await insert(idEligibleB);
       await insert(idClustered, { meta: { in_cluster: "00000000-0000-0000-0000-000000000123" } });
       await insert(idArchived, { archived: true });
 
       const ids = await fetchDreamSeedIds(machineId);
+
       expect(ids).toContain(idEligibleA);
       expect(ids).toContain(idEligibleB);
       expect(ids).not.toContain(idClustered);
@@ -259,6 +277,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
         VALUES (${captureId}, 'seed capture', ${`sha-${captureId}`}, 'test',
                 ${machineId}, 'testhost', 'test')
       `;
+
       const seedMemory = async (id: string, createdAt: string) => {
         await sql`
           INSERT INTO memories (
@@ -270,6 +289,7 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
           )
         `;
       };
+
       await seedMemory(idA, "2026-01-01T00:00:00Z");
       await seedMemory(idB, "2026-02-01T00:00:00Z");
       await seedMemory(idC, "2026-03-01T00:00:00Z");
@@ -302,11 +322,13 @@ describe.skipIf(!HAS_DB)("dream + heartbeat (requires DATABASE_URL)", () => {
         FROM memories WHERE id = ANY(${[idA, idB, idC]})
       `;
       const byId = new Map(rows.map((r) => [r.id, r.superseded_by]));
+
       expect(byId.get(idA)).toBe(idC); // valid pair applied
       expect(byId.get(idB)).toBeNull(); // backwards pair rejected
       expect(byId.get(idC)).toBeNull(); // hallucinated pair rejected
     } finally {
       const { sql } = await import("../src/infra/db.ts");
+
       await sql`DELETE FROM memories WHERE capture_id = ${captureId}`;
       await sql`DELETE FROM captures WHERE id = ${captureId}`;
       await sql`DELETE FROM _ops.dream_runs WHERE window_key = ${windowKey}`;
@@ -347,9 +369,11 @@ describe("assembleRepos", () => {
       ],
     );
     const ids = repos.r!.seeds.map((s) => s.id).sort();
+
     expect(ids).toEqual(["n1", "s1", "s2"]);
     expect(repos.r!.edges).toContainEqual(["s1", "n1"]);
     const n1 = repos.r!.seeds.find((s) => s.id === "n1")!;
+
     expect(n1.content).toBe("neighbor one");
   });
 });
@@ -369,15 +393,18 @@ describe("streamSeedBatches — abort safety", () => {
       abortAtCount,
       async writeln(_text: string) {
         s.writelnCount++;
+
         if (s.writelnCount >= s.abortAtCount) {
           // Hono's StreamingApi swallows write-after-abort silently --
           // model that by flipping the flag and returning normally even
           // though the caller didn't actually receive the bytes.
           s.aborted = true;
         }
+
         return;
       },
     };
+
     return s;
   }
 
@@ -416,6 +443,7 @@ describe("streamSeedBatches — abort safety", () => {
         stamped.push([...ids]);
       },
     });
+
     expect(stamped).toHaveLength(3);
     expect(stamped[0]).toEqual(seedIds.slice(0, 50));
     expect(stamped[1]).toEqual(seedIds.slice(50, 100));
@@ -440,6 +468,7 @@ describe("streamSeedBatches — abort safety", () => {
         stamped.push([...ids]);
       },
     });
+
     // Only batch 1 got stamped; batch 2 abort means no stamp; batch 3
     // never started.
     expect(stamped).toHaveLength(1);
@@ -459,6 +488,7 @@ describe("streamSeedBatches — abort safety", () => {
     // call comes after that abort flips, so batch 1 should NOT be
     // stamped either (we can't trust the daemon got the last row).
     const stream = makeStream(50);
+
     await streamSeedBatches({
       stream,
       seedIds,

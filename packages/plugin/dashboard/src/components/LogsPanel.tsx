@@ -88,26 +88,32 @@ const LINE_RE =
 
 function parseLocal(entry: LocalEntry): ParsedLine {
   const m = entry.text.match(LINE_RE);
+
   if (!m) return { level: entry.level, body: entry.text, pairs: [] };
   const [, time, levelRaw, traceId, rest] = m;
   let body = rest ?? "";
   let errorTail: string | undefined;
   const sep = body.indexOf(" :: ");
+
   if (sep >= 0) {
     errorTail = body.slice(sep + 4).trim();
     body = body.slice(0, sep).trim();
   }
+
   const pairs: Array<[string, string]> = [];
   const remaining: string[] = [];
+
   for (const tok of body.split(/\s+/)) {
     if (!tok) continue;
     const eq = tok.indexOf("=");
+
     if (eq > 0 && /^[a-zA-Z_][\w.-]*$/.test(tok.slice(0, eq))) {
       pairs.push([tok.slice(0, eq), tok.slice(eq + 1)]);
     } else {
       remaining.push(tok);
     }
   }
+
   return {
     time,
     level: (levelRaw.toLowerCase() as LogLevel) ?? entry.level,
@@ -139,21 +145,26 @@ if (typeof window !== "undefined") {
 function parsedTimeToMs(time: string | undefined, now = Date.now()): number {
   if (!time) return now;
   const m = time.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{3})$/);
+
   if (!m) return now;
   const [, h, mn, s, ms] = m;
   const d = new Date(now);
+
   d.setUTCHours(+h, +mn, +s, +ms);
   if (d.getTime() > now + 60_000) d.setUTCDate(d.getUTCDate() - 1);
+
   return d.getTime();
 }
 
 function fmtTime(iso: string): string {
   const d = new Date(iso);
+
   if (Number.isNaN(d.getTime())) return "";
   const hh = d.getHours().toString().padStart(2, "0");
   const mm = d.getMinutes().toString().padStart(2, "0");
   const ss = d.getSeconds().toString().padStart(2, "0");
   const ms = d.getMilliseconds().toString().padStart(3, "0");
+
   return `${hh}:${mm}:${ss}.${ms}`;
 }
 
@@ -185,6 +196,7 @@ export function LogsPanel() {
   // Keep the freshest stickyTail readable inside SSE/poll callbacks
   // without re-subscribing them every flip.
   const stickyTailRef = useRef(stickyTail);
+
   useEffect(() => {
     stickyTailRef.current = stickyTail;
   }, [stickyTail]);
@@ -206,6 +218,7 @@ export function LogsPanel() {
     localIdRef.current = 0;
     const rangeParam = timeRangeMs === null ? "all" : String(timeRangeMs);
     const es = new EventSource(`${STREAM_PATH}?range=${rangeParam}`);
+
     setConn("connecting");
 
     const onLog = (ev: MessageEvent) => {
@@ -215,6 +228,7 @@ export function LogsPanel() {
           text: string;
           backfill?: boolean;
         };
+
         localIdRef.current += 1;
         // Pull HH:MM:SS.mmm out of the line text for histogram
         // bucketing. Falls back to wall-clock if the parser can't.
@@ -226,25 +240,33 @@ export function LogsPanel() {
           text: payload.text,
           tsMs: parsedTimeToMs(tsMatch?.[1]),
         };
+
         if (!stickyTailRef.current) {
           // Tail paused — buffer for drain on resume; cap so a long
           // pause doesn't exhaust memory.
           const buf = localBufferRef.current;
+
           buf.push(entry);
+
           if (buf.length > MAX_BUFFER) {
             localBufferRef.current = buf.slice(-MAX_BUFFER);
           }
+
           setPausedCount(localBufferRef.current.length);
+
           return;
         }
+
         setLocalEntries((prev) => {
           const next = prev.concat(entry);
+
           return next.length > MAX_BUFFER ? next.slice(-MAX_BUFFER) : next;
         });
       } catch {
         /* ignore malformed */
       }
     };
+
     const onReady = () => setConn("live");
     const onPing = () => setConn("live");
     const onError = () => setConn("disconnected");
@@ -271,6 +293,7 @@ export function LogsPanel() {
     setPausedCount(0);
     let cancelled = false;
     let lastTs: string | null = null;
+
     setConn("connecting");
 
     const tick = async () => {
@@ -290,10 +313,12 @@ export function LogsPanel() {
             span_name: string | null;
           }>;
         }>(`/server-logs?since=${encodeURIComponent(since)}&limit=500`);
+
         if (cancelled) return;
         const fresh: ServerEntry[] = resp.logs
           .map((r) => {
             const tsIso = typeof r.ts === "string" ? r.ts : new Date(r.ts).toISOString();
+
             return {
               kind: "server" as const,
               id: r.id,
@@ -308,18 +333,22 @@ export function LogsPanel() {
             };
           })
           .reverse(); // server returns DESC; we render ASC for chronological tail
+
         if (fresh.length > 0) {
           lastTs = fresh[fresh.length - 1]!.ts;
+
           if (!stickyTailRef.current) {
             // Paused: buffer the new rows for drain on resume.
             const buf = serverBufferRef.current.concat(fresh);
             const seen = new Set<string>();
             const dedup: ServerEntry[] = [];
+
             for (const e of buf) {
               if (seen.has(e.id)) continue;
               seen.add(e.id);
               dedup.push(e);
             }
+
             serverBufferRef.current = dedup.length > MAX_BUFFER ? dedup.slice(-MAX_BUFFER) : dedup;
             setPausedCount(serverBufferRef.current.length);
           } else {
@@ -327,23 +356,28 @@ export function LogsPanel() {
               const merged = prev.concat(fresh);
               const seen = new Set<string>();
               const dedup: ServerEntry[] = [];
+
               for (const e of merged) {
                 if (seen.has(e.id)) continue;
                 seen.add(e.id);
                 dedup.push(e);
               }
+
               return dedup.length > MAX_BUFFER ? dedup.slice(-MAX_BUFFER) : dedup;
             });
           }
         }
+
         setConn("live");
       } catch (err) {
         if (cancelled) return;
         if (err instanceof ApiError) setConn("disconnected");
       }
     };
+
     void tick();
     const id = setInterval(tick, SERVER_POLL_MS);
+
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -364,6 +398,7 @@ export function LogsPanel() {
     stuckToBottomRef.current = true;
     setShowJump(false);
     const el = scrollRef.current;
+
     if (el) {
       programmaticScrollRef.current = true;
       el.scrollTop = el.scrollHeight;
@@ -374,13 +409,16 @@ export function LogsPanel() {
   const machines = useMemo(() => {
     if (mode !== "server") return [];
     const map = new Map<string, { id: string; name: string; count: number }>();
+
     for (const e of serverEntries) {
       const id = e.machine_id ?? "_unattributed";
       const name = e.machine_name ?? (e.machine_id ? e.machine_id.slice(0, 8) : "(server)");
       const cur = map.get(id);
+
       if (cur) cur.count += 1;
       else map.set(id, { id, name, count: 1 });
     }
+
     return [...map.values()].sort((a, b) => b.count - a.count);
   }, [mode, serverEntries]);
 
@@ -390,30 +428,39 @@ export function LogsPanel() {
     const cutoffMs = timeRangeMs !== null ? Date.now() - timeRangeMs : -Infinity;
     const inRange = (ts: number): boolean =>
       ts >= cutoffMs && (!rangeFilter || (ts >= rangeFilter.start && ts < rangeFilter.end));
+
     if (mode === "local") {
       const out: Array<LocalEntry & { parsed: ParsedLine }> = [];
+
       for (const e of localEntries) {
         if (!levelFilter.has(e.level)) continue;
         if (q && !e.text.toLowerCase().includes(q)) continue;
         if (!inRange(e.tsMs)) continue;
         out.push({ ...e, parsed: parseLocal(e) });
       }
+
       return out;
     }
+
     const out: ServerEntry[] = [];
+
     for (const e of serverEntries) {
       if (!levelFilter.has(e.level)) continue;
       const machineKey = e.machine_id ?? "_unattributed";
+
       if (hiddenMachines.has(machineKey)) continue;
+
       if (
         q &&
         !`${e.message} ${e.span_name ?? ""} ${e.machine_name ?? ""}`.toLowerCase().includes(q)
       ) {
         continue;
       }
+
       if (!inRange(e.tsMs)) continue;
       out.push(e);
     }
+
     return out;
   }, [
     mode,
@@ -432,30 +479,39 @@ export function LogsPanel() {
   const histogramEntries = useMemo<Array<{ tsMs: number; level: LogLevel }>>(() => {
     const q = query.trim().toLowerCase();
     const cutoffMs = timeRangeMs !== null ? Date.now() - timeRangeMs : -Infinity;
+
     if (mode === "local") {
       const out: Array<{ tsMs: number; level: LogLevel }> = [];
+
       for (const e of localEntries) {
         if (!levelFilter.has(e.level)) continue;
         if (q && !e.text.toLowerCase().includes(q)) continue;
         if (e.tsMs < cutoffMs) continue;
         out.push({ tsMs: e.tsMs, level: e.level });
       }
+
       return out;
     }
+
     const out: Array<{ tsMs: number; level: LogLevel }> = [];
+
     for (const e of serverEntries) {
       if (!levelFilter.has(e.level)) continue;
       const machineKey = e.machine_id ?? "_unattributed";
+
       if (hiddenMachines.has(machineKey)) continue;
+
       if (
         q &&
         !`${e.message} ${e.span_name ?? ""} ${e.machine_name ?? ""}`.toLowerCase().includes(q)
       ) {
         continue;
       }
+
       if (e.tsMs < cutoffMs) continue;
       out.push({ tsMs: e.tsMs, level: e.level });
     }
+
     return out;
   }, [mode, localEntries, serverEntries, levelFilter, hiddenMachines, query, timeRangeMs]);
 
@@ -465,44 +521,55 @@ export function LogsPanel() {
   useEffect(() => {
     if (!stickyTail || !stuckToBottomRef.current) return;
     const el = scrollRef.current;
+
     if (!el) return;
     const id = requestAnimationFrame(() => {
       programmaticScrollRef.current = true;
       el.scrollTop = el.scrollHeight;
     });
+
     return () => cancelAnimationFrame(id);
   }, [visible, stickyTail]);
 
   useEffect(() => {
     if (!stickyTail) return;
+
     // Drain any entries that arrived while paused, then snap to bottom.
     if (localBufferRef.current.length > 0) {
       const drained = localBufferRef.current;
+
       localBufferRef.current = [];
       setLocalEntries((prev) => {
         const next = prev.concat(drained);
+
         return next.length > MAX_BUFFER ? next.slice(-MAX_BUFFER) : next;
       });
     }
+
     if (serverBufferRef.current.length > 0) {
       const drained = serverBufferRef.current;
+
       serverBufferRef.current = [];
       setServerEntries((prev) => {
         const merged = prev.concat(drained);
         const seen = new Set<string>();
         const dedup: ServerEntry[] = [];
+
         for (const e of merged) {
           if (seen.has(e.id)) continue;
           seen.add(e.id);
           dedup.push(e);
         }
+
         return dedup.length > MAX_BUFFER ? dedup.slice(-MAX_BUFFER) : dedup;
       });
     }
+
     setPausedCount(0);
     stuckToBottomRef.current = true;
     setShowJump(false);
     const el = scrollRef.current;
+
     if (!el) return;
     programmaticScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
@@ -511,11 +578,14 @@ export function LogsPanel() {
   function onScroll(e: React.UIEvent<HTMLDivElement>) {
     if (programmaticScrollRef.current) {
       programmaticScrollRef.current = false;
+
       return;
     }
+
     const el = e.currentTarget;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     const atBottom = distanceFromBottom < 24;
+
     stuckToBottomRef.current = atBottom;
     setShowJump(!atBottom);
   }
@@ -524,6 +594,7 @@ export function LogsPanel() {
     stuckToBottomRef.current = true;
     setShowJump(false);
     const el = scrollRef.current;
+
     if (!el) return;
     programmaticScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
@@ -532,8 +603,10 @@ export function LogsPanel() {
   function toggleLevel(l: LogLevel) {
     setLevelFilter((prev) => {
       const next = new Set(prev);
+
       if (next.has(l)) next.delete(l);
       else next.add(l);
+
       return next;
     });
   }
@@ -541,8 +614,10 @@ export function LogsPanel() {
   function toggleMachine(id: string) {
     setHiddenMachines((prev) => {
       const next = new Set(prev);
+
       if (next.has(id)) next.delete(id);
       else next.add(id);
+
       return next;
     });
   }
@@ -722,6 +797,7 @@ function Histogram({
 }) {
   const BUCKETS = 140;
   const HEIGHT = 36;
+
   type Bucket = {
     info: number;
     warn: number;
@@ -736,12 +812,15 @@ function Histogram({
     if (entries.length === 0) {
       return { buckets: [] as Bucket[], minTs: 0, maxTs: 0, maxCount: 0 };
     }
+
     let mn = Infinity;
     let mx = -Infinity;
+
     for (const e of entries) {
       if (e.tsMs < mn) mn = e.tsMs;
       if (e.tsMs > mx) mx = e.tsMs;
     }
+
     if (mn === mx) mx = mn + 1;
     const size = (mx - mn) / BUCKETS;
     const bks: Bucket[] = Array.from({ length: BUCKETS }, (_, i) => ({
@@ -753,15 +832,20 @@ function Histogram({
       start: mn + i * size,
       end: mn + (i + 1) * size,
     }));
+
     for (const e of entries) {
       let i = Math.floor((e.tsMs - mn) / size);
+
       if (i >= BUCKETS) i = BUCKETS - 1;
       if (i < 0) i = 0;
       bks[i]![e.level] += 1;
       bks[i]!.total += 1;
     }
+
     let mc = 0;
+
     for (const b of bks) if (b.total > mc) mc = b.total;
+
     return { buckets: bks, minTs: mn, maxTs: mx, maxCount: mc };
   }, [entries]);
 
@@ -771,6 +855,7 @@ function Histogram({
   // line up with the inline row timestamps.
   const fmt = (ts: number) => {
     const d = new Date(ts);
+
     return [d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()]
       .map((n) => n.toString().padStart(2, "0"))
       .join(":");
@@ -794,6 +879,7 @@ function Histogram({
             const baseline = HEIGHT - 1;
             const cx = i + 0.5;
             const stroke = 0.18;
+
             // Empty bucket — a tiny horizontal tick at the baseline so
             // the time axis reads continuously (Railway-style).
             if (b.total === 0) {
@@ -823,11 +909,13 @@ function Histogram({
                 </g>
               );
             }
+
             // Vertical line bar: non-error segment from baseline up,
             // optional red error segment stacked above it.
             const nonErrH = (nonError / data.maxCount) * (HEIGHT - 1);
             const errH = (b.error / data.maxCount) * (HEIGHT - 1);
             const segs: React.ReactNode[] = [];
+
             if (nonErrH > 0) {
               segs.push(
                 <line
@@ -842,6 +930,7 @@ function Histogram({
                 />,
               );
             }
+
             if (errH > 0) {
               segs.push(
                 <line
@@ -856,6 +945,7 @@ function Histogram({
                 />,
               );
             }
+
             return (
               <g key={i} onClick={() => onSelectBucket(b.start, b.end)}>
                 <rect
@@ -922,6 +1012,7 @@ function levelStyles(level: LogLevel): { border: string; level: string; body: st
 
 function LocalRow({ parsed }: { entry: LocalEntry; parsed: ParsedLine }) {
   const styles = levelStyles(parsed.level);
+
   return (
     <li className={cn("border-l-2 px-2 py-1 hover:bg-muted/30", styles.border)}>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground tabular-nums">
@@ -960,6 +1051,7 @@ function ServerRow({ entry }: { entry: ServerEntry }) {
   const styles = levelStyles(entry.level);
   const machineLabel =
     entry.machine_name ?? (entry.machine_id ? entry.machine_id.slice(0, 8) : "server");
+
   return (
     <li className={cn("border-l-2 px-2 py-1 hover:bg-muted/30", styles.border)}>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground tabular-nums">
@@ -1010,6 +1102,7 @@ function LevelChip({
         muted: "text-foreground/80",
       }[tone]
     : "text-muted-foreground/50";
+
   return (
     <button
       type="button"
@@ -1076,6 +1169,7 @@ function RangePicker({
   const [open, setOpen] = useState(false);
   const current =
     RANGE_OPTIONS.find((o) => o.ms === value) ?? RANGE_OPTIONS[RANGE_OPTIONS.length - 1]!;
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
@@ -1096,6 +1190,7 @@ function RangePicker({
         <div className="grid grid-cols-3 gap-1">
           {RANGE_OPTIONS.map((opt) => {
             const isActive = opt.ms === value;
+
             return (
               <button
                 key={opt.label}

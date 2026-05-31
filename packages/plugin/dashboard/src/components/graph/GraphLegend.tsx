@@ -8,19 +8,24 @@ import type { GraphNode } from "./types.ts";
 export function GraphLegend({ nodes }: { nodes: GraphNode[] }) {
   const kinds: string[] = [];
   const seen = new Set<string>();
+
   for (const n of nodes) {
     if (!n.kind || seen.has(n.kind)) continue;
     seen.add(n.kind);
     kinds.push(n.kind);
   }
+
   // Stable order: canonical kind list first, then anything novel.
   const canonical = Object.keys(KIND_COLOR);
+
   kinds.sort((a, b) => {
     const ai = canonical.indexOf(a);
     const bi = canonical.indexOf(b);
+
     if (ai === -1 && bi === -1) return a.localeCompare(b);
     if (ai === -1) return 1;
     if (bi === -1) return -1;
+
     return ai - bi;
   });
 

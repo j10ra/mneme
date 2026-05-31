@@ -28,8 +28,10 @@ export async function withRootTrace<T>(
 
   let errorMessage: string | undefined;
   let result: T | undefined;
+
   try {
     result = await storage.run(ctx, fn);
+
     return result;
   } catch (err) {
     errorMessage = errorMessageOf(err);
@@ -37,10 +39,12 @@ export async function withRootTrace<T>(
   } finally {
     const endedAtMs = Date.now();
     const durationMs = endedAtMs - startedAtMs;
+
     rootSpan.durationMs = durationMs;
     rootSpan.errorMessage = errorMessage;
 
     const store = getTraceStore();
+
     if (store && (store.hasChildSpans(traceId) || errorMessage)) {
       store.pushSpan({ ...rootSpan, traceId });
       store.pushTrace({

@@ -22,6 +22,7 @@ type RegisteredJob = {
 const registry = new Map<string, RegisteredJob>();
 
 const SINGLETON_KEY = Symbol.for("mneme.scheduler.singleton");
+
 type State = { stopped: boolean; timer: ReturnType<typeof setInterval> | null };
 const g = globalThis as unknown as { [key: symbol]: State | undefined };
 
@@ -29,7 +30,9 @@ if (g[SINGLETON_KEY]) {
   g[SINGLETON_KEY].stopped = true;
   if (g[SINGLETON_KEY].timer) clearInterval(g[SINGLETON_KEY].timer);
 }
+
 const state: State = { stopped: false, timer: null };
+
 g[SINGLETON_KEY] = state;
 
 /** Register a time-driven job. Idempotent on (name): re-registering with a
@@ -74,17 +77,20 @@ async function tick(): Promise<void> {
       LIMIT 5
       FOR UPDATE SKIP LOCKED
     `;
+
     if (due.length === 0) return [] as { job_name: string }[];
     await tx`
       UPDATE _ops.worker_runs
       SET next_run_at = now() + (schedule_ms || ' milliseconds')::interval
       WHERE job_name = ANY(${due.map((d) => d.job_name)})
     `;
+
     return due;
   });
 
   for (const { job_name } of claimed) {
     const job = registry.get(job_name);
+
     if (!job) {
       // Row exists in DB but no in-process registration. Could be a job
       // we removed or a future job another worker handles. Skip.
@@ -94,6 +100,7 @@ async function tick(): Promise<void> {
     const t0 = Date.now();
     let status: "ok" | "failed" = "ok";
     let errorMsg: string | null = null;
+
     try {
       await job.run();
     } catch (e) {
@@ -101,6 +108,7 @@ async function tick(): Promise<void> {
       errorMsg = errorMessageOf(e);
       Logger.error("scheduler: job failed", e, { job: job.name });
     }
+
     const elapsed = Date.now() - t0;
 
     await sql`
@@ -124,15 +132,18 @@ async function tick(): Promise<void> {
 /** Start the scheduler. Persists registered jobs, then ticks every TICK_MS. */
 export async function startScheduler(): Promise<void> {
   const names = [...registry.keys()];
+
   Logger.info("scheduler: starting", {
     jobs: names,
     tick_s: TICK_MS / 1000,
   });
+
   try {
     await syncRegistry();
   } catch (e) {
     Logger.error("scheduler: registry sync failed (will retry on next tick)", e);
   }
+
   // Recover stale claims. The "advance next_run_at inside the locking tx"
   // pattern stops long jobs from re-firing on subsequent ticks, but if the
   // process dies between commit-of-claim and the post-run UPDATE, the job
@@ -159,12 +170,14 @@ export async function startScheduler(): Promise<void> {
         OR
         (last_run_at IS NULL AND next_run_at > now() + interval '5 minutes')
     `;
+
     if (recovered.count > 0) {
       Logger.info("scheduler: recovered stale claims", { count: recovered.count });
     }
   } catch (e) {
     Logger.error("scheduler: stale-claim recovery failed", e);
   }
+
   state.timer = setInterval(() => {
     void (async () => {
       try {

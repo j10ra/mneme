@@ -17,6 +17,7 @@ import type { Memory } from "../src/agents/types.ts";
 
 function ndjsonResponse(lines: object[]): Response {
   const body = lines.map((l) => `${JSON.stringify(l)}\n`).join("");
+
   return new Response(body, {
     status: 200,
     headers: { "Content-Type": "application/x-ndjson" },
@@ -27,12 +28,14 @@ describe("computeWindowKey", () => {
   test("returns floor(epoch_seconds / 28800) for an 8h window", () => {
     const date = new Date("2026-05-07T00:00:00Z");
     const expected = Math.floor(date.getTime() / 1000 / (8 * 3600));
+
     expect(computeWindowKey(date)).toBe(expected);
   });
 
   test("two timestamps inside the same 8h window yield the same key", () => {
     const a = new Date("2026-05-07T01:00:00Z");
     const b = new Date("2026-05-07T07:59:59Z");
+
     expect(computeWindowKey(a)).toBe(computeWindowKey(b));
   });
 });
@@ -41,12 +44,14 @@ describe("computeCronOffsetMinutes", () => {
   test("is deterministic for the same machine_id", () => {
     const a = computeCronOffsetMinutes("00000000-0000-0000-0000-000000000001");
     const b = computeCronOffsetMinutes("00000000-0000-0000-0000-000000000001");
+
     expect(a).toBe(b);
   });
 
   test("falls in [0, 480) (the 8h window in minutes)", () => {
     for (let i = 0; i < 5; i++) {
       const offset = computeCronOffsetMinutes(crypto.randomUUID());
+
       expect(offset).toBeGreaterThanOrEqual(0);
       expect(offset).toBeLessThan(480);
     }
@@ -56,6 +61,7 @@ describe("computeCronOffsetMinutes", () => {
 describe("buildComponents", () => {
   test("returns each disconnected seed as its own singleton", () => {
     const components = buildComponents(["a", "b", "c"], []);
+
     expect(components).toHaveLength(3);
   });
 
@@ -67,8 +73,10 @@ describe("buildComponents", () => {
         ["b", "c"],
       ],
     );
+
     expect(components).toHaveLength(2);
     const sorted = components.map((c) => c.slice().sort()).sort();
+
     expect(sorted).toContainEqual(["a", "b", "c"]);
     expect(sorted).toContainEqual(["d"]);
   });
@@ -79,9 +87,11 @@ describe("runDreamCycle", () => {
     return async (url: string, init: RequestInit) => {
       const path = new URL(url).pathname;
       const handler = handlers[path];
+
       if (!handler) {
         return new Response(`no handler for ${path}`, { status: 404 });
       }
+
       return await handler(init);
     };
   }
@@ -95,6 +105,7 @@ describe("runDreamCycle", () => {
       fetch: fakeFetch({
         "/api/dream/lock": () => {
           calls.push("lock");
+
           return new Response(JSON.stringify({ acquired: false, heldBy: "other" }), {
             status: 409,
           });
@@ -102,6 +113,7 @@ describe("runDreamCycle", () => {
       }),
       distill: async () => ({ title: "x", summary: "y" }),
     });
+
     expect(result.skipped).toBe(true);
     expect(calls).toEqual(["lock"]);
   });
@@ -136,17 +148,20 @@ describe("runDreamCycle", () => {
       fetch: fakeFetch({
         "/api/dream/lock": () => {
           calls.push("lock");
+
           return new Response(JSON.stringify({ acquired: true, window_key: 12345 }), {
             status: 200,
           });
         },
         "/api/dream/candidates": () => {
           calls.push("candidates");
+
           return new Response(JSON.stringify(candidatesPayload), { status: 200 });
         },
         "/api/dream/clusters": async (req) => {
           calls.push("clusters");
           postedClusters = JSON.parse(req.body as string);
+
           return new Response(JSON.stringify({ written: 1, supersedes: 0 }), {
             status: 200,
           });
@@ -164,6 +179,7 @@ describe("runDreamCycle", () => {
       window_key: number;
       clusters: Array<{ member_ids: string[]; title: string; summary: string }>;
     };
+
     expect(posted.window_key).toBe(12345);
     expect(posted.clusters).toHaveLength(1);
     expect(posted.clusters[0]!.member_ids.sort()).toEqual(["a", "b", "c"]);
@@ -197,6 +213,7 @@ describe("runDreamCycle", () => {
           ),
         "/api/dream/clusters": async (req) => {
           postedClusters = JSON.parse(req.body as string);
+
           return new Response(JSON.stringify({ written: 0, supersedes: 0 }), {
             status: 200,
           });
@@ -204,6 +221,7 @@ describe("runDreamCycle", () => {
       }),
       distill: async () => ({ title: "x", summary: "y" }),
     });
+
     expect(result.skipped).toBe(false);
     expect((postedClusters as { clusters: unknown[] }).clusters).toEqual([]);
   });
@@ -242,8 +260,10 @@ describe("parseNdjsonCandidates", () => {
       { t: "done", seeds: 2, neighbors: 1 },
     ]);
     const result = await parseNdjsonCandidates(response, 7);
+
     expect(result.window_key).toBe(7);
     const ids = result.repos.r!.seeds.map((s) => s.id).sort();
+
     expect(ids).toEqual(["n1", "s1", "s2"]);
     expect(result.repos.r!.edges).toContainEqual(["s1", "n1"]);
   });
@@ -263,6 +283,7 @@ describe("parseNdjsonCandidates", () => {
       { t: "done", seeds: 1, neighbors: 0 },
     ]);
     const result = await parseNdjsonCandidates(response, 1);
+
     expect(result.repos.__none__).toBeDefined();
     expect(result.repos.__none__!.seeds[0]!.id).toBe("a");
   });
@@ -280,6 +301,7 @@ describe("parseNdjsonCandidates", () => {
         neighbor_id: null,
       },
     ]);
+
     await expect(parseNdjsonCandidates(response, 1)).rejects.toThrow(/done frame/);
   });
 
@@ -288,6 +310,7 @@ describe("parseNdjsonCandidates", () => {
       { t: "meta", window_key: 1 },
       { t: "error", error: "db timeout" },
     ]);
+
     await expect(parseNdjsonCandidates(response, 1)).rejects.toThrow(/db timeout/);
   });
 
@@ -296,6 +319,7 @@ describe("parseNdjsonCandidates", () => {
       { t: "meta", window_key: 2 },
       { t: "done", seeds: 0, neighbors: 0 },
     ]);
+
     await expect(parseNdjsonCandidates(response, 1)).rejects.toThrow(/window_key mismatch/);
   });
 
@@ -316,6 +340,7 @@ describe("parseNdjsonCandidates", () => {
       { t: "done", seeds: 1, neighbors: 0 },
     ]);
     const result = await parseNdjsonCandidates(response, 1);
+
     expect(result.repos.r!.seeds).toHaveLength(1);
   });
 });
@@ -332,13 +357,16 @@ describe("runDreamCycle with NDJSON candidates", () => {
       fetch: async (url: string, init: RequestInit) => {
         const path = new URL(url).pathname;
         const headers = (init.headers ?? {}) as Record<string, string>;
+
         if (path === "/api/dream/lock") {
           return new Response(JSON.stringify({ acquired: true, window_key: 42 }), {
             status: 200,
           });
         }
+
         if (path === "/api/dream/candidates") {
           acceptHeaders.push(headers.Accept ?? "");
+
           return ndjsonResponse([
             { t: "meta", window_key: 42 },
             {
@@ -371,12 +399,15 @@ describe("runDreamCycle with NDJSON candidates", () => {
             { t: "done", seeds: 3, neighbors: 0 },
           ]);
         }
+
         if (path === "/api/dream/clusters") {
           postedClusters = JSON.parse(init.body as string);
+
           return new Response(JSON.stringify({ written: 1, supersedes: 0 }), {
             status: 200,
           });
         }
+
         return new Response("not found", { status: 404 });
       },
       distill: async (members: Memory[]) => ({
@@ -384,6 +415,7 @@ describe("runDreamCycle with NDJSON candidates", () => {
         summary: "topic",
       }),
     });
+
     expect(result.skipped).toBe(false);
     expect(acceptHeaders).toEqual(["application/x-ndjson"]);
     expect(postedClusters!.clusters).toHaveLength(1);

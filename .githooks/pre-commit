@@ -7,7 +7,15 @@ if [ -n "$staged" ]; then
   # Format staged files in place; Biome's --staged restricts to indexed regions.
   bunx --bun biome check --staged --write --no-errors-on-unmatched
 
-  # Re-stage any files Biome rewrote so the commit captures the formatted output.
+  # Blank-line padding (functions/const-groups/returns/blocks) — rules Biome
+  # cannot express, owned by ESLint. Autofix-only; never blocks the commit.
+  # Note: --fix rewrites whole files, so prefer staging files completely.
+  js_staged=$(echo "$staged" | grep -E '\.(ts|tsx|js|jsx|mjs)$' || true)
+  if [ -n "$js_staged" ]; then
+    echo "$js_staged" | xargs -r bunx eslint --fix >/dev/null 2>&1 || true
+  fi
+
+  # Re-stage any files Biome or ESLint rewrote so the commit captures the result.
   echo "$staged" | xargs -r git add --
 fi
 

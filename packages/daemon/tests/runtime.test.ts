@@ -51,6 +51,7 @@ function createMocks(
   }> = {},
 ) {
   const pushed: unknown[] = [];
+
   return {
     pushed,
     extract:
@@ -86,15 +87,18 @@ describe("handleCapture", () => {
     });
 
     const result = await runtime.handleCapture(validBody);
+
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const ids = await outbox.list("captured");
+
     expect(ids).toContain(result.id);
 
     const stored = (await outbox.read(result.id, "captured")) as {
       content: string;
     };
+
     expect(stored.content).toBe(validBody.content);
   });
 
@@ -113,6 +117,7 @@ describe("handleCapture", () => {
       ...validBody,
       content: "",
     });
+
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/content/);
@@ -134,12 +139,14 @@ describe("handleCapture", () => {
       ...validBody,
       content: `my token is ${fakeKey}`,
     });
+
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const stored = (await outbox.read(result.id, "captured")) as {
       content: string;
     };
+
     expect(stored.content).not.toContain(fakeKey);
     expect(stored.content).toContain("[REDACTED:anthropic_key]");
   });
@@ -173,6 +180,7 @@ describe("runWorkerTick", () => {
       capture: { content: string };
       memories: Array<{ embedding: number[]; chunk_id: string }>;
     };
+
     expect(bundle.capture.content).toBe(validBody.content);
     expect(bundle.memories).toHaveLength(1);
     expect(bundle.memories[0]!.embedding).toHaveLength(1024);
@@ -198,6 +206,7 @@ describe("runWorkerTick", () => {
       ok: true;
       id: string;
     };
+
     await runtime.runWorkerTick();
 
     expect(await outbox.list("captured")).toContain(id);
@@ -223,6 +232,7 @@ describe("runWorkerTick", () => {
       ok: true;
       id: string;
     };
+
     await runtime.runWorkerTick();
 
     expect(await outbox.list("failed")).toContain(id);
@@ -285,6 +295,7 @@ describe("runWorkerTick", () => {
       extract: async (captures) => {
         extractCalls++;
         if (extractCalls === 1) throw new Error("transient flake");
+
         return captures.map((c) => ({
           content: `summary of: ${c.content.slice(0, 30)}`,
           kind: "decision" as const,
@@ -340,6 +351,7 @@ describe("runWorkerTick", () => {
     const mocks = createMocks({
       extract: async (captures) => {
         extractCalls++;
+
         // Return one observation per call regardless of input size
         return [
           {
@@ -388,6 +400,7 @@ describe("runWorkerTick", () => {
     const memoryCounts = (mocks.pushed as Array<{ memories: unknown[] }>).map(
       (b) => b.memories.length,
     );
+
     expect(memoryCounts.filter((n) => n > 0)).toHaveLength(1);
     expect(memoryCounts.filter((n) => n === 0)).toHaveLength(2);
   });
@@ -398,6 +411,7 @@ describe("runWorkerTick", () => {
     const mocks = createMocks({
       extract: async () => {
         extractCalls++;
+
         return [];
       },
     });
@@ -433,10 +447,11 @@ describe("runWorkerTick", () => {
     const mocks = createMocks({
       extract: async () => {
         extractCalls++;
+
         return [];
       },
     });
-    let virtualNow = 2_000_000;
+    const virtualNow = 2_000_000;
     const runtime = createRuntime({
       outbox,
       extract: mocks.extract,
@@ -459,6 +474,7 @@ describe("runWorkerTick", () => {
         session_id: `s-${i}`,
       });
     }
+
     await runtime.runWorkerTick();
     expect(extractCalls).toBe(3); // three different sessions, three batches
   });
@@ -469,6 +485,7 @@ describe("runWorkerTick", () => {
     const mocks = createMocks({
       extract: async () => {
         extractCalls++;
+
         return [];
       },
     });

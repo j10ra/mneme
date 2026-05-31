@@ -11,13 +11,17 @@ describe("POST /dashboard/api/worker/:name/run", () => {
   test("dream: invokes forceDream and returns 202", async () => {
     let called = 0;
     const app = new Hono();
+
     mountDashboardRoutes(app, async () => {
       called++;
+
       return { skipped: false, clustersSubmitted: 0, clustersWritten: 0 };
     });
     const resp = await app.request("/dashboard/api/worker/dream/run", { method: "POST" });
+
     expect(resp.status).toBe(202);
     const body = (await resp.json()) as { queued: boolean; job: string };
+
     expect(body.queued).toBe(true);
     expect(body.job).toBe("dream");
     expect(called).toBe(1);
@@ -25,8 +29,10 @@ describe("POST /dashboard/api/worker/:name/run", () => {
 
   test("unknown worker returns 400", async () => {
     const app = new Hono();
+
     mountDashboardRoutes(app, async () => ({ skipped: true }));
     const resp = await app.request("/dashboard/api/worker/bogus/run", { method: "POST" });
+
     expect(resp.status).toBe(400);
   });
 });

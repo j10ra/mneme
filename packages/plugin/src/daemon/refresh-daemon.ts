@@ -62,6 +62,7 @@ function isProcessAlive(pid: number): boolean {
   try {
     // Sending signal 0 doesn't kill, just checks reachability.
     process.kill(pid, 0);
+
     return true;
   } catch {
     return false;
@@ -71,6 +72,7 @@ function isProcessAlive(pid: number): boolean {
 function logLine(msg: string): void {
   try {
     const dir = dirname(LOG);
+
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     appendFileSync(LOG, `${new Date().toISOString()} ${msg}\n`);
   } catch {
@@ -81,25 +83,32 @@ function logLine(msg: string): void {
 function tryAcquireLock(): boolean {
   if (existsSync(PIDFILE)) {
     let prev: { pid: number; ts: string } | null = null;
+
     try {
       prev = JSON.parse(readFileSync(PIDFILE, "utf8"));
     } catch {
       prev = null;
     }
+
     if (prev && isProcessAlive(prev.pid)) {
       const age = Date.now() - new Date(prev.ts).getTime();
+
       if (age < STALE_LOCK_AGE_MS) {
         logLine(`refresh: skipped (lock held by pid ${prev.pid})`);
+
         return false;
       }
+
       logLine(
         `refresh: stale lock (pid ${prev.pid} alive ${Math.round(age / 1000)}s); taking over`,
       );
     }
   }
+
   try {
     mkdirSync(dirname(PIDFILE), { recursive: true });
     writeFileSync(PIDFILE, JSON.stringify({ pid: process.pid, ts: new Date().toISOString() }));
+
     return true;
   } catch {
     return false;
@@ -116,6 +125,7 @@ function releaseLock(): void {
 
 async function main(): Promise<void> {
   if (!tryAcquireLock()) return;
+
   try {
     await runRefresh();
   } finally {
@@ -125,21 +135,29 @@ async function main(): Promise<void> {
 
 async function runRefresh(): Promise<void> {
   const cfgPath = join(homedir(), ".mneme", "config.json");
+
   if (!existsSync(cfgPath)) {
     logLine("refresh: no config; run /mneme:setup first");
+
     return;
   }
+
   let cfg: { machine?: { id?: string }; daemon?: { port?: number } };
+
   try {
     cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
   } catch (err) {
     logLine(`refresh: config parse failed — ${err instanceof Error ? err.message : err}`);
+
     return;
   }
+
   if (!cfg.machine?.id) {
     logLine("refresh: config missing machine.id; run /mneme:setup");
+
     return;
   }
+
   const daemonPort = cfg.daemon?.port ?? pickFreePortDeterministic(cfg.machine.id);
 
   // Derive the current plugin root from this script's own location.
@@ -148,12 +166,14 @@ async function runRefresh(): Promise<void> {
   const pluginRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
   logLine(`refresh: starting — pluginRoot=${pluginRoot} port=${daemonPort}`);
+
   try {
     const result = await installDaemonService({
       pluginRoot,
       daemonPort,
       bunPath: process.execPath,
     });
+
     if (result.ok) {
       logLine(`refresh: success — service at ${result.servicePath}`);
     } else {

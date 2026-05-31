@@ -61,14 +61,17 @@ const Schema = z.object({
 
 const parsed = (() => {
   const result = Schema.safeParse(process.env);
+
   if (!result.success) {
     const lines = result.error.errors.map((e) => `  ${e.path.join(".")}: ${e.message}`);
+
     console.error(
       `[env] invalid environment:\n${lines.join("\n")}\n` +
         `Fix the variables above (e.g. in .env or Railway Variables) and restart.`,
     );
     throw new Error("env: invalid environment");
   }
+
   return result.data;
 })();
 

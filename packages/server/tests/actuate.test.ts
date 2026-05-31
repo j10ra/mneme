@@ -32,15 +32,18 @@ describe.skipIf(!HAS_DB)("actuateRawMeta (requires DATABASE_URL)", () => {
       const [pinned] = await sql<{ pinned: boolean | null }[]>`
         SELECT (meta->>'pinned')::boolean AS pinned FROM memories WHERE id = ${memId}
       `;
+
       expect(pinned?.pinned).toBe(true);
 
       await actuateRawMeta(sql, { kind: "archive", target: memId, value: true });
       const [archived] = await sql<{ archived: Date | null }[]>`
         SELECT archived_at AS archived FROM memories WHERE id = ${memId}
       `;
+
       expect(archived?.archived).not.toBeNull();
     } finally {
       const { sql } = await import("../src/infra/db.ts");
+
       await sql`DELETE FROM memories WHERE capture_id = ${captureId}`;
       await sql`DELETE FROM captures WHERE id = ${captureId}`;
     }
@@ -71,6 +74,7 @@ describe.skipIf(!HAS_DB)("actuateRawMeta (requires DATABASE_URL)", () => {
       const [r] = await sql<{ s: string | null }[]>`
         SELECT meta->>'superseded_by' AS s FROM memories WHERE id = ${id}
       `;
+
       return r?.s ?? null;
     };
 

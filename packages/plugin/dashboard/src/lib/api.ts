@@ -24,10 +24,13 @@ export async function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { Accept: "application/json", ...(init?.headers ?? {}) },
   });
+
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
+
     throw new ApiError(`${path} failed: ${resp.status} ${text.slice(0, 200)}`, resp.status);
   }
+
   return (await resp.json()) as T;
 }
 
@@ -43,10 +46,13 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
+
     throw new ApiError(`${path} failed: ${resp.status} ${text.slice(0, 200)}`, resp.status);
   }
+
   return (await resp.json()) as T;
 }
 
@@ -55,5 +61,6 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
  *  native (EventSource handles dropped connections). */
 export function openStream(path: string): EventSource {
   const url = path.startsWith("/") ? `${API_BASE}${path}` : `${API_BASE}/${path}`;
+
   return new EventSource(url);
 }

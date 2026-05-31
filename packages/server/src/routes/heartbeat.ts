@@ -5,7 +5,7 @@
 // processing?" at a glance. Not historical, not metric-store grade —
 // this is a liveness signal, not a time-series.
 
-import { Hono } from "hono";
+import type { Hono } from "hono";
 import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql } from "../infra/db.ts";
 
@@ -44,16 +44,20 @@ function asInt(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
     return Math.floor(v);
   }
+
   return null;
 }
 
 export function mountHeartbeatRoute(app: Hono): void {
   app.post("/api/heartbeat", mnemeRoute("api.heartbeat"), requireAuth("capture"), async (c) => {
     const auth = currentAuth();
+
     if (!auth?.machineId) {
       return c.json({ error: "heartbeat requires per-machine token" }, 400);
     }
+
     const raw = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+
     if (!raw) return c.json({ error: "invalid_json" }, 400);
 
     const fields = {
@@ -62,6 +66,7 @@ export function mountHeartbeatRoute(app: Hono): void {
       outbox_embedded: asInt(raw.outbox_embedded),
       outbox_failed: asInt(raw.outbox_failed),
     };
+
     for (const [k, v] of Object.entries(fields)) {
       if (v === null) {
         return c.json({ error: `${k} must be a non-negative integer` }, 400);
@@ -79,6 +84,7 @@ export function mountHeartbeatRoute(app: Hono): void {
       last_processed_at: lastProcessedAt,
     });
     Logger.debug("heartbeat", { machine_id: auth.machineId, ...fields });
+
     return c.json({ ok: true });
   });
 }

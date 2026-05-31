@@ -27,6 +27,7 @@ export async function substituteEmbedsViaDaemon(
   sql: string,
 ): Promise<SubstitutionResult> {
   const matches = Array.from(sql.matchAll(EMBED_RE));
+
   if (matches.length === 0) return { kind: "noop", sql };
 
   if (!cfg.daemon) {
@@ -40,9 +41,11 @@ export async function substituteEmbedsViaDaemon(
 
   const rawTexts = Array.from(new Set(matches.map((m) => m[1]!.replace(/\\'/g, "'"))));
   const cleanedTexts = rawTexts.map((t) => scrubData(t) as string);
+
   log(`substituteEmbeds: calling daemon with ${cleanedTexts.length} text(s)`);
 
   let vectors: number[][];
+
   try {
     const resp = await fetch(`http://127.0.0.1:${cfg.daemon.port}/embed`, {
       method: "POST",
@@ -50,20 +53,25 @@ export async function substituteEmbedsViaDaemon(
       body: JSON.stringify({ texts: cleanedTexts, source: "mcp:sql" }),
       signal: AbortSignal.timeout(15_000),
     });
+
     if (!resp.ok) {
       const detail = (await resp.text().catch(() => "")).slice(0, 200);
+
       return {
         kind: "error",
         message: `embed() substitution failed: daemon /embed returned ${resp.status}${detail ? `: ${detail}` : ""}. Check /mneme:status.`,
       };
     }
+
     const body = (await resp.json()) as { vectors?: number[][] };
+
     if (!Array.isArray(body.vectors) || body.vectors.length !== cleanedTexts.length) {
       return {
         kind: "error",
         message: `embed() substitution failed: daemon returned ${body.vectors?.length ?? "no"} vectors for ${cleanedTexts.length} text(s).`,
       };
     }
+
     vectors = body.vectors;
     log(`substituteEmbeds: daemon returned ${vectors.length} vector(s), substituting`);
   } catch (e) {
@@ -77,9 +85,12 @@ export async function substituteEmbedsViaDaemon(
   const rewritten = sql.replace(EMBED_RE, (_match, raw: string) => {
     const text = raw.replace(/\\'/g, "'");
     const vec = embedMap.get(text);
+
     if (!vec) return _match;
+
     return `'[${vec.join(",")}]'::vector`;
   });
+
   return { kind: "ok", sql: rewritten };
 }
 
@@ -89,6 +100,7 @@ export async function substituteEmbedsViaDaemon(
 // substitution failure or an upstream error — callers surface the message.
 export async function callMnemeSql(cfg: MnemeConfig, query: string): Promise<string> {
   const sub = await substituteEmbedsViaDaemon(cfg, query);
+
   if (sub.kind === "error") throw new Error(sub.message);
 
   const rpc = {
@@ -109,17 +121,22 @@ export async function callMnemeSql(cfg: MnemeConfig, query: string): Promise<str
   });
 
   const text = await resp.text();
+
   if (!resp.ok) throw new Error(`mneme upstream ${resp.status}: ${text.slice(0, 300)}`);
 
   let parsed: { error?: { message?: string }; result?: { content?: { text?: string }[] } };
+
   try {
     parsed = JSON.parse(text);
   } catch {
     return text; // not JSON — hand back verbatim
   }
+
   if (parsed.error) throw new Error(parsed.error.message ?? JSON.stringify(parsed.error));
 
   const content = parsed.result?.content;
+
   if (Array.isArray(content)) return content.map((c) => c?.text ?? "").join("\n");
+
   return JSON.stringify(parsed.result ?? parsed);
 }

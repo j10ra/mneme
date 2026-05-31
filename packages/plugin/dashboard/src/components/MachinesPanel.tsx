@@ -42,17 +42,20 @@ function fmtAge(ms: number | null): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
   if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+
   return `${Math.round(ms / 86_400_000)}d`;
 }
 
 function ageMs(iso: string | null): number | null {
   if (!iso) return null;
+
   return Date.now() - new Date(iso).getTime();
 }
 
 function isLive(m: MachineRow): boolean {
   if (m.revoked_at) return false;
   const age = ageMs(m.heartbeat_posted_at);
+
   return age !== null && age < LIVE_THRESHOLD_MS;
 }
 
@@ -69,8 +72,10 @@ export function MachinesPanel() {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }
+
       try {
         const data = await apiGet<MachinesResponse>("/machines");
+
         if (cancelled) return;
         setState({ kind: "ok", data, fetchedAt: Date.now() });
       } catch (err) {
@@ -81,6 +86,7 @@ export function MachinesPanel() {
             : err instanceof Error
               ? err.message
               : String(err);
+
         setState((prev) =>
           prev.kind === "ok" || prev.kind === "stale"
             ? { kind: "stale", data: prev.data, fetchedAt: prev.fetchedAt, error: msg }
@@ -99,9 +105,11 @@ export function MachinesPanel() {
         void tick();
       }
     };
+
     document.addEventListener("visibilitychange", onVisibility);
 
     void tick();
+
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
@@ -149,6 +157,7 @@ export function MachinesPanel() {
 function CountBadges({ data }: { data: MachinesResponse }) {
   const live = data.machines.filter(isLive).length;
   const total = data.machines.filter((m) => !m.revoked_at).length;
+
   return (
     <div className="flex items-center gap-2">
       <Badge variant={live > 0 ? "success" : "secondary"}>
@@ -173,11 +182,13 @@ function MachinesContent({ data }: { data: MachinesResponse }) {
   const live: MachineRow[] = [];
   const known: MachineRow[] = [];
   const revoked: MachineRow[] = [];
+
   for (const m of data.machines) {
     if (m.revoked_at) revoked.push(m);
     else if (isLive(m)) live.push(m);
     else known.push(m);
   }
+
   live.sort(
     (a, b) =>
       (ageMs(a.heartbeat_posted_at) ?? Infinity) - (ageMs(b.heartbeat_posted_at) ?? Infinity),
@@ -270,6 +281,7 @@ function RevokedSummary({ rows }: { rows: MachineRow[] }) {
     mostRecent: number;
   };
   const groups = new Map<string, Group>();
+
   for (const m of rows) {
     const g =
       groups.get(m.name) ??
@@ -279,12 +291,15 @@ function RevokedSummary({ rows }: { rows: MachineRow[] }) {
         machineIds: new Set<string>(),
         mostRecent: 0,
       } satisfies Group);
+
     g.tokenCount += 1;
     if (m.machine_id) g.machineIds.add(m.machine_id);
     const t = m.revoked_at ? new Date(m.revoked_at).getTime() : 0;
+
     if (t > g.mostRecent) g.mostRecent = t;
     groups.set(m.name, g);
   }
+
   const sorted = [...groups.values()].sort((a, b) => b.mostRecent - a.mostRecent);
   const totalTokens = rows.length;
   const overallMostRecent = sorted[0]?.mostRecent ?? 0;

@@ -26,6 +26,7 @@ const EMBEDDER_DIM = 384;
 const BATCH_SIZE = 32;
 
 const databaseUrl = process.env.DATABASE_URL;
+
 if (!databaseUrl) {
   console.error("DATABASE_URL required");
   process.exit(1);
@@ -43,6 +44,7 @@ const cols = await sql<{ format_type: string }[]>`
     AND NOT attisdropped
 `;
 const colType = cols[0]?.format_type;
+
 if (colType !== `vector(${EMBEDDER_DIM})`) {
   console.error(
     `memories.embedding is ${colType ?? "<missing>"}, expected vector(${EMBEDDER_DIM}). Run migration 0022 first.`,
@@ -55,7 +57,9 @@ const totalRow = await sql<{ c: number }[]>`
   SELECT count(*)::int AS c FROM memories WHERE embedding IS NULL
 `;
 const total = totalRow[0]!.c;
+
 console.log(`memories needing re-embed: ${total}`);
+
 if (total === 0) {
   await sql.end();
   console.log("nothing to do");
@@ -65,6 +69,7 @@ if (total === 0) {
 console.log(`loading ${TRANSFORMERS_MODEL_ID} ...`);
 const tModelLoad = Date.now();
 const { pipeline, env: tfEnv } = await import("@xenova/transformers");
+
 tfEnv.useBrowserCache = false;
 tfEnv.allowLocalModels = false;
 const extractor = (await pipeline("feature-extraction", TRANSFORMERS_MODEL_ID, {
@@ -73,6 +78,7 @@ const extractor = (await pipeline("feature-extraction", TRANSFORMERS_MODEL_ID, {
   texts: string[],
   options: { pooling: "mean"; normalize: true },
 ) => Promise<{ tolist(): number[][] }>;
+
 console.log(`pipeline ready (${Date.now() - tModelLoad}ms)`);
 
 function chunkIdFor(contentHash: string): string {
@@ -90,6 +96,7 @@ while (true) {
     ORDER BY created_at
     LIMIT ${BATCH_SIZE}
   `;
+
   if (rows.length === 0) break;
 
   const texts = rows.map((r) => r.content);
@@ -103,6 +110,7 @@ while (true) {
       const row = rows[i]!;
       const vec = `[${vectors[i]!.join(",")}]`;
       const newChunkId = chunkIdFor(row.content_hash);
+
       await tx`
         UPDATE memories
         SET embedding       = ${vec}::vector,
@@ -118,6 +126,7 @@ while (true) {
   const rate = processed / elapsedS;
   const remaining = total - processed;
   const etaS = rate > 0 ? Math.ceil(remaining / rate) : 0;
+
   console.log(`progress: ${processed}/${total}  (${rate.toFixed(1)} rows/s, ETA ${etaS}s)`);
 }
 

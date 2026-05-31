@@ -14,6 +14,7 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
   afterAll(async () => {
     if (fingerprintsToCleanup.length === 0) return;
     const { sql } = await import("../src/infra/db.ts");
+
     await sql`
         DELETE FROM _ops.api_keys
         WHERE machine_fingerprint = ANY(${fingerprintsToCleanup})
@@ -24,12 +25,14 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
     const { registerOrRotate } = await import("../src/routes/auth.ts");
     const { sql } = await import("../src/infra/db.ts");
     const fp = `test-fp-reuse-${crypto.randomUUID()}`;
+
     fingerprintsToCleanup.push(fp);
 
     const first = await registerOrRotate({
       machineName: "macbook-test",
       fingerprint: fp,
     });
+
     expect(first.reused_machine_id).toBe(false);
     expect(first.machine_id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
@@ -40,6 +43,7 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
       machineName: "macbook-renamed-ignored",
       fingerprint: fp,
     });
+
     expect(second.reused_machine_id).toBe(true);
     expect(second.machine_id).toBe(first.machine_id);
     expect(second.machine_name).toBe("macbook-test"); // body name ignored on match
@@ -50,6 +54,7 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
         FROM _ops.api_keys
         WHERE machine_id = ${first.machine_id}
       `;
+
     // The old row is hard-deleted on rotate; only the new active row remains.
     expect(Number(rows[0]!.token_count_total)).toBe(1);
   });
@@ -64,11 +69,13 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
       machineName: "no-fp-b",
       fingerprint: null,
     });
+
     expect(a.reused_machine_id).toBe(false);
     expect(b.reused_machine_id).toBe(false);
     expect(a.machine_id).not.toBe(b.machine_id);
 
     const { sql } = await import("../src/infra/db.ts");
+
     await sql`
         DELETE FROM _ops.api_keys
         WHERE machine_id IN (${a.machine_id}, ${b.machine_id})
@@ -79,12 +86,14 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
     const { registerOrRotate } = await import("../src/routes/auth.ts");
     const { sql } = await import("../src/infra/db.ts");
     const fp = `test-fp-fresh-${crypto.randomUUID()}`;
+
     fingerprintsToCleanup.push(fp);
 
     const r = await registerOrRotate({
       machineName: "first-time",
       fingerprint: fp,
     });
+
     expect(r.reused_machine_id).toBe(false);
 
     const rows = await sql<{ machine_fingerprint: string | null }[]>`
@@ -92,6 +101,7 @@ describe.skipIf(!HAS_DB)("registerOrRotate (requires DATABASE_URL)", () => {
         FROM _ops.api_keys
         WHERE machine_id = ${r.machine_id}
       `;
+
     expect(rows.length).toBe(1);
     expect(rows[0]!.machine_fingerprint).toBe(fp);
   });

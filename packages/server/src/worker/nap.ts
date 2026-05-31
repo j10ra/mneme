@@ -37,12 +37,15 @@ export async function forEachIdBatch(
 ): Promise<number> {
   let cursor = ZERO_UUID;
   let affected = 0;
+
   for (;;) {
     const ids = await fetchBatch(cursor, batchSize);
+
     if (ids.length === 0) break;
     affected += await apply(ids);
     cursor = ids[ids.length - 1]!;
   }
+
   return affected;
 }
 
@@ -67,6 +70,7 @@ async function fetchMemoryIdBatch(cursor: string, limit: number): Promise<string
     WHERE archived_at IS NULL AND id > ${cursor}::uuid
     ORDER BY id LIMIT ${limit}
   `;
+
   return rows.map((r) => r.id);
 }
 
@@ -87,6 +91,7 @@ async function napDecayImportance(): Promise<number> {
           WHEN COALESCE((meta->>'pinned')::boolean, false) THEN ${NAP_PIN_FLOOR}::real
           ELSE ${NAP_FLOOR}::real END
     `;
+
     return r.count;
   });
 }
@@ -100,6 +105,7 @@ async function napDecayRecallWeight(): Promise<number> {
       SET recall_weight = recall_weight * ${RECALL_LTD_DECAY}::real
       WHERE id = ANY(${ids}) AND recall_weight >= 0.01
     `;
+
     return r.count;
   });
 }
@@ -134,6 +140,7 @@ async function napArchiveOrphans(): Promise<number> {
     SET archived_at = now()
     WHERE id IN (SELECT id FROM targets)
   `;
+
   return archived.count;
 }
 
@@ -171,6 +178,7 @@ export async function napArchiveDeadClusters(): Promise<number> {
     SET archived_at = now()
     WHERE id IN (SELECT id FROM targets)
   `;
+
   return archived.count;
 }
 
@@ -198,6 +206,7 @@ export async function napArchiveOrphanedMembers(): Promise<number> {
     SET archived_at = now()
     WHERE id IN (SELECT id FROM targets)
   `;
+
   return archived.count;
 }
 
@@ -325,22 +334,27 @@ async function napSeedPhase(): Promise<{ related: number; superseded: number }> 
  *  the same cycle catches their atoms, instead of waiting another 4h. */
 export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult> => {
   const cycleStart = Date.now();
+
   Logger.info("nap: cycle start");
 
   let t = Date.now();
   const decayed = await napDecayImportance();
+
   Logger.info("nap: 1/6 importance decay", { rows: decayed, ms: Date.now() - t });
 
   t = Date.now();
   const ltpDecayed = await napDecayRecallWeight();
+
   Logger.info("nap: 2/6 recall_weight decay (LTP)", { rows: ltpDecayed, ms: Date.now() - t });
 
   t = Date.now();
   const archived = await napArchiveOrphans();
+
   Logger.info("nap: 3/6 archive orphan atoms", { archived, ms: Date.now() - t });
 
   t = Date.now();
   const clusterArchived = await napArchiveDeadClusters();
+
   Logger.info("nap: 4/6 archive dead clusters", {
     archived: clusterArchived,
     ms: Date.now() - t,
@@ -348,6 +362,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
 
   t = Date.now();
   const memberArchived = await napArchiveOrphanedMembers();
+
   Logger.info("nap: 5/6 archive orphaned members", {
     archived: memberArchived,
     ms: Date.now() - t,
@@ -355,6 +370,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
 
   t = Date.now();
   const seed = await napSeedPhase();
+
   Logger.info("nap: 6/6 seed (relate + rule supersede)", {
     related: seed.related,
     superseded: seed.superseded,
@@ -370,6 +386,8 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
     related: seed.related,
     superseded: seed.superseded,
   };
+
   Logger.info("nap: done", { ...result, total_ms: Date.now() - cycleStart });
+
   return result;
 });
