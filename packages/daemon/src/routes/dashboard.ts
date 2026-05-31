@@ -104,10 +104,11 @@ export function mountDashboardRoutes(app: Hono, forceDream: () => Promise<DreamC
     const bytes = await Bun.file(filePath).bytes();
     return c.body(bytes, 200, {
       "content-type": "application/javascript; charset=utf-8",
-      // No long-cache: dashboard updates ride the plugin update cycle,
-      // and a stale cache would confuse the operator. Short cache is
-      // enough to avoid double-fetch within one page render.
-      "cache-control": "no-cache",
+      // Never store: the bundle filename has no content hash, so a stored
+      // copy goes stale the moment the plugin updates (browsers were serving
+      // an old bundle after every dashboard change). Dashboard updates ride
+      // the plugin update cycle, so always refetch.
+      "cache-control": "no-store, must-revalidate",
     });
   });
 

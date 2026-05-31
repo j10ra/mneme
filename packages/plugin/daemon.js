@@ -1915,7 +1915,7 @@ function mountDashboardRoutes(app, forceDream) {
     const bytes = await Bun.file(filePath).bytes();
     return c.body(bytes, 200, {
       "content-type": "application/javascript; charset=utf-8",
-      "cache-control": "no-cache"
+      "cache-control": "no-store, must-revalidate"
     });
   });
   app.get("/dashboard/api/status", mnemeRoute("daemon.dashboard.status"), proxyHandler("/api/_ops/status", "dashboard.status"));

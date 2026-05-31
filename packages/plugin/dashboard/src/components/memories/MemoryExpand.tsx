@@ -11,7 +11,8 @@
 import { useEffect, useState } from "react";
 import { ApiError, apiGet } from "../../lib/api.ts";
 import { cn } from "../../lib/cn.ts";
-import type { CaptureBody, ChainRow, MemoryRowData, RelatedRow } from "./types.ts";
+import type { GraphEdge, GraphNode } from "../graph/types.ts";
+import type { CaptureBody, ChainRow, MemoryRowData } from "./types.ts";
 
 type Tab = "content" | "fields" | "related" | "chain" | "capture";
 
@@ -221,30 +222,84 @@ function useLazy<T>(
   return { data, error, loading };
 }
 
+// Edge-type → label + dot colour, kept in sync with the graph focus edges
+// (GraphCanvas): cluster=violet, related=blue, supersede=yellow.
+const REL_META: Record<GraphEdge["type"], { label: string; dot: string }> = {
+  cluster: { label: "cluster", dot: "#a78bfa" },
+  related: { label: "related", dot: "#7dd3fc" },
+  supersede: { label: "supersede", dot: "#fbbf24" },
+};
+const REL_ORDER: GraphEdge["type"][] = ["cluster", "related", "supersede"];
+
+// The "Related" tab mirrors the graph focus: the node's real relationship
+// neighbourhood (cluster siblings + theme, related_to links, supersede chain),
+// grouped by edge type — not embedding nearest-neighbours.
 function RelatedTab({ id }: { id: string }) {
   const { data, error, loading } = useLazy(
-    () => apiGet<{ related: RelatedRow[] }>(`/memories/${id}/related?k=6`),
+    () =>
+      apiGet<{ nodes: GraphNode[]; edges: GraphEdge[]; cluster_id: string | null }>(
+        `/memories/${id}/neighborhood`,
+      ),
     [id],
   );
-  if (loading) return <Pending>Loading neighbors…</Pending>;
+  if (loading) return <Pending>Loading connections…</Pending>;
   if (error) return <Failed message={error} />;
-  if (!data?.related.length) return <Empty>No vector neighbors found.</Empty>;
+  if (!data) return null;
+
+  const byId = new Map(data.nodes.map((n) => [n.id, n]));
+  const groups: Record<GraphEdge["type"], GraphNode[]> = {
+    cluster: [],
+    related: [],
+    supersede: [],
+  };
+  const seen: Record<GraphEdge["type"], Set<string>> = {
+    cluster: new Set(),
+    related: new Set(),
+    supersede: new Set(),
+  };
+  // Collect the connected node on the far side of each edge (cluster edges run
+  // member→theme, so sibling edges contribute both the sibling and the theme).
+  for (const e of data.edges) {
+    for (const end of [e.source, e.target]) {
+      if (end === id || seen[e.type].has(end)) continue;
+      const n = byId.get(end);
+      if (!n) continue;
+      seen[e.type].add(end);
+      groups[e.type].push(n);
+    }
+  }
+  const total = REL_ORDER.reduce((s, t) => s + groups[t].length, 0);
+  if (total === 0) return <Empty>No graph connections (cluster, related, or supersede).</Empty>;
+
   return (
-    <ul className="space-y-1.5 text-[12px]">
-      {data.related.map((r) => (
-        <li key={r.id} className="rounded-md border border-border/60 bg-card/40 px-2 py-1.5">
-          <div className="flex items-center gap-2 text-[9px] text-muted-foreground uppercase tracking-wider">
-            {r.kind && <span>{r.kind}</span>}
-            <span className="ml-auto tabular-nums">
-              dist {typeof r.distance === "number" ? r.distance.toFixed(3) : "—"}
-            </span>
+    <div className="space-y-3 text-[12px]">
+      {REL_ORDER.filter((t) => groups[t].length).map((t) => (
+        <div key={t}>
+          <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-wider text-muted-foreground">
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ background: REL_META[t].dot }}
+            />
+            {REL_META[t].label} · {groups[t].length}
           </div>
-          <div className="mt-0.5 line-clamp-3 text-foreground/85 leading-snug">
-            {r.content_preview}
-          </div>
-        </li>
+          <ul className="space-y-1.5">
+            {groups[t].map((n) => (
+              <li key={n.id} className="rounded-md border border-border/60 bg-card/40 px-2 py-1.5">
+                <div className="flex items-center gap-2 text-[9px] text-muted-foreground uppercase tracking-wider">
+                  {n.kind && <span>{n.kind}</span>}
+                  {data.cluster_id === n.id && (
+                    <span className="ml-auto text-violet-300">theme</span>
+                  )}
+                </div>
+                <div className="mt-0.5 line-clamp-3 text-foreground/85 leading-snug">
+                  {n.content_preview}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
       ))}
-    </ul>
+    </div>
   );
 }
 
