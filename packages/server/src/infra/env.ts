@@ -55,7 +55,7 @@ const Schema = z.object({
   // Boolean envs as "1" / "0" strings (Railway convention). Default
   // for digest is "0" (off) — the worker is new (#30) and the operator
   // explicitly opts in by flipping this and restarting. Flip to "1"
-  // when ready to let the every-48h cluster-merge + cross-cluster
+  // when ready to let the every-24h cluster-merge + cross-cluster
   // supersede pass run against the live corpus.
   MNEME_DIGEST_ENABLED: z.enum(["0", "1"]).default("0"),
 

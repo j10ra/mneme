@@ -172,13 +172,9 @@ export function effectiveLimit(sql: string): number {
   return m && /^\d+$/.test(m[1]!) ? Number(m[1]) : DEFAULT_LIMIT;
 }
 
-/** The server no longer embeds anything. The per-machine MCP proxy
- *  (`packages/plugin/src/claude/mcp-proxy.ts`) substitutes embed('text')
- *  → '[v1,v2,...]'::vector locally via the daemon's bge-small subprocess
- *  before the SQL hits this server. If we see an embed() macro here it
- *  means either (a) the proxy is missing/old, or (b) someone is calling
- *  /mcp directly. Reject with a clear message rather than passing
- *  malformed SQL to Postgres. */
+/** Reject a bare embed() macro reaching the server. The daemon proxy
+ *  normally substitutes it client-side first, so one here means a stale
+ *  proxy or a direct /mcp call. No-op when MNEME_SERVER_EMBED=1. */
 export function rejectUnsubstitutedEmbeds(sql: string): void {
   if (EMBED_RE.test(sql)) {
     throw new Error(

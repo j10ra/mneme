@@ -75,6 +75,6 @@ Prefer `mneme_sql` over `psql` for any read — same scrubbing + reader role + R
 ## When stuck
 
 1. `/mneme:status` — workers, daemons, dream history, breaker state, in one snapshot.
-2. `mneme_sql` against `_ops.dashboard_*` views — capture rate, queue depth, dream health, surface freshness, extract throughput.
+2. The `_ops.dashboard_*` views (capture rate, queue depth, dream health, surface freshness, extract throughput) — query via `psql "$DATABASE_URL"` (admin); no code reads them and the reader-role `mneme_sql` can't reach `_ops`. Use `mneme_sql` for `public.*` reads.
 3. `gh issue view <N>` — most architectural decisions live in tickets.
 4. `git log --oneline -20` — recent commits explain WHY.

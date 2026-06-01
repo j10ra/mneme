@@ -26,7 +26,7 @@ The vocabulary used everywhere else. Read this first if other docs use a term yo
 | **Digest** | Server-side, every 24h, opt-in (`MNEME_DIGEST_ENABLED=1`). Cross-cluster merge (DIGEST_MERGE_DISTANCE = 0.2) + supersede. See [`workers/digest.md`](./workers/digest.md). |
 | **Surface** | Per-session injection. `/api/session/start` returns five sections of memory pointers (Pinned, Rules, Themes, Recent, Sessions); the SessionStart hook prints them as Claude Code's `additionalContext`. Never writes to user files. See [`surface.md`](./surface.md). |
 | **Recall** | Read path via the MCP `mneme_sql` tool. Hybrid score (cosine + ts_rank + importance) with rank-down for superseded. See [`recall.md`](./recall.md). |
-| **Source** | Origin tag on a capture row. Claude harness: `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`. Pi harness: `pi_prompt`, `pi_assistant`, `pi_tool`. Manual: `manual:/memory`, `manual:/api/memory`, and bare `manual` (pin/unpin/archive/supersede actuations). HTTP default: `http`. |
+| **Source** | Origin tag on a capture row. Claude harness: `claude_hook`, `claude_summary`, `claude_assistant`, `claude_memory`. Pi harness: `pi_prompt`, `pi_assistant`, `pi_tool`. Manual: `manual:/memory`, `manual:/api/memory`, and bare `manual` (pin/unpin/archive/supersede actuations). |
 | **Skill** | The bundled MCP-companion (`packages/plugin/skills/using-mneme/SKILL.md`) that teaches the agent how to write `mneme_sql` queries. Loaded on demand via Anthropic's progressive-disclosure pattern. |
 
 ---

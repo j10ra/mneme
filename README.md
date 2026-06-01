@@ -62,7 +62,7 @@ Most "agent memory" tools are a write-only log: capture → embed → retrieve. 
 
 **The maintenance pass.** *Without it: importance never decays, fully-stale rows pile up, related memories never link, replaced facts keep ranking.*
 
-Each cycle, four independent phases: importance decay with a ~30-day timescale, `recall_weight` decay (LTP fading) with a ~42h half-life, auto-archive of fully-decayed orphans (importance ≤ 0.1, never recalled, 30+ days old, not pinned/clustered/superseded), and a seed-paginated pass that adds `meta.related_to` edges to cosine-near neighbours in the same repo plus a rule-based supersede when a newer row clearly replaces an older one (tight cosine + keyword overlap + 12h gap). Pure SQL, round-robin paginated via `meta.last_napped_at` so it scales with the corpus.
+Each cycle, six independent phases: importance decay with a ~30-day timescale, `recall_weight` decay (LTP fading) with a ~40h half-life, three archive passes (fully-decayed orphan atoms at importance ≤ 0.1 / never recalled / 30+ days old / not pinned-clustered-superseded; dead clusters at a 60-day floor; then orphaned cluster members), and a seed-paginated pass that adds `meta.related_to` edges to cosine-near neighbours in the same repo plus a rule-based supersede when a newer row clearly replaces an older one (tight cosine + keyword overlap + 12h gap). Pure SQL, round-robin paginated via `meta.last_napped_at` so it scales with the corpus.
 
 ### 💭 Dream — every 8h, on the daemon *(Sonnet via your `claude` login — no extra cost)*
 

@@ -135,14 +135,13 @@ The push worker runs **4-wide concurrent** `POST /api/bundle` calls against the 
 | Source | Trigger | Default `kind` | Notes |
 |---|---|---|---|
 | `claude_hook` | Claude Code `UserPromptSubmit` and `PostToolUse` | (extracted by daemon) | Coalesced by `session_id` within ±5-min window |
-| `claude_summary` | Claude Code `Stop`, `PreCompact`, `SessionEnd` hooks | `summary` | Skips coalescing |
+| `claude_summary` | Claude Code `Stop`, `PreCompact`, `SessionEnd` hooks | (extracted; usually summary) | Skips coalescing |
 | `claude_assistant` | Assistant turns transcribed from Claude Code's session JSONL | (extracted) | Lets Mneme see what the agent said, not just what the user prompted |
 | `claude_memory` | Claude Code `PostToolUse(Write\|Edit)` on `~/.claude/projects/*/memory/*.md` | (extracted) | Mirrors Anthropic auto-memory; the memory file is captured and extracted like any other source. `claude_memory` is the capture *source*, not a memory `kind` |
 | `pi_prompt` / `pi_assistant` / `pi_tool` | Pi harness prompt / assistant / tool events | (extracted) | Pi-harness analogs of the `claude_*` sources |
 | `manual:/memory` | `/mneme:memory <text>` slash command | (extracted) | Goes through daemon extract like any other capture |
 | `manual:/api/memory` | `POST /api/memory` (used by `/mneme:pin <text>`) | `note` | Direct memory write; bypasses extract; embeds ~2s later |
 | `manual` | `/mneme:pin\|unpin\|archive\|supersede` actuations | (n/a) | Actuation captures from slash commands |
-| `http` | `POST /api/capture` with no `source` set | (none) | Default tag for direct HTTP callers; not extracted |
 | Future: `codex_hook` / `cursor_hook` / `opencode_hook` | harness-native hooks | (extracted) | [#6](https://github.com/j10ra/mneme/issues/6) |
 
 ---

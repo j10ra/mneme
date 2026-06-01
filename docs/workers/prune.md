@@ -1,9 +1,9 @@
 # Prune (telemetry retention)
 
-The housekeeper. No memories are touched; this worker only ages out the
-operational telemetry tables under `_ops.*` so the database stays small
-and the recall paths stay fast. Runs server-side, on a 24-hour cadence,
-all SQL.
+The housekeeper. No memories are touched; this worker only ages out
+operational telemetry and expired OAuth codes/refresh tokens under `_ops.*`
+so the database stays small and the recall paths stay fast. Runs
+server-side, on a 24-hour cadence, all SQL.
 
 > Reads for context: [`../concepts.md`](../concepts.md).
 
@@ -11,17 +11,20 @@ all SQL.
 
 ## What it does
 
-Each tick deletes rows older than `TELEMETRY_RETENTION_DAYS` (default
-**3 days**, configurable via env / `infra/config.ts`) from three
-telemetry tables:
+Each tick deletes aged-out rows from five `_ops.*` tables. The three
+telemetry tables and `oauth_refresh` use `TELEMETRY_RETENTION_DAYS` (a
+compile-time constant in `infra/config.ts`, default **3 days** — not
+env-overridable); `oauth_codes` uses a fixed 1-day window.
 
-| Table | Cutoff column | Notes |
-|---|---|---|
-| `_ops.spans` | `started_at` | every traced function call; the biggest table in steady state |
-| `_ops.traces` | `started_at` | parents of spans; logs cascade-delete via FK |
-| `_ops.logs` | `ts` | traceless `Logger.info/warn/error` lines |
+| Table | Deletes rows where |
+|---|---|
+| `_ops.spans` | `started_at` past the retention window — every traced call; the biggest table |
+| `_ops.traces` | `started_at` past the window; logs cascade-delete via FK |
+| `_ops.logs` | `ts` past the window — traceless `Logger.info/warn/error` lines |
+| `_ops.oauth_codes` | `consumed_at` is set, or `expires_at` older than 1 day — one-shot PKCE codes (#59) |
+| `_ops.oauth_refresh` | `revoked_at` or `expires_at` past the retention window — rotated/expired refresh tokens (#59) |
 
-Source: [`packages/server/src/worker/prune.ts`](../../packages/server/src/worker/prune.ts) — ~30 lines, three `DELETE` statements, one `Logger.info` reporting the row counts.
+Source: [`packages/server/src/worker/prune.ts`](../../packages/server/src/worker/prune.ts) — five `DELETE` statements, one `Logger.info` reporting the row counts.
 
 `_ops.logs` rows that have a `trace_id` cascade-delete with their
 parent trace via the FK added in migration `0008_logs_prune.sql`.
@@ -48,21 +51,15 @@ mid-cycle doesn't skip the schedule.
 
 ## Why app-level
 
-- **Portability** — `pg_cron` isn't available on Railway / Neon / most
-  managed Postgres providers. The app-level worker runs anywhere Bun does.
-- **Observability** — the worker emits logs and spans on the same
-  telemetry stream as everything else, so a missed prune shows up in
-  the same `_ops.spans` query path you'd use to debug nap or push.
-- **Versioning** — retention windows live in `infra/config.ts` next to
-  the rest of the constants.
+Same reasoning as nap's ["Why server-side, not pg_cron"](./nap.md): portability (no `pg_cron` dependency), shared observability (logs + spans on the same `_ops.*` stream), and versioned constants in `infra/config.ts`.
 
 ---
 
 ## Configuration
 
-| Env / constant | Default | Meaning |
+| Constant | Default | Meaning |
 |---|---|---|
-| `TELEMETRY_RETENTION_DAYS` | `3` | Days of `_ops.*` history to retain. |
+| `TELEMETRY_RETENTION_DAYS` | `3` | Days of `_ops.*` history to retain. Compile-time constant; not env-overridable. |
 
 To change retention, edit `packages/server/src/infra/config.ts` and
 redeploy. The next prune tick uses the new value; older rows beyond the

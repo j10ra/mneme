@@ -69,7 +69,6 @@ Column types, jsonb shapes, and the source taxonomy. Load when you need to const
 | `manual:/memory` | `/mneme:memory <text>` slash |
 | `manual:/api/memory` | Direct memory write — `/mneme:pin <text>` (bypasses extract) |
 | `manual` | pin / unpin / archive / supersede actuation captures |
-| `http` | default for `/api/capture` posts that don't set a source |
 
 `source` is the *event origin*. It is **not** the same as `memories.kind`. Don't write `WHERE source = 'note'` — that's a kind, not a source.
 
