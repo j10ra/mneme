@@ -26,6 +26,7 @@ import {
   DREAM_CLUSTER_DISTANCE,
   DREAM_MAX_CANDIDATES_PER_CYCLE,
   DREAM_MAX_NEIGHBORS_PER_MEMORY,
+  DREAM_STALE_LOCK_AGE_MS,
   DREAM_STREAM_NEIGHBOR_BATCH,
   DREAM_STREAM_SEED_BATCH,
   EMBEDDER_DIM,
@@ -38,8 +39,9 @@ export type DreamLockResult =
   | { acquired: false; window_key: number; heldBy: string };
 
 // Generous enough we don't reap a live cycle; tight enough a crashed
-// daemon self-heals instead of blocking the window forever.
-const STALE_LOCK_AGE_MS = 30 * 60_000;
+// daemon self-heals instead of blocking the window forever. Shared with
+// nap's window-agnostic sweep (see DREAM_STALE_LOCK_AGE_MS).
+const STALE_LOCK_AGE_MS = DREAM_STALE_LOCK_AGE_MS;
 
 export async function acquireDreamLock(
   windowKey: number,

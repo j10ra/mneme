@@ -1,5 +1,7 @@
 import { Logger, mnemeFn } from "@mneme/core";
+import { clearStaleDreamLocks } from "../routes/dream.ts";
 import {
+  DREAM_STALE_LOCK_AGE_MS,
   NAP_ARCHIVE_IMPORTANCE_MAX,
   NAP_ARCHIVE_MIN_AGE_DAYS,
   NAP_ARCHIVE_PER_CYCLE_CAP,
@@ -57,6 +59,7 @@ export type NapResult = {
   member_archived: number;
   related: number;
   superseded: number;
+  dream_locks_reaped: number;
 };
 
 const NAP_DECAY_BATCH = 5000;
@@ -340,22 +343,22 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
   let t = Date.now();
   const decayed = await napDecayImportance();
 
-  Logger.info("nap: 1/6 importance decay", { rows: decayed, ms: Date.now() - t });
+  Logger.info("nap: 1/7 importance decay", { rows: decayed, ms: Date.now() - t });
 
   t = Date.now();
   const ltpDecayed = await napDecayRecallWeight();
 
-  Logger.info("nap: 2/6 recall_weight decay (LTP)", { rows: ltpDecayed, ms: Date.now() - t });
+  Logger.info("nap: 2/7 recall_weight decay (LTP)", { rows: ltpDecayed, ms: Date.now() - t });
 
   t = Date.now();
   const archived = await napArchiveOrphans();
 
-  Logger.info("nap: 3/6 archive orphan atoms", { archived, ms: Date.now() - t });
+  Logger.info("nap: 3/7 archive orphan atoms", { archived, ms: Date.now() - t });
 
   t = Date.now();
   const clusterArchived = await napArchiveDeadClusters();
 
-  Logger.info("nap: 4/6 archive dead clusters", {
+  Logger.info("nap: 4/7 archive dead clusters", {
     archived: clusterArchived,
     ms: Date.now() - t,
   });
@@ -363,7 +366,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
   t = Date.now();
   const memberArchived = await napArchiveOrphanedMembers();
 
-  Logger.info("nap: 5/6 archive orphaned members", {
+  Logger.info("nap: 5/7 archive orphaned members", {
     archived: memberArchived,
     ms: Date.now() - t,
   });
@@ -371,9 +374,24 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
   t = Date.now();
   const seed = await napSeedPhase();
 
-  Logger.info("nap: 6/6 seed (relate + rule supersede)", {
+  Logger.info("nap: 6/7 seed (relate + rule supersede)", {
     related: seed.related,
     superseded: seed.superseded,
+    ms: Date.now() - t,
+  });
+
+  // Window-agnostic reap of crashed dream claims. acquireDreamLock only
+  // reaps within the same window_key, which never fires for a daemon that
+  // dies after claiming and never retries that window (laptop sleep, hard
+  // kill, OOM). Without this sweep the row lingers and the window yields
+  // no clusters. Distilled work is not lost: the daemon's outbox resume
+  // re-submits on next startup.
+  t = Date.now();
+  const reaped = await clearStaleDreamLocks(Math.floor(DREAM_STALE_LOCK_AGE_MS / 1000));
+
+  Logger.info("nap: 7/7 reap stale dream locks", {
+    reaped: reaped.cleared,
+    window_keys: reaped.window_keys,
     ms: Date.now() - t,
   });
 
@@ -385,6 +403,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
     member_archived: memberArchived,
     related: seed.related,
     superseded: seed.superseded,
+    dream_locks_reaped: reaped.cleared,
   };
 
   Logger.info("nap: done", { ...result, total_ms: Date.now() - cycleStart });

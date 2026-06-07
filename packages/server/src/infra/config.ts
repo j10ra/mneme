@@ -132,6 +132,16 @@ export const DREAM_STREAM_SEED_BATCH = 50;
  *  amortise the round-trip but small enough to flush bytes regularly. */
 export const DREAM_STREAM_NEIGHBOR_BATCH = 200;
 
+/** Age after which an unfinished dream lock (completed_at IS NULL) is
+ *  considered crashed and reapable. acquireDreamLock reaps within the
+ *  same window_key, but a daemon that dies after claiming (laptop sleep,
+ *  hard kill, OOM — none run the SIGTERM release) never retries that
+ *  window, so its row would linger forever and the window produces no
+ *  clusters. nap sweeps every cycle, window-agnostic, as the backstop.
+ *  Generous enough not to reap a live cycle; tight enough to self-heal
+ *  well before the next 8h window. */
+export const DREAM_STALE_LOCK_AGE_MS = 30 * 60_000;
+
 // ── Supersede ─────────────────────────────────────────────────────────
 
 /** Rule-based pass (runs in nap, every 4h). Tight cosine + explicit
