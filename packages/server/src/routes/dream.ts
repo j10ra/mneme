@@ -26,6 +26,7 @@ import {
   DREAM_CLUSTER_DISTANCE,
   DREAM_MAX_CANDIDATES_PER_CYCLE,
   DREAM_MAX_NEIGHBORS_PER_MEMORY,
+  DREAM_STALE_LOCK_AGE_MS,
   DREAM_STREAM_NEIGHBOR_BATCH,
   DREAM_STREAM_SEED_BATCH,
   EMBEDDER_DIM,
@@ -37,9 +38,8 @@ export type DreamLockResult =
   | { acquired: true; window_key: number }
   | { acquired: false; window_key: number; heldBy: string };
 
-// Generous enough we don't reap a live cycle; tight enough a crashed
-// daemon self-heals instead of blocking the window forever.
-const STALE_LOCK_AGE_MS = 30 * 60_000;
+// Staleness threshold lives in config.ts (DREAM_STALE_LOCK_AGE_MS) so the
+// opportunistic reap here and nap's window-agnostic sweep share one knob.
 
 export async function acquireDreamLock(
   windowKey: number,
@@ -64,7 +64,7 @@ export async function acquireDreamLock(
     DELETE FROM _ops.dream_runs
     WHERE window_key = ${windowKey}
       AND completed_at IS NULL
-      AND claimed_at < now() - (${STALE_LOCK_AGE_MS}::bigint || ' milliseconds')::interval
+      AND claimed_at < now() - (${DREAM_STALE_LOCK_AGE_MS}::bigint || ' milliseconds')::interval
     RETURNING claimed_by_machine_id
   `;
 

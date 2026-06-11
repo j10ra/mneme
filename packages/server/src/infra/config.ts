@@ -132,6 +132,14 @@ export const DREAM_STREAM_SEED_BATCH = 50;
  *  amortise the round-trip but small enough to flush bytes regularly. */
 export const DREAM_STREAM_NEIGHBOR_BATCH = 200;
 
+/** Age after which an unfinished _ops.dream_runs claim (completed_at IS
+ *  NULL) is treated as a crashed cycle and eligible for reaping. Generous
+ *  enough we don't reap a live cycle; tight enough a crashed daemon self-
+ *  heals instead of blocking the window forever. Shared by the opportunistic
+ *  same-window reap in acquireDreamLock and nap's window-agnostic sweep, so
+ *  both staleness checks stay in lockstep. */
+export const DREAM_STALE_LOCK_AGE_MS = 30 * 60_000;
+
 // ── Supersede ─────────────────────────────────────────────────────────
 
 /** Rule-based pass (runs in nap, every 4h). Tight cosine + explicit

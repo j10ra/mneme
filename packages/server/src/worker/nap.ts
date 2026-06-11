@@ -1,5 +1,6 @@
 import { Logger, mnemeFn } from "@mneme/core";
 import {
+  DREAM_STALE_LOCK_AGE_MS,
   NAP_ARCHIVE_IMPORTANCE_MAX,
   NAP_ARCHIVE_MIN_AGE_DAYS,
   NAP_ARCHIVE_PER_CYCLE_CAP,
@@ -17,6 +18,7 @@ import {
   SUPERSEDE_RULE_PER_CYCLE_CAP,
 } from "../infra/config.ts";
 import { sql } from "../infra/db.ts";
+import { clearStaleDreamLocks } from "../routes/dream.ts";
 
 const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
 
@@ -57,6 +59,7 @@ export type NapResult = {
   member_archived: number;
   related: number;
   superseded: number;
+  dream_locks_reaped: number;
 };
 
 const NAP_DECAY_BATCH = 5000;
@@ -327,7 +330,26 @@ async function napSeedPhase(): Promise<{ related: number; superseded: number }> 
   });
 }
 
-/** Run one nap cycle as six independent phases. No phase holds locks
+/** Phase 7: window-agnostic stale dream-lock reap. The opportunistic
+ *  reap inside acquireDreamLock only fires when a new acquire arrives for
+ *  the *same* window_key, but window_key = floor(now/8h) is unique per
+ *  window — a daemon that crashes or sleeps holding a window's lock is
+ *  never contended on that window again, so its orphan persists forever.
+ *  This sweep runs every nap cycle regardless of window, deleting any
+ *  claim with completed_at IS NULL older than DREAM_STALE_LOCK_AGE_MS.
+ *  No LLM work is lost: the daemon outbox re-submits embedded clusters on
+ *  next startup. The threshold is shared with acquireDreamLock so the two
+ *  reap paths agree on what counts as crashed. */
+export async function napReapStaleDreamLocks(): Promise<{
+  reaped: number;
+  window_keys: number[];
+}> {
+  const { cleared, window_keys } = await clearStaleDreamLocks(DREAM_STALE_LOCK_AGE_MS / 1000);
+
+  return { reaped: cleared, window_keys };
+}
+
+/** Run one nap cycle as seven independent phases. No phase holds locks
  *  for the whole cycle, and a slow phase fails in isolation instead of
  *  rolling back the rest. Order matters between the cluster and member
  *  archive phases: clusters die first so the transitive member pass in
@@ -340,22 +362,22 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
   let t = Date.now();
   const decayed = await napDecayImportance();
 
-  Logger.info("nap: 1/6 importance decay", { rows: decayed, ms: Date.now() - t });
+  Logger.info("nap: 1/7 importance decay", { rows: decayed, ms: Date.now() - t });
 
   t = Date.now();
   const ltpDecayed = await napDecayRecallWeight();
 
-  Logger.info("nap: 2/6 recall_weight decay (LTP)", { rows: ltpDecayed, ms: Date.now() - t });
+  Logger.info("nap: 2/7 recall_weight decay (LTP)", { rows: ltpDecayed, ms: Date.now() - t });
 
   t = Date.now();
   const archived = await napArchiveOrphans();
 
-  Logger.info("nap: 3/6 archive orphan atoms", { archived, ms: Date.now() - t });
+  Logger.info("nap: 3/7 archive orphan atoms", { archived, ms: Date.now() - t });
 
   t = Date.now();
   const clusterArchived = await napArchiveDeadClusters();
 
-  Logger.info("nap: 4/6 archive dead clusters", {
+  Logger.info("nap: 4/7 archive dead clusters", {
     archived: clusterArchived,
     ms: Date.now() - t,
   });
@@ -363,7 +385,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
   t = Date.now();
   const memberArchived = await napArchiveOrphanedMembers();
 
-  Logger.info("nap: 5/6 archive orphaned members", {
+  Logger.info("nap: 5/7 archive orphaned members", {
     archived: memberArchived,
     ms: Date.now() - t,
   });
@@ -371,9 +393,18 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
   t = Date.now();
   const seed = await napSeedPhase();
 
-  Logger.info("nap: 6/6 seed (relate + rule supersede)", {
+  Logger.info("nap: 6/7 seed (relate + rule supersede)", {
     related: seed.related,
     superseded: seed.superseded,
+    ms: Date.now() - t,
+  });
+
+  t = Date.now();
+  const dreamLocks = await napReapStaleDreamLocks();
+
+  Logger.info("nap: 7/7 reap stale dream locks", {
+    reaped: dreamLocks.reaped,
+    window_keys: dreamLocks.window_keys,
     ms: Date.now() - t,
   });
 
@@ -385,6 +416,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
     member_archived: memberArchived,
     related: seed.related,
     superseded: seed.superseded,
+    dream_locks_reaped: dreamLocks.reaped,
   };
 
   Logger.info("nap: done", { ...result, total_ms: Date.now() - cycleStart });
