@@ -51,6 +51,50 @@ describe("forEachIdBatch", () => {
   });
 });
 
+describe.skipIf(!HAS_DB)("napReapStaleDreamLocks (requires DATABASE_URL)", () => {
+  const STALE_WINDOW = -987650001;
+  const FRESH_WINDOW = -987650002;
+  const MACHINE = "00000000-0000-0000-0000-00000000d1ea";
+
+  async function cleanup(): Promise<void> {
+    await sql`DELETE FROM _ops.dream_runs WHERE window_key IN (${STALE_WINDOW}, ${FRESH_WINDOW})`;
+  }
+
+  test("reaps orphaned (completed_at NULL, old) locks window-agnostically; leaves fresh in-flight claims", async () => {
+    try {
+      await cleanup();
+      // Orphan: claimed > DREAM_STALE_LOCK_AGE_MS (30m) ago, never completed.
+      await sql`
+        INSERT INTO _ops.dream_runs (window_key, claimed_by_machine_id, claimed_at)
+        VALUES (${STALE_WINDOW}, ${MACHINE}, now() - interval '40 minutes')
+      `;
+      // Fresh: in-flight cycle that must survive the sweep.
+      await sql`
+        INSERT INTO _ops.dream_runs (window_key, claimed_by_machine_id, claimed_at)
+        VALUES (${FRESH_WINDOW}, ${MACHINE}, now())
+      `;
+
+      const { napReapStaleDreamLocks } = await import("../src/worker/nap.ts");
+      const { reaped, window_keys } = await napReapStaleDreamLocks();
+
+      expect(reaped).toBeGreaterThanOrEqual(1);
+      expect(window_keys).toContain(STALE_WINDOW);
+      expect(window_keys).not.toContain(FRESH_WINDOW);
+
+      const rows = await sql<{ window_key: number }[]>`
+        SELECT window_key FROM _ops.dream_runs
+        WHERE window_key IN (${STALE_WINDOW}, ${FRESH_WINDOW})
+      `;
+      const remaining = rows.map((r) => Number(r.window_key));
+
+      expect(remaining).not.toContain(STALE_WINDOW);
+      expect(remaining).toContain(FRESH_WINDOW);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
 describe.skipIf(!HAS_DB)("napArchiveDeadClusters (requires DATABASE_URL)", () => {
   const MACHINE = "00000000-0000-0000-0000-0000000eadc1";
   const CAPTURE_ID = "00000000-0000-0000-0000-0000000eadc1";
