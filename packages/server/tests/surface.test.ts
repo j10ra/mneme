@@ -31,6 +31,32 @@ describe.skipIf(!HAS_DB)("surface — SQL smoke (requires DATABASE_URL)", () => 
     expect(result.delta).toBeNull();
   });
 
+  test("Overview concept surfaces under About", async () => {
+    const { sql } = await import("../src/infra/db.ts");
+    const { buildSurface } = await import("../src/services/surface.ts");
+    const repo = "mneme://test/surface-concept";
+    const vec = `[${Array(384).fill(0).join(",")}]`;
+
+    try {
+      const cap = await sql<{ id: string }[]>`
+        INSERT INTO captures (content, content_sha256, source, machine_id, hostname, repo, harness, agent, topics, private, raw_meta)
+        VALUES ('about body', 'sha-surface-concept', 'crystallize', '00000000-0000-0000-0000-0000000c0020', 'h', ${repo}, 'crystallize', 'crystallize', '{}'::text[], false, '{}'::jsonb)
+        ON CONFLICT (content_sha256, machine_id) DO UPDATE SET content = EXCLUDED.content RETURNING id`;
+
+      await sql`
+        INSERT INTO memories (capture_id, chunk_id, content, content_hash, embedding_model, embedding, tsv, kind, importance, machine_id, repo, harness, agent, topics, private, meta)
+        VALUES (${cap[0]!.id}, 'chunk-surface-concept', 'about body', 'sha-surface-concept', 'bge-small-en-v1.5', ${vec}::vector, to_tsvector('english','about body'), 'concept', 0.85, '00000000-0000-0000-0000-0000000c0020', ${repo}, 'crystallize', 'crystallize', '{}'::text[], false, ${sql.json({ concept_id: "test/about", concept_type: "Overview", title: "About This Repo" })})
+        ON CONFLICT (chunk_id) DO NOTHING`;
+      const result = await buildSurface([repo], null);
+
+      expect(result.about.items.length).toBe(1);
+      expect(result.about.items[0]!.content).toContain("about body");
+    } finally {
+      await sql`DELETE FROM memories WHERE chunk_id = 'chunk-surface-concept'`;
+      await sql`DELETE FROM captures WHERE content_sha256 = 'sha-surface-concept'`;
+    }
+  });
+
   test("populated-data path runs computeDelta's count queries", async () => {
     const { sql } = await import("../src/infra/db.ts");
     // Discover any repo with at least one `summary` memory so computeDelta
