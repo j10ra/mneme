@@ -244,3 +244,17 @@ export const DIGEST_MERGE_WINDOW = 100;
  *  Each batch of SUPERSEDE_LLM_BATCH_MAX_MEMBERS goes to one Sonnet
  *  call. 200 candidates ≈ 7 batches ≈ 7 LLM calls per cycle. */
 export const DIGEST_MAX_SUPERSEDE_CANDIDATES = 200;
+
+// ── Crystallize (concept synthesis, daemon-initiated) ─────────────────
+// Crystallize writes durable concept rows (kind='concept') that represent
+// the repo's synthesized understanding. The daemon owns LLM cost; the
+// server owns the lock + candidate query + concept write.
+
+/** Importance assigned to concept rows. 0.85 ≈ top ~0.5% of the
+ *  importance distribution, above clusters (0.8) and well above raw
+ *  atoms. Keeps concepts surfaced prominently in recall. */
+export const CRYSTALLIZE_CONCEPT_IMPORTANCE = 0.85;
+
+/** Max prior bodies kept in meta.history per concept. Older entries are
+ *  trimmed (most-recent preserved) so the JSONB column stays bounded. */
+export const CRYSTALLIZE_HISTORY_LIMIT = 10;

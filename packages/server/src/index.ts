@@ -12,6 +12,7 @@ import {
 } from "@mneme/core";
 import { mountAuthRoutes } from "./routes/auth.ts";
 import { mountBundleRoute } from "./routes/bundle.ts";
+import { mountCrystallizeRoutes } from "./routes/crystallize.ts";
 import { mountDreamRoutes } from "./routes/dream.ts";
 import { mountHeartbeatRoute } from "./routes/heartbeat.ts";
 import { mountIngestRoutes } from "./routes/ingest.ts";
@@ -92,6 +93,7 @@ mountAuthRoutes(app);
 mountOAuthRoutes(app);
 mountBundleRoute(app);
 mountDreamRoutes(app);
+mountCrystallizeRoutes(app);
 mountHeartbeatRoute(app);
 mountIngestRoutes(app);
 mountOpsRoutes(app);
