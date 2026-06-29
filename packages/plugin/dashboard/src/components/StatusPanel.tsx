@@ -40,11 +40,24 @@ type StatusResponse = {
     stuck: number;
     stuck_after_ms: number;
   };
+  crystallize: {
+    last_window_at: string | null;
+    last_concept_count: number | null;
+    in_flight: number;
+    stuck: number;
+    stuck_after_ms: number;
+  };
   breakers: Record<string, BreakerState>;
 };
 
 type DaemonSchedule = {
   dream?: {
+    schedule_ms: number;
+    next_run_at: string;
+    last_run_at: string | null;
+    last_duration_ms: number | null;
+  };
+  crystallize?: {
     schedule_ms: number;
     next_run_at: string;
     last_run_at: string | null;
@@ -233,6 +246,7 @@ function StatusContent({
       <div className="grid gap-2">
         {napRow && <WorkerRowItem w={napRow} />}
         <DreamRowItem data={data.dream} schedule={schedule} />
+        <CrystallizeRowItem data={data.crystallize} schedule={schedule} />
         {digestRow && <WorkerRowItem w={digestRow} />}
       </div>
 
@@ -340,6 +354,49 @@ function DreamRowItem({
         )}
         <ForceButton
           worker="dream"
+          lastRunAt={data.last_window_at}
+          serverPending={data.in_flight > 0}
+        />
+      </div>
+    </div>
+  );
+}
+
+function CrystallizeRowItem({
+  data,
+  schedule,
+}: {
+  data: StatusResponse["crystallize"];
+  schedule: DaemonSchedule | null;
+}) {
+  const lastAge = data.last_window_at
+    ? fmtAge(Date.now() - new Date(data.last_window_at).getTime())
+    : null;
+  const nextInMs = schedule?.crystallize
+    ? Math.max(0, new Date(schedule.crystallize.next_run_at).getTime() - Date.now())
+    : null;
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-success" />
+        <span className="font-medium truncate">crystallize</span>
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          last {lastAge ? `${lastAge} ago` : "never"}
+        </span>
+      </div>
+      <div className="flex items-center gap-3 text-xs text-muted-foreground tabular-nums">
+        <span>concepts: {data.last_concept_count ?? "—"}</span>
+        <span>in-flight: {data.in_flight}</span>
+        {nextInMs !== null && <span className="whitespace-nowrap">next in {fmtAge(nextInMs)}</span>}
+        {data.stuck > 0 && (
+          <Badge variant="warning">
+            <CircleAlert className="h-3 w-3" />
+            {data.stuck} stuck &gt; 30m
+          </Badge>
+        )}
+        <ForceButton
+          worker="crystallize"
           lastRunAt={data.last_window_at}
           serverPending={data.in_flight > 0}
         />

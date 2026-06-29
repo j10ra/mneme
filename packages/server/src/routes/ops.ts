@@ -93,6 +93,14 @@ type DreamRow = {
   stuck: number;
 };
 
+type CrystallizeRow = {
+  last_window_at: Date | string | null;
+  last_concept_count: number | null;
+  in_flight: number;
+  ghost: number;
+  stuck: number;
+};
+
 export function mountOpsRoutes(app: Hono): void {
   app.get(
     "/api/_ops/status",
@@ -167,6 +175,36 @@ export function mountOpsRoutes(app: Hono): void {
           ON h.machine_id::text = dr.claimed_by_machine_id::text
       `) as unknown as DreamRow[];
 
+      const [crystallizeRow] = (await sql`
+        SELECT
+          MAX(cr.claimed_at) AS last_window_at,
+          (
+            SELECT concept_count
+            FROM _ops.crystallize_runs
+            WHERE completed_at IS NOT NULL
+            ORDER BY claimed_at DESC LIMIT 1
+          ) AS last_concept_count,
+          COUNT(*) FILTER (
+            WHERE cr.completed_at IS NULL
+              AND h.posted_at IS NOT NULL
+              AND h.posted_at > now() - (${HEARTBEAT_STALE_MS}::bigint || ' milliseconds')::interval
+          )::int AS in_flight,
+          COUNT(*) FILTER (
+            WHERE cr.completed_at IS NULL
+              AND (h.posted_at IS NULL
+                   OR h.posted_at <= now() - (${HEARTBEAT_STALE_MS}::bigint || ' milliseconds')::interval)
+          )::int AS ghost,
+          COUNT(*) FILTER (
+            WHERE cr.completed_at IS NULL
+              AND cr.claimed_at < now() - interval '30 minutes'
+              AND h.posted_at IS NOT NULL
+              AND h.posted_at > now() - (${HEARTBEAT_STALE_MS}::bigint || ' milliseconds')::interval
+          )::int AS stuck
+        FROM _ops.crystallize_runs cr
+        LEFT JOIN _ops.daemon_heartbeats h
+          ON h.machine_id::text = cr.claimed_by_machine_id::text
+      `) as unknown as CrystallizeRow[];
+
       return c.json({
         generated_at: new Date(now).toISOString(),
         workers: workerRows.map((r) => {
@@ -207,6 +245,14 @@ export function mountOpsRoutes(app: Hono): void {
           in_flight: dreamRow?.in_flight ?? 0,
           ghost: dreamRow?.ghost ?? 0,
           stuck: dreamRow?.stuck ?? 0,
+          stuck_after_ms: DREAM_STUCK_AFTER_MS,
+        },
+        crystallize: {
+          last_window_at: crystallizeRow?.last_window_at ?? null,
+          last_concept_count: crystallizeRow?.last_concept_count ?? null,
+          in_flight: crystallizeRow?.in_flight ?? 0,
+          ghost: crystallizeRow?.ghost ?? 0,
+          stuck: crystallizeRow?.stuck ?? 0,
           stuck_after_ms: DREAM_STUCK_AFTER_MS,
         },
         breakers: inspectBreakers(),

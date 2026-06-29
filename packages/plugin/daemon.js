@@ -2205,7 +2205,7 @@ the bundle, or you're running from a fresh dev checkout where
 <pre>cd packages/plugin/dashboard &amp;&amp; bun install &amp;&amp; bun run build</pre>
 <p>Then re-run <code>/plugin update mneme</code> &amp; <code>/reload-plugins</code>.</p>
 </body></html>`;
-function mountDashboardRoutes(app, forceDream) {
+function mountDashboardRoutes(app, forceDream, forceCrystallize) {
   const distDir = dashboardDist();
   app.get("/dashboard", mnemeRoute("daemon.dashboard"), async (c) => {
     const indexPath = join4(distDir, "index.html");
@@ -2240,6 +2240,12 @@ function mountDashboardRoutes(app, forceDream) {
         Logger.error("dashboard: forced dream cycle failed", err);
       });
       return c.json({ queued: true, job: "dream" }, 202);
+    }
+    if (name === "crystallize") {
+      forceCrystallize().catch((err) => {
+        Logger.error("dashboard: forced crystallize cycle failed", err);
+      });
+      return c.json({ queued: true, job: "crystallize" }, 202);
     }
     if (name === "nap" || name === "digest") {
       const cfg = await readDaemonConfig();
@@ -3772,13 +3778,14 @@ async function startDaemon() {
     outbox: crystallizeOutbox
   };
   const runCrystallize = () => runCrystallizeCycle(crystallizeDeps);
+  const forceCrystallize = () => runCrystallizeCycle({ ...crystallizeDeps, windowKey: -Date.now() });
   const app = new Hono;
   mountOpsRoutes(app, runtime);
   mountCaptureRoute(app, runtime);
   mountEmbedRoute(app);
   mountDreamRoute(app, runDream);
   mountCrystallizeRoute(app, runCrystallize);
-  mountDashboardRoutes(app, forceDream);
+  mountDashboardRoutes(app, forceDream, forceCrystallize);
   Bun.serve({
     port: config.daemon_port,
     hostname: "127.0.0.1",
