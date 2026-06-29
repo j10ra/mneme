@@ -1,6 +1,6 @@
 # Surface
 
-The other read path: a compact markdown digest delivered to the agent at SessionStart, without any tool call. **Five sections, ≤ 20 items total, cross-machine.**
+The other read path: a compact markdown digest delivered to the agent at SessionStart, without any tool call. **Six sections, ~21 items total, cross-machine.**
 
 > Reads for context: [`concepts.md`](./concepts.md), [`workers/nap.md`](./workers/nap.md), [`workers/dream.md`](./workers/dream.md).
 > Sibling read path: [`recall.md`](./recall.md).
@@ -31,21 +31,22 @@ Including the `dir:*` fallback for the cwd itself matters: captures from a sessi
 
 ---
 
-## Five sections, in order
+## Six sections, in order
 
-The hook POSTs `{ machine_id, repos: string[], session_id }` to `/api/session/start`. The aggregator builds these five sections in parallel queries against `memories WHERE repo = ANY(repos)`. Every section also filters out `meta.superseded_by IS NOT NULL` — the surface is curated for the *current* version of every fact.
+The hook POSTs `{ machine_id, repos: string[], session_id }` to `/api/session/start`. The aggregator builds these six sections in parallel queries against `memories WHERE repo = ANY(repos)`. Every section also filters out `meta.superseded_by IS NOT NULL` — the surface is curated for the *current* version of every fact.
 
 Importance-ordered sections rank by `(importance + RECALL_RANKING_COEF * ln(1 + recall_weight))` rather than raw importance, so use-driven memories drift up alongside the importance signal.
 
 | Section | Filter | Cap |
 |---|---|---|
+| **About** | `kind = 'concept' AND meta->>'concept_type' = 'Overview' AND repo = ANY(repos)`, ORDER BY (importance + LTP-boost) DESC, created_at DESC. Single curated entry point describing what the repo is. | 1 |
+| **Concepts** | `kind = 'concept' AND COALESCE(meta->>'concept_type','') <> 'Overview' AND repo = ANY(repos)`, ORDER BY (importance + LTP-boost) DESC, created_at DESC. Renders `meta.title` before body. | 5 |
 | **Pinned** | `(meta->>'pinned')::boolean = true AND (repo = ANY(repos) OR repo IS NULL)`, ORDER BY (importance + LTP-boost) DESC, created_at DESC | 5 |
 | **Rules** | `kind IN ('preference','constraint') AND importance >= 0.7 AND (repo = ANY(repos) OR repo IS NULL)`, ORDER BY (importance + LTP-boost) DESC, created_at DESC | 3 |
-| **Themes** | `kind = 'cluster' AND repo = ANY(repos)`, ORDER BY (importance + LTP-boost) DESC, created_at DESC. Renders `meta.cluster_title`. | 3 |
-| **Recent** | `repo = ANY(repos) AND kind IN ('decision','feature','bugfix','discovery') AND importance >= 0.6 AND created_at > now() - interval '14 days'`, ORDER BY (importance + LTP-boost) DESC, created_at DESC | 6 |
+| **Recent** | `repo = ANY(repos) AND kind IN ('decision','feature','bugfix','discovery') AND importance >= 0.6 AND created_at > now() - interval '14 days'`, ORDER BY (importance + LTP-boost) DESC, created_at DESC | 4 |
 | **Sessions** | `repo = ANY(repos) AND kind = 'summary'`, ORDER BY created_at DESC | 3 |
 
-Total budget: 5 + 3 + 3 + 6 + 3 = **20 items**.
+Total budget: 1 + 5 + 5 + 3 + 4 + 3 = **~21 items** (caps are upper bounds; sections are omitted when empty).
 
 The aggregator also returns:
 - **`supersededCount`** — total superseded rows in the repo set, rendered in the surface footer so the agent can pivot to historical-context queries when needed.
@@ -71,6 +72,14 @@ _IDs below are shortened to 8 chars for readability. Live surface emits full UUI
 # Mneme · workspace (4 repos) · across 2 machines
 _Since last session (2h ago): 24 captures, 11 memories · 3 superseded all-time_
 
+## About (1)
+- [9e2f4a11] 📘 Cross-machine memory layer for one user, three machines. Captures shell history and agent transcripts, distils them into a searchable graph of memories.
+
+## Concepts (3 of 8)
+- [5c7d2e91] 📘 **Capture pipeline** — Hook sends raw content to the daemon; daemon extracts + embeds + posts to the server; server chunks into memories.
+- [2a8f1b04] 📘 **Dream worker** — Every 8h: cluster semantically-related memories, call Claude to distil a summary, persist as kind='cluster'.
+- [7f3e9c22] 📘 **Nap worker** — Every 4h: decay importance + recall_weight, write semantic relations, rule-based supersede, auto-archive orphans.
+
 ## Pinned (2 of 7)
 - [a3f29c7d] ⚖️ 0.90 Use the daemon's Claude SDK for extract; OpenRouter only on the digest path
 - [ee15b220] 💬 0.85 Address user as Boss, no AI attribution in commits
@@ -78,9 +87,6 @@ _Since last session (2h ago): 24 captures, 11 memories · 3 superseded all-time_
 ## Rules (2 of 4)
 - [b8c1f4e2] 🚧 The hook performs a hard-blacklist check on cwd before any HTTP call
 - [c1d2e3f4] 💬 The user prefers terse responses, no preamble
-
-## Themes (3 of 16)
-- [5b1ed144] 🧩 **Trace forwarding** — Daemon batches spans every 5s/100 items to /api/ingest/spans; covers stage ticks, Claude SDK calls, scheduler jobs.
 
 ## Recent (last 14 days)
 - [c4f2a1b9] 5d ago · ⚖️ Two-phase migration: Phase 1 additive with rollback tag, Phase 2 cleanup gated on validation
@@ -125,5 +131,6 @@ Claude Code only injects context when this envelope is present — raw markdown 
 ## See also
 
 - [`recall.md`](./recall.md) — the explicit-query read path.
-- [`workers/dream.md`](./workers/dream.md) — produces the `kind='cluster'` rows that fill the Themes section.
+- [`workers/crystallize.md`](./workers/crystallize.md) — produces the `kind='concept'` rows that fill the About and Concepts sections.
+- [`workers/dream.md`](./workers/dream.md) — produces the `kind='cluster'` rows that crystallize consumes as candidate input.
 - [`/packages/server/src/routes/session.ts`](../packages/server/src/routes/session.ts) — the `/api/session/start` handler.

@@ -144,8 +144,8 @@ export const buildSurface = mnemeFn(
       LIMIT 5
     `;
 
-    // Capped to keep total surface ≤ 20 items after Themes joins the
-    // budget.
+    // Capped at 4 to keep the total surface ~21 items (About 1 + Concepts 5 +
+    // Pinned 5 + Rules 3 + Recent 4 + Sessions 3) within budget.
     const decisionsQ = sql<Row[]>`
       SELECT id, kind, importance, content, repo, machine_id, created_at,
              COUNT(*) OVER () AS total_count

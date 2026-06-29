@@ -73,8 +73,26 @@ erDiagram
 | Nap pagination | `meta.last_napped_at: timestamptz` |
 | Dream pagination | `meta.last_dreamed_at: timestamptz` (watermark for round-robin seed selection) |
 | Digest pagination | `meta.last_digested_at: timestamptz` (watermark for Op1 cluster window + Op2 candidates) |
+| Concept stable id | `meta.concept_id: "kebab-slug"` — stable upsert key; `(repo, meta.concept_id)` is unique |
+| Concept type | `meta.concept_type: "Overview \| Component \| Workflow \| Decision \| Constraint \| ..."` |
+| Concept display title | `meta.title: "..."` — short phrase shown in the surface **Concepts** section |
+| Concept cross-links | `meta.related_to: ["<uuid>", ...]` — reused field; on concepts these resolve to sibling concept ids |
+| Concept source members | `meta.source_member_ids: ["<uuid>", ...]` — cluster or memory ids used to generate this concept |
+| Concept edit history | `meta.history: [{ body, refreshed_at }, ...]` — capped at 10 entries; oldest evicted on overflow |
+| Concept curation guard | `meta.confirmed: true` — set by user/operator; blocks body overwrite by crystallize cycles |
+| Concept refresh timestamp | `meta.refreshed_at: timestamptz` — last crystallize write, even when body is confirmed-locked |
 
 Add typed columns or a fourth table only when a reader needs them. Current candidates that *could* graduate (relations graph, supersede chains, cluster membership) all still index fine via GIN-on-JSONB.
+
+### Concept tier
+
+`kind='concept'` rows are the **one exception to Mneme's append-only rule**. They are upserted in place by the crystallize worker (`(repo, meta.concept_id)` is the conflict key) rather than appended as new rows. The body is overwritten on each cycle unless `meta.confirmed = true`, in which case only provenance fields (`refreshed_at`, `source_member_ids`) are updated and the body is left as curated.
+
+Key properties:
+- `importance = 0.85` — above cluster importance (0.8) so concepts outrank clusters in recall; below user-curated pins so manual curation remains the top signal.
+- Surfaced first in the SessionStart surface: **About** (Overview concept, cap 1) and **Concepts** (non-Overview, cap 5). See [`surface.md`](./surface.md).
+- Recall-boosted `× 1.15` in the hybrid template so they surface without burying precise hits. See [`recall.md`](./recall.md).
+- Cap: 25 concepts per repo. History: `meta.history[]` capped at 10 entries, oldest evicted first.
 
 ---
 
