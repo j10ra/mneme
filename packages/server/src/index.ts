@@ -21,6 +21,7 @@ import { mountOAuthRoutes } from "./routes/oauth.ts";
 import { mountOpsRoutes } from "./routes/ops.ts";
 import { mountSessionRoutes } from "./routes/session.ts";
 import { sql } from "./infra/db.ts";
+import { runMigrations } from "../../../scripts/migrate.ts";
 import { scrubData } from "@mneme/shared";
 import { env } from "./infra/env.ts";
 import { startWorker, stopWorker } from "./worker/index.ts";
@@ -117,6 +118,18 @@ async function shutdown(signal: string): Promise<void> {
 
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
+
+// Self-migrating boot. Railway does not run the Procfile `release:` step, so
+// pending migrations are applied here using the internal DB connection before
+// workers start. Non-fatal by design: a migrate failure must not wedge the
+// server, and the ops/nap paths tolerate a not-yet-created table.
+try {
+  const { applied } = await runMigrations(env.DATABASE_URL);
+
+  Logger.info(`migrations: ${applied} applied on boot`);
+} catch (err) {
+  Logger.error("migrations: boot migrate failed (continuing)", err);
+}
 
 startWorker();
 

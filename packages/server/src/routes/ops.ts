@@ -175,7 +175,10 @@ export function mountOpsRoutes(app: Hono): void {
           ON h.machine_id::text = dr.claimed_by_machine_id::text
       `) as unknown as DreamRow[];
 
-      const [crystallizeRow] = (await sql`
+      let crystallizeRow: CrystallizeRow | undefined;
+
+      try {
+        [crystallizeRow] = (await sql`
         SELECT
           MAX(cr.claimed_at) AS last_window_at,
           (
@@ -203,7 +206,12 @@ export function mountOpsRoutes(app: Hono): void {
         FROM _ops.crystallize_runs cr
         LEFT JOIN _ops.daemon_heartbeats h
           ON h.machine_id::text = cr.claimed_by_machine_id::text
-      `) as unknown as CrystallizeRow[];
+        `) as unknown as CrystallizeRow[];
+      } catch (err) {
+        // _ops.crystallize_runs may not exist yet (migration 0032 not applied).
+        // Treat as no crystallize data rather than 500-ing the whole status read.
+        if ((err as { code?: string })?.code !== "42P01") throw err;
+      }
 
       return c.json({
         generated_at: new Date(now).toISOString(),

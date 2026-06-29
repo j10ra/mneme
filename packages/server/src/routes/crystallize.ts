@@ -70,14 +70,22 @@ export async function abortCrystallizeLock(windowKey: number, machineId: string)
 export async function clearStaleCrystallizeLocks(
   maxAgeSeconds: number,
 ): Promise<{ cleared: number; window_keys: number[] }> {
-  const rows = await sql<{ window_key: number }[]>`
-    DELETE FROM _ops.crystallize_runs
-    WHERE completed_at IS NULL
-      AND claimed_at < now() - (${maxAgeSeconds}::bigint || ' seconds')::interval
-    RETURNING window_key
-  `;
+  try {
+    const rows = await sql<{ window_key: number }[]>`
+      DELETE FROM _ops.crystallize_runs
+      WHERE completed_at IS NULL
+        AND claimed_at < now() - (${maxAgeSeconds}::bigint || ' seconds')::interval
+      RETURNING window_key
+    `;
 
-  return { cleared: rows.length, window_keys: rows.map((r) => Number(r.window_key)) };
+    return { cleared: rows.length, window_keys: rows.map((r) => Number(r.window_key)) };
+  } catch (err) {
+    // _ops.crystallize_runs may not exist yet (migration 0032 not applied).
+    // Nothing to reap rather than failing the whole nap cycle.
+    if ((err as { code?: string })?.code !== "42P01") throw err;
+
+    return { cleared: 0, window_keys: [] };
+  }
 }
 
 export type ConceptSubmission = {
