@@ -72,7 +72,8 @@ const TOOL_DEF = {
 // clients (Claude desktop/web/mobile, ChatGPT, local LLMs) have just the
 // tools, so the recall workflow + schema travel as this guide tool.
 const GUIDE_NAME = "mneme_guide";
-const GUIDE_TEXT = `Mneme — cross-machine memory, queried read-only via mneme_sql.
+
+export const GUIDE_TEXT = `Mneme — cross-machine memory, queried read-only via mneme_sql.
 
 THE 3-LAYER RECALL WORKFLOW (don't fetch full rows up front):
 
@@ -88,6 +89,7 @@ THE 3-LAYER RECALL WORKFLOW (don't fetch full rows up front):
        0.4 * ts_rank(tsv, websearch_to_tsquery('english','your query')) +
        0.05 * importance + 0.10 * ln(1 + recall_weight)
      ) * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
+       * CASE WHEN kind = 'concept' THEN 1.15 ELSE 1 END
    DESC LIMIT 10;
    embed('text') runs the bge-small model server-side. If a query errors
    on embed(), this server has embedding disabled — drop the embedding
@@ -106,7 +108,8 @@ THE 3-LAYER RECALL WORKFLOW (don't fetch full rows up front):
 SCHEMA (public, read-only, RLS hides private rows):
   memories(id uuid, kind, content, repo, importance, recall_weight,
            machine_id, created_at, archived_at, meta jsonb, tsv, embedding)
-    kind ∈ decision|bugfix|feature|preference|constraint|summary|cluster|note...
+    kind ∈ decision|bugfix|feature|preference|constraint|summary|cluster|note|concept...
+    concept — curated, living unit of durable knowledge (surfaced first, recall-boosted)
     cluster rows (kind='cluster') summarize members via meta.member_ids.
   captures(...) — raw conversation/tool events; memories are distilled from these.
 

@@ -310,6 +310,7 @@ const KIND_GLYPH: Record<string, string> = {
   cluster: "🧩",
   claude_memory: "🧠",
   note: "📝",
+  concept: "📘",
 };
 const glyph = (kind: string | null): string => (kind && KIND_GLYPH[kind]) || "•";
 
