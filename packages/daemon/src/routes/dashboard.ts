@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { Logger, mnemeRoute } from "@mneme/core";
+import type { CrystallizeCycleResult } from "../crystallize.ts";
 import type { DreamCycleResult } from "../dream.ts";
 import { embedBatch } from "../embed.ts";
 
@@ -76,7 +77,11 @@ the bundle, or you're running from a fresh dev checkout where
 <p>Then re-run <code>/plugin update mneme</code> &amp; <code>/reload-plugins</code>.</p>
 </body></html>`;
 
-export function mountDashboardRoutes(app: Hono, forceDream: () => Promise<DreamCycleResult>): void {
+export function mountDashboardRoutes(
+  app: Hono,
+  forceDream: () => Promise<DreamCycleResult>,
+  forceCrystallize: () => Promise<CrystallizeCycleResult>,
+): void {
   const distDir = dashboardDist();
 
   // GET /dashboard → index.html
@@ -154,6 +159,14 @@ export function mountDashboardRoutes(app: Hono, forceDream: () => Promise<DreamC
         });
 
         return c.json({ queued: true, job: "dream" }, 202);
+      }
+
+      if (name === "crystallize") {
+        void forceCrystallize().catch((err) => {
+          Logger.error("dashboard: forced crystallize cycle failed", err);
+        });
+
+        return c.json({ queued: true, job: "crystallize" }, 202);
       }
 
       if (name === "nap" || name === "digest") {

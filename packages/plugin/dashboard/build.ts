@@ -63,10 +63,15 @@ if (!jsResult.success) {
 // ── 2. Tailwind v4 CSS via @tailwindcss/cli ──────────────────────────
 const cssIn = join(SRC, "styles.css");
 const cssOut = join(TMP, "styles.css");
-const cssProc = Bun.spawn(
-  ["bunx", "@tailwindcss/cli", "--input", cssIn, "--output", cssOut, "--minify"],
-  { cwd: HERE, stdout: "inherit", stderr: "inherit" },
-);
+// Invoke the locally installed CLI directly. `bunx @tailwindcss/cli` does a
+// registry resolution that hangs behind a restrictive proxy even when the
+// package is already in node_modules; the local binary builds offline.
+const tailwindBin = join(HERE, "node_modules", ".bin", "tailwindcss");
+const cssProc = Bun.spawn([tailwindBin, "--input", cssIn, "--output", cssOut, "--minify"], {
+  cwd: HERE,
+  stdout: "inherit",
+  stderr: "inherit",
+});
 const cssExit = await cssProc.exited;
 
 if (cssExit !== 0) {

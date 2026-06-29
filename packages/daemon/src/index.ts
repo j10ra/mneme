@@ -281,6 +281,8 @@ export async function startDaemon(): Promise<void> {
     outbox: crystallizeOutbox,
   };
   const runCrystallize = () => runCrystallizeCycle(crystallizeDeps);
+  const forceCrystallize = () =>
+    runCrystallizeCycle({ ...crystallizeDeps, windowKey: -Date.now() });
 
   const app = new Hono();
 
@@ -289,7 +291,7 @@ export async function startDaemon(): Promise<void> {
   mountEmbedRoute(app);
   mountDreamRoute(app, runDream);
   mountCrystallizeRoute(app, runCrystallize);
-  mountDashboardRoutes(app, forceDream);
+  mountDashboardRoutes(app, forceDream, forceCrystallize);
 
   Bun.serve({
     port: config.daemon_port,
