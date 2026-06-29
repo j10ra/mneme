@@ -132,4 +132,4 @@ Each cluster moves through three outbox stages on the daemon side (`~/.mneme/out
 - [`nap.md`](./nap.md) — runs alongside dream; nap handles decay, archive, relations, rule-based supersede.
 - [`digest.md`](./digest.md) — the only worker that can re-point `meta.in_cluster` (via cluster merges).
 - [`../recall.md`](../recall.md) — how `kind='cluster'` rows participate in recall scoring.
-- [`../surface.md`](../surface.md) — Themes section in the SessionStart surface renders the most-relevant cluster summaries first.
+- [`../surface.md`](../surface.md) — cluster summaries feed the crystallize candidate pipeline, which produces the About and Concepts sections in the SessionStart surface.

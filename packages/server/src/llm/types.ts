@@ -12,6 +12,7 @@ export const KINDS = [
   "reference",
   "summary",
   "cluster",
+  "concept",
 ] as const;
 
 export type Kind = (typeof KINDS)[number];

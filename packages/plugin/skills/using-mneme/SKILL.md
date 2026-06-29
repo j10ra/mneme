@@ -48,9 +48,12 @@ ORDER BY
     0.10 * ln(1 + recall_weight)
   )
   * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
+  * CASE WHEN kind = 'concept' THEN 1.15 ELSE 1 END
 DESC
 LIMIT 10;
 ```
+
+Concepts (kind='concept') are the curated tier — they get a 1.15 recall boost and lead the SessionStart surface.
 
 The `recall_weight` term is use-driven reinforcement (LTP): the server bumps it on every successful `mneme_sql` query that signals intent (explicit UUID, `/recall` marker, or ≤10 rows returned) and decays it each nap cycle. Frequently-used memories drift up; unused ones fade. `ln()` keeps the contribution bounded.
 

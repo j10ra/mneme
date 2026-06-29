@@ -440,6 +440,18 @@ describe("chooseReinforcement", () => {
   });
 });
 
+// No DB gate: reads GUIDE_TEXT, a pure string constant. Importing mcp.ts creates the postgres pool lazily (no connection until first query), so this is side-effect-free w.r.t. the DB.
+describe("mneme_guide concept tier", () => {
+  test("guide recall template boosts kind='concept'", async () => {
+    const mod = await import("../src/services/mcp.ts");
+    // GUIDE_TEXT is the static string returned by the mneme_guide tool.
+    const text = (mod as { GUIDE_TEXT?: string }).GUIDE_TEXT ?? "";
+
+    expect(text).toContain("kind = 'concept'");
+    expect(text).toContain("1.15");
+  });
+});
+
 describe("stripInternalColumns", () => {
   test("removes raw embedding and tsv, keeps everything else", () => {
     const out = stripInternalColumns([

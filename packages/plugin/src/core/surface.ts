@@ -207,7 +207,7 @@ export function summariseSurfaceForUser(surface: string, injectedBytes: number):
 const KIND_LEGEND =
   "🔴 bugfix · 🟣 feature · ⚖️ decision · 🔵 discovery · 💬 preference · " +
   "🚧 constraint · 🚨 security_alert · 📎 reference · 🎯 summary · " +
-  "🧩 cluster · 🧠 claude_memory · 📝 note";
+  "🧩 cluster · 🧠 claude_memory · 📝 note · 📘 concept";
 
 /** LLM-side reminder prepended to the full surface. Tells the agent what's in
  *  the corpus, how to reach the rest, and what every glyph means. Falls back

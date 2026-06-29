@@ -63,6 +63,7 @@ ORDER BY
     0.10 * ln(1 + recall_weight)
   )
   * CASE WHEN meta->>'superseded_by' IS NOT NULL THEN 0.3 ELSE 1 END
+  * CASE WHEN kind = 'concept' THEN 1.15 ELSE 1 END
 DESC
 LIMIT 10;
 ```
@@ -73,9 +74,13 @@ LIMIT 10;
 - **5% importance** — small but always-on so [`workers/nap.md`](./workers/nap.md)'s decay actually shifts retrieval.
 - **10% `ln(1 + recall_weight)`** — use-driven reinforcement (LTP). The server bumps `recall_weight` on every successful `mneme_sql` query that signals intent; nap decays it each cycle. `ln()` bounds the contribution so a single hot memory can't dominate.
 
+**Multipliers:**
+- `× 0.3` for superseded rows (`meta.superseded_by IS NOT NULL`) — keeps historical context queryable below current truth.
+- `× 1.15` for concept rows (`kind = 'concept'`) — importance is only 5% of the raw score, so this light boost lets concepts surface reliably in broad queries without burying precise cosine or keyword hits.
+
 **Filters:**
 - Archived rows (`archived_at IS NOT NULL`) are filtered out — nap's auto-archive pass moves fully decayed orphans here.
-- Superseded rows are **not** filtered — they get a `× 0.3` rank-down penalty (hardcoded in the using-mneme skill's SQL template) so historical context stays queryable below current truth.
+- Superseded rows are **not** filtered — they get the `× 0.3` rank-down penalty so historical context stays queryable below current truth.
 
 **No `private` filter in the query** — the `mneme_reader` role's RLS makes private rows physically unreachable. The skill explicitly tells the agent not to add a `private` filter.
 

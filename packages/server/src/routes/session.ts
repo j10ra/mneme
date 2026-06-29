@@ -2,7 +2,7 @@
 //
 //   POST /api/session/start  → rendered surface markdown for a workspace
 //
-// Aggregates pinned + rules + themes + recent decisions + recent sessions
+// Aggregates about + concepts + pinned + rules + recent decisions + recent sessions
 // for a set of repos (workspace = N repos, single repo = length 1).
 // Cross-machine: filtered by repo, unioned across machine_id. Returns
 // rendered markdown the hook prints to stdout for SessionStart context

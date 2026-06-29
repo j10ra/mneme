@@ -245,7 +245,84 @@ export function parseClusterResponse(text: string): {
   return { title: p.title.trim(), summary: p.summary.trim() };
 }
 
-// Per-pipeline model selection. Extract is high-volume (every coalesced
+// ── Concept synthesis (crystallize worker) ───────────────────────────
+
+export type ConceptDraft = {
+  concept_id: string;
+  concept_type: string;
+  title: string;
+  body: string;
+  tags: string[];
+  related_to: string[];
+  source_member_ids: string[];
+};
+
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+export const CONCEPT_PROMPT = `You maintain a small, durable knowledge index for ONE code repository.
+You are given that repo's existing cluster summaries (or, if none, its top memories).
+Produce a SMALL set (at most 25) of concepts capturing what this repo IS and how it works.
+Exactly ONE concept must have concept_type "Overview" (what the repo is, its architecture, current state).
+Others use concept_type in: Subsystem, Decision, Convention, Runbook, Glossary.
+Return STRICT JSON: {"concepts":[{"concept_type":"...","title":"...","body":"...","tags":[],"related_to":[],"source_member_ids":[]}]}.
+- title: 3-8 words, factual. body: 2-6 sentences, present tense, no fluff.
+- related_to: titles of other concepts in THIS response it connects to.
+- source_member_ids: ids of the input items this concept distills.`;
+
+export function parseConceptResponse(raw: string, repo: string): ConceptDraft[] | null {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(extractJsonBlock(raw));
+  } catch {
+    return null;
+  }
+
+  const arr = (parsed as { concepts?: unknown }).concepts;
+
+  if (!Array.isArray(arr)) return null;
+
+  const out: ConceptDraft[] = [];
+
+  for (const c of arr as Record<string, unknown>[]) {
+    const type = String(c.concept_type ?? "");
+    const title = String(c.title ?? "");
+
+    if (!type || !title) continue;
+
+    out.push({
+      concept_id: `${repo}/${slugify(type)}/${slugify(title)}`,
+      concept_type: type,
+      title,
+      body: String(c.body ?? ""),
+      tags: Array.isArray(c.tags) ? (c.tags as string[]) : [],
+      related_to: Array.isArray(c.related_to) ? (c.related_to as string[]) : [],
+      source_member_ids: Array.isArray(c.source_member_ids)
+        ? (c.source_member_ids as string[])
+        : [],
+    });
+  }
+
+  return out;
+}
+
+export async function synthesizeConcepts(
+  repo: string,
+  items: { id: string; content: string }[],
+): Promise<ConceptDraft[]> {
+  const input = items.map((m) => `- (${m.id}) ${m.content}`).join("\n");
+  const raw = await callClaude(input, DREAM_MODEL, CONCEPT_PROMPT);
+
+  return parseConceptResponse(raw, repo) ?? [];
+}
+
+// ── Per-pipeline model selection ─────────────────────────────────────
+// Extract is high-volume (every coalesced
 // batch of captures, many per session) so Haiku is the right fit:
 // fast, cheap, plenty smart for "summarize this conversation into atomic
 // observations." Dream is low-volume but high-impact (cluster summaries

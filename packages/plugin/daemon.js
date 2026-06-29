@@ -938,6 +938,52 @@ function parseClusterResponse(text) {
     return null;
   return { title: p.title.trim(), summary: p.summary.trim() };
 }
+function slugify(s) {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+var CONCEPT_PROMPT = `You maintain a small, durable knowledge index for ONE code repository.
+You are given that repo's existing cluster summaries (or, if none, its top memories).
+Produce a SMALL set (at most 25) of concepts capturing what this repo IS and how it works.
+Exactly ONE concept must have concept_type "Overview" (what the repo is, its architecture, current state).
+Others use concept_type in: Subsystem, Decision, Convention, Runbook, Glossary.
+Return STRICT JSON: {"concepts":[{"concept_type":"...","title":"...","body":"...","tags":[],"related_to":[],"source_member_ids":[]}]}.
+- title: 3-8 words, factual. body: 2-6 sentences, present tense, no fluff.
+- related_to: titles of other concepts in THIS response it connects to.
+- source_member_ids: ids of the input items this concept distills.`;
+function parseConceptResponse(raw, repo) {
+  let parsed;
+  try {
+    parsed = JSON.parse(extractJsonBlock(raw));
+  } catch {
+    return null;
+  }
+  const arr = parsed.concepts;
+  if (!Array.isArray(arr))
+    return null;
+  const out = [];
+  for (const c of arr) {
+    const type = String(c.concept_type ?? "");
+    const title = String(c.title ?? "");
+    if (!type || !title)
+      continue;
+    out.push({
+      concept_id: `${repo}/${slugify(type)}/${slugify(title)}`,
+      concept_type: type,
+      title,
+      body: String(c.body ?? ""),
+      tags: Array.isArray(c.tags) ? c.tags : [],
+      related_to: Array.isArray(c.related_to) ? c.related_to : [],
+      source_member_ids: Array.isArray(c.source_member_ids) ? c.source_member_ids : []
+    });
+  }
+  return out;
+}
+async function synthesizeConcepts(repo, items) {
+  const input = items.map((m) => `- (${m.id}) ${m.content}`).join(`
+`);
+  const raw = await callClaude(input, DREAM_MODEL, CONCEPT_PROMPT);
+  return parseConceptResponse(raw, repo) ?? [];
+}
 var EXTRACT_MODEL = "haiku";
 var DREAM_MODEL = "sonnet";
 function callClaude(prompt, model, systemPrompt) {
@@ -1291,6 +1337,8 @@ var SCHEDULER_TICK_MS = 60000;
 var DREAM_WINDOW_HOURS = 8;
 var DREAM_MIN_CLUSTER_SIZE = 3;
 var DREAM_MAX_CLUSTER_SIZE = 20;
+var CRYSTALLIZE_WINDOW_HOURS = 24;
+var CRYSTALLIZE_MAX_CONCEPTS_PER_REPO = 25;
 
 // packages/daemon/src/dream.ts
 var WINDOW_SECONDS = DREAM_WINDOW_HOURS * 3600;
@@ -1731,6 +1779,267 @@ async function resumeDreamCycles(deps) {
     }
   }
   return { resumed: resumedClusters, written: writtenClusters };
+}
+
+// packages/daemon/src/crystallize.ts
+var WINDOW_SECONDS2 = CRYSTALLIZE_WINDOW_HOURS * 3600;
+var activeWindow2 = null;
+function getActiveCrystallizeWindow() {
+  return activeWindow2;
+}
+function computeWindowKey2(date = new Date) {
+  return Math.floor(date.getTime() / 1000 / WINDOW_SECONDS2);
+}
+async function lockWindow2(deps, windowKey) {
+  const response = await deps.fetch(`${deps.serverUrl}/api/crystallize/lock`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${deps.token}`
+    },
+    body: JSON.stringify({ window_key: windowKey })
+  });
+  if (response.status === 200)
+    return { acquired: true };
+  if (response.status === 409) {
+    const body = await response.json().catch(() => ({}));
+    return { acquired: false, heldBy: body.heldBy };
+  }
+  const detail = await response.text().catch(() => "");
+  throw new Error(`lock returned ${response.status}: ${detail.slice(0, 500)}`);
+}
+async function fetchRepos(deps) {
+  const response = await deps.fetch(`${deps.serverUrl}/api/crystallize/repos`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${deps.token}` }
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`repos returned ${response.status}: ${detail.slice(0, 500)}`);
+  }
+  return (await response.json()).repos;
+}
+async function fetchCandidates2(deps, repo) {
+  const url = `${deps.serverUrl}/api/crystallize/candidates?repo=${encodeURIComponent(repo)}`;
+  const response = await deps.fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${deps.token}` }
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`candidates returned ${response.status}: ${detail.slice(0, 500)}`);
+  }
+  return (await response.json()).items ?? [];
+}
+async function submitConcepts(deps, windowKey, concepts) {
+  const response = await deps.fetch(`${deps.serverUrl}/api/crystallize/concepts`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${deps.token}`
+    },
+    body: JSON.stringify({ window_key: windowKey, concepts })
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`concepts returned ${response.status}: ${detail.slice(0, 500)}`);
+  }
+  return await response.json();
+}
+async function runCrystallizeCycle(deps) {
+  const cycleStart = Date.now();
+  const windowKey = deps.windowKey ?? computeWindowKey2();
+  Logger.info("crystallize: cycle start", { window_key: windowKey });
+  Logger.info("crystallize: attempting lock", { window_key: windowKey });
+  const lock = await lockWindow2(deps, windowKey);
+  if (!lock.acquired) {
+    Logger.info("crystallize: skipped (lock held)", {
+      window_key: windowKey,
+      held_by: lock.heldBy ?? "unknown"
+    });
+    return { skipped: true, reason: `held by ${lock.heldBy ?? "unknown"}` };
+  }
+  Logger.info("crystallize: lock acquired", { window_key: windowKey });
+  activeWindow2 = windowKey;
+  const repos = await fetchRepos(deps);
+  Logger.info("crystallize: repos discovered", { count: repos.length });
+  const allEntries = [];
+  for (const repo of repos) {
+    const items = await fetchCandidates2(deps, repo);
+    if (items.length === 0) {
+      Logger.info("crystallize: no candidates for repo", { repo });
+      continue;
+    }
+    Logger.info("crystallize: synthesizing concepts", { repo, items: items.length });
+    const tSynth = Date.now();
+    try {
+      const drafts = await deps.synthesize(repo, items);
+      const capped = drafts.slice(0, CRYSTALLIZE_MAX_CONCEPTS_PER_REPO);
+      Logger.info("crystallize: synthesized", {
+        repo,
+        concepts: capped.length,
+        dropped: drafts.length - capped.length,
+        ms: Date.now() - tSynth
+      });
+      const titleToId = new Map;
+      for (const d of capped)
+        titleToId.set(d.title, d.concept_id);
+      for (const d of capped) {
+        const resolvedRelatedTo = d.related_to.map((title) => titleToId.get(title)).filter((id) => id !== undefined);
+        const entry = {
+          ...d,
+          cluster_id: d.concept_id,
+          repo,
+          related_to: resolvedRelatedTo
+        };
+        if (deps.outbox) {
+          await deps.outbox.put(windowKey, "distilled", entry);
+        }
+        allEntries.push(entry);
+      }
+    } catch (err) {
+      Logger.warn("crystallize: synthesize failed for repo", err, { repo });
+    }
+  }
+  for (const entry of allEntries) {
+    if (entry.body_embedding)
+      continue;
+    if (!deps.embed)
+      continue;
+    try {
+      const [vec] = await deps.embed([entry.body]);
+      if (vec)
+        entry.body_embedding = vec;
+    } catch (err) {
+      Logger.warn("crystallize: embed failed", err, { concept_id: entry.concept_id });
+      continue;
+    }
+    if (deps.outbox) {
+      await deps.outbox.transition(windowKey, "distilled", "embedded", entry);
+    }
+  }
+  const submissions = allEntries.filter((e) => e.body_embedding && e.body_embedding.length > 0).map((e) => ({
+    concept_id: e.concept_id,
+    concept_type: e.concept_type,
+    title: e.title,
+    body: e.body,
+    tags: e.tags,
+    related_to: e.related_to,
+    source_member_ids: e.source_member_ids,
+    repo: e.repo,
+    embedding_model: EMBEDDER_MODEL,
+    body_embedding: e.body_embedding ?? []
+  }));
+  Logger.info("crystallize: submitting concepts", { count: submissions.length });
+  const result = await submitConcepts(deps, windowKey, submissions);
+  Logger.info("crystallize: concepts written", {
+    submitted: submissions.length,
+    written: result.written,
+    updated: result.updated
+  });
+  if (deps.outbox) {
+    for (const entry of allEntries) {
+      if (entry.body_embedding) {
+        await deps.outbox.delete(windowKey, "embedded", entry.concept_id);
+      }
+    }
+    await deps.outbox.cleanupWindow(windowKey);
+  }
+  Logger.info("crystallize: cycle done", {
+    window_key: windowKey,
+    submitted: submissions.length,
+    written: result.written,
+    total_ms: Date.now() - cycleStart
+  });
+  activeWindow2 = null;
+  return {
+    skipped: false,
+    conceptsSubmitted: submissions.length,
+    conceptsWritten: result.written
+  };
+}
+async function resumeCrystallizeCycles(deps) {
+  if (!deps.outbox)
+    return { resumed: 0, written: 0 };
+  const windows = await deps.outbox.listWindows();
+  let resumedConcepts = 0;
+  let writtenConcepts = 0;
+  for (const windowKey of windows) {
+    const distilledIds = await deps.outbox.list(windowKey, "distilled");
+    const embeddedIds = await deps.outbox.list(windowKey, "embedded");
+    const totalQueued = distilledIds.length + embeddedIds.length;
+    if (totalQueued === 0) {
+      await deps.outbox.cleanupWindow(windowKey);
+      continue;
+    }
+    Logger.info("crystallize: resuming window", {
+      window_key: windowKey,
+      distilled: distilledIds.length,
+      embedded: embeddedIds.length
+    });
+    for (const id of distilledIds) {
+      const entry = await deps.outbox.read(windowKey, "distilled", id);
+      if (!entry.body_embedding && deps.embed) {
+        try {
+          const [vec] = await deps.embed([entry.body]);
+          if (vec)
+            entry.body_embedding = vec;
+        } catch (err) {
+          Logger.warn("crystallize: resume embed failed", err, { concept_id: id });
+        }
+      }
+      await deps.outbox.transition(windowKey, "distilled", "embedded", entry);
+    }
+    const allIds = await deps.outbox.list(windowKey, "embedded");
+    const entries = [];
+    for (const id of allIds) {
+      entries.push(await deps.outbox.read(windowKey, "embedded", id));
+    }
+    const submissions = entries.filter((e) => e.body_embedding && e.body_embedding.length > 0).map((e) => ({
+      concept_id: e.concept_id,
+      concept_type: e.concept_type,
+      title: e.title,
+      body: e.body,
+      tags: e.tags,
+      related_to: e.related_to,
+      source_member_ids: e.source_member_ids,
+      repo: e.repo,
+      embedding_model: EMBEDDER_MODEL,
+      body_embedding: e.body_embedding ?? []
+    }));
+    try {
+      const result = await submitConcepts(deps, windowKey, submissions);
+      Logger.info("crystallize: resume submitted", {
+        window_key: windowKey,
+        submitted: submissions.length,
+        written: result.written
+      });
+      resumedConcepts += submissions.length;
+      writtenConcepts += result.written;
+      for (const id of allIds) {
+        await deps.outbox.delete(windowKey, "embedded", id);
+      }
+      await deps.outbox.cleanupWindow(windowKey);
+    } catch (err) {
+      Logger.warn("crystallize: resume submit failed, files retained", err, {
+        window_key: windowKey
+      });
+    }
+  }
+  return { resumed: resumedConcepts, written: writtenConcepts };
+}
+function mountCrystallizeRoute(app, runCrystallize) {
+  app.post("/crystallize/run", mnemeRoute("daemon.crystallize_run"), async (c) => {
+    try {
+      const result = await runCrystallize();
+      Logger.info("crystallize cycle (manual)", result);
+      return c.json(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      Logger.error("crystallize cycle (manual) failed", err);
+      return c.json({ error: msg }, 500);
+    }
+  });
 }
 
 // packages/daemon/src/outbox.ts
@@ -3313,6 +3622,7 @@ var EXTRACT_BATCH_FULL = 50;
 var EXTRACT_IDLE_MS = 2 * 60000;
 var EXTRACT_FORCE_MS = 5 * 60000;
 var DREAM_SCHEDULE_MS = 8 * 3600000;
+var CRYSTALLIZE_SCHEDULE_MS = 24 * 3600000;
 var HEARTBEAT_SCHEDULE_MS = 60000;
 var EMBEDDER_REAP_SCHEDULE_MS = 60000;
 async function readConfig() {
@@ -3370,6 +3680,7 @@ async function startDaemon() {
   const dreamOutboxRoot = join7(homedir5(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
+  const crystallizeOutbox = createDreamOutbox(join7(homedir5(), ".mneme", "outbox", "crystallize"));
   const agent = pickAgent(config.agent_provider);
   configureTraceStore(new TraceForwarder({
     serverUrl: config.server_url,
@@ -3436,11 +3747,37 @@ async function startDaemon() {
   } catch (err) {
     Logger.error("daemon: dream resume crashed", err);
   }
+  try {
+    const crystallizeResumed = await resumeCrystallizeCycles({
+      serverUrl: config.server_url,
+      token: config.token,
+      machineId: config.machine_id,
+      fetch: (u, init) => fetch(u, init),
+      embed: embedBatch,
+      outbox: crystallizeOutbox
+    });
+    if (crystallizeResumed.resumed > 0) {
+      Logger.info("daemon: crystallize resume complete", crystallizeResumed);
+    }
+  } catch (err) {
+    Logger.error("daemon: crystallize resume crashed", err);
+  }
+  const crystallizeDeps = {
+    serverUrl: config.server_url,
+    token: config.token,
+    machineId: config.machine_id,
+    fetch: (u, init) => fetch(u, init),
+    synthesize: synthesizeConcepts,
+    embed: embedBatch,
+    outbox: crystallizeOutbox
+  };
+  const runCrystallize = () => runCrystallizeCycle(crystallizeDeps);
   const app = new Hono;
   mountOpsRoutes(app, runtime);
   mountCaptureRoute(app, runtime);
   mountEmbedRoute(app);
   mountDreamRoute(app, runDream);
+  mountCrystallizeRoute(app, runCrystallize);
   mountDashboardRoutes(app, forceDream);
   Bun.serve({
     port: config.daemon_port,
@@ -3522,6 +3859,13 @@ async function startDaemon() {
     })
   });
   register({
+    name: "crystallize",
+    scheduleMs: CRYSTALLIZE_SCHEDULE_MS,
+    run: () => withRootTrace("daemon.crystallize", "daemon", runCrystallize).then(() => {
+      return;
+    })
+  });
+  register({
     name: "heartbeat",
     scheduleMs: HEARTBEAT_SCHEDULE_MS,
     run: () => withRootTrace("daemon.heartbeat", "daemon", postHeartbeat)
@@ -3555,6 +3899,26 @@ async function startDaemon() {
           Logger.warn(`dream lock release returned ${resp.status}`, { window_key: window });
       } catch (err) {
         Logger.warn("dream lock release on shutdown failed", err);
+      }
+    }
+    const cwin = getActiveCrystallizeWindow();
+    if (cwin !== null) {
+      try {
+        const resp = await fetch(`${config.server_url}/api/crystallize/lock/release`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.token}`
+          },
+          body: JSON.stringify({ window_key: cwin }),
+          signal: AbortSignal.timeout(2000)
+        });
+        if (resp.ok)
+          Logger.info("daemon: released crystallize lock", { window_key: cwin });
+        else
+          Logger.warn(`crystallize lock release returned ${resp.status}`, { window_key: cwin });
+      } catch (err) {
+        Logger.warn("crystallize lock release on shutdown failed", err);
       }
     }
     try {

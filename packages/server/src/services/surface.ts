@@ -11,6 +11,7 @@ type SurfaceItem = {
   machine_id: string;
   created_at: Date;
   cluster_title?: string | null;
+  meta?: Record<string, unknown> | null;
 };
 
 export type SurfaceSection = {
@@ -20,9 +21,10 @@ export type SurfaceSection = {
 
 export type Surface = {
   repos: string[];
+  about: SurfaceSection;
+  concepts: SurfaceSection;
   pinned: SurfaceSection;
   rules: SurfaceSection;
-  themes: SurfaceSection;
   decisions: SurfaceSection;
   sessions: SurfaceSection;
   supersededCount: number;
@@ -33,9 +35,10 @@ export type Surface = {
 const EMPTY_SECTION: SurfaceSection = { items: [], total: 0 };
 const EMPTY_SURFACE: Surface = {
   repos: [],
+  about: EMPTY_SECTION,
+  concepts: EMPTY_SECTION,
   pinned: EMPTY_SECTION,
   rules: EMPTY_SECTION,
-  themes: EMPTY_SECTION,
   decisions: EMPTY_SECTION,
   sessions: EMPTY_SECTION,
   supersededCount: 0,
@@ -105,26 +108,44 @@ export const buildSurface = mnemeFn(
       LIMIT 3
     `;
 
-    // Themes = LLM-distilled cluster summaries (dream worker output).
-    // The most condensed signal Mneme produces — surface them above the
-    // raw recent stream so the agent gets the synthesis before the noise.
-    const themesQ = sql<Row[]>`
+    // About: the repo's Overview concept — single curated entry point for
+    // the agent to understand what this repo is. Cap 1.
+    const aboutQ = sql<Row[]>`
       SELECT id, kind, importance, content, repo, machine_id, created_at,
-             meta->>'cluster_title' AS cluster_title,
+             meta,
              COUNT(*) OVER () AS total_count
       FROM memories
       WHERE archived_at IS NULL
-        AND kind = 'cluster'
+        AND kind = 'concept'
+        AND meta->>'concept_type' = 'Overview'
         AND repo = ANY(${repos})
         AND (meta->>'superseded_by') IS NULL
         AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY (importance + ${RECALL_RANKING_COEF}::real * ln(1 + recall_weight)) DESC,
                created_at DESC
-      LIMIT 3
+      LIMIT 1
     `;
 
-    // Capped to keep total surface ≤ 20 items after Themes joins the
-    // budget.
+    // Concepts: top non-Overview concepts for the repo. Excludes the
+    // Overview already shown in About. Cap 5.
+    const conceptsQ = sql<Row[]>`
+      SELECT id, kind, importance, content, repo, machine_id, created_at,
+             meta,
+             COUNT(*) OVER () AS total_count
+      FROM memories
+      WHERE archived_at IS NULL
+        AND kind = 'concept'
+        AND COALESCE(meta->>'concept_type', '') <> 'Overview'
+        AND repo = ANY(${repos})
+        AND (meta->>'superseded_by') IS NULL
+        AND (private = false OR machine_id = ${callerMachineId})
+      ORDER BY (importance + ${RECALL_RANKING_COEF}::real * ln(1 + recall_weight)) DESC,
+               created_at DESC
+      LIMIT 5
+    `;
+
+    // Capped at 4 to keep the total surface ~21 items (About 1 + Concepts 5 +
+    // Pinned 5 + Rules 3 + Recent 4 + Sessions 3) within budget.
     const decisionsQ = sql<Row[]>`
       SELECT id, kind, importance, content, repo, machine_id, created_at,
              COUNT(*) OVER () AS total_count
@@ -138,7 +159,7 @@ export const buildSurface = mnemeFn(
         AND (private = false OR machine_id = ${callerMachineId})
       ORDER BY (importance + ${RECALL_RANKING_COEF}::real * ln(1 + recall_weight)) DESC,
                created_at DESC
-      LIMIT 6
+      LIMIT 4
     `;
 
     const sessionsQ = sql<Row[]>`
@@ -162,18 +183,13 @@ export const buildSurface = mnemeFn(
         AND (private = false OR machine_id = ${callerMachineId})
     `;
 
-    const [pinnedR, rulesR, themesR, decisionsR, sessionsR, supersededR] = await Promise.all([
-      pinnedQ,
-      rulesQ,
-      themesQ,
-      decisionsQ,
-      sessionsQ,
-      supersededQ,
-    ]);
+    const [aboutR, conceptsR, pinnedR, rulesR, decisionsR, sessionsR, supersededR] =
+      await Promise.all([aboutQ, conceptsQ, pinnedQ, rulesQ, decisionsQ, sessionsQ, supersededQ]);
 
+    const about = toSection(aboutR);
+    const concepts = toSection(conceptsR);
     const pinned = toSection(pinnedR);
     const rules = toSection(rulesR);
-    const themes = toSection(themesR);
     const decisions = toSection(decisionsR);
     const sessions = toSection(sessionsR);
     const supersededCount = Number(supersededR[0]?.n ?? 0);
@@ -183,9 +199,10 @@ export const buildSurface = mnemeFn(
     const machineIds = [
       ...new Set(
         [
+          ...about.items,
+          ...concepts.items,
           ...pinned.items,
           ...rules.items,
-          ...themes.items,
           ...decisions.items,
           ...sessions.items,
         ].map((i) => i.machine_id),
@@ -197,9 +214,10 @@ export const buildSurface = mnemeFn(
     const rendered = renderSurface(
       {
         repos,
+        about,
+        concepts,
         pinned,
         rules,
-        themes,
         decisions,
         sessions,
         supersededCount,
@@ -210,9 +228,10 @@ export const buildSurface = mnemeFn(
 
     return {
       repos,
+      about,
+      concepts,
       pinned,
       rules,
-      themes,
       decisions,
       sessions,
       supersededCount,
@@ -310,6 +329,7 @@ const KIND_GLYPH: Record<string, string> = {
   cluster: "🧩",
   claude_memory: "🧠",
   note: "📝",
+  concept: "📘",
 };
 const glyph = (kind: string | null): string => (kind && KIND_GLYPH[kind]) || "•";
 
@@ -346,9 +366,10 @@ type RenderInput = Omit<Surface, "rendered">;
 
 function renderSurface(s: RenderInput, names: Map<string, string>): string {
   const allItems = [
+    ...s.about.items,
+    ...s.concepts.items,
     ...s.pinned.items,
     ...s.rules.items,
-    ...s.themes.items,
     ...s.decisions.items,
     ...s.sessions.items,
   ];
@@ -400,6 +421,26 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
 
   const sectionsBefore = lines.length;
 
+  if (s.about.items.length > 0) {
+    lines.push("");
+    lines.push(sectionHeader("About", s.about));
+
+    for (const i of s.about.items) {
+      lines.push(`- [${i.id}] ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`);
+    }
+  }
+
+  if (s.concepts.items.length > 0) {
+    lines.push("");
+    lines.push(sectionHeader("Concepts", s.concepts));
+
+    for (const i of s.concepts.items) {
+      const title = i.meta?.title ? `**${collapse(String(i.meta.title))}** — ` : "";
+
+      lines.push(`- [${i.id}] ${glyph(i.kind)} ${title}${collapse(i.content)}${tag(i)}`);
+    }
+  }
+
   if (s.pinned.items.length > 0) {
     lines.push("");
     lines.push(sectionHeader("Pinned", s.pinned));
@@ -417,17 +458,6 @@ function renderSurface(s: RenderInput, names: Map<string, string>): string {
 
     for (const i of s.rules.items) {
       lines.push(`- [${i.id}] ${glyph(i.kind)} ${collapse(i.content)}${tag(i)}`);
-    }
-  }
-
-  if (s.themes.items.length > 0) {
-    lines.push("");
-    lines.push(sectionHeader("Themes", s.themes));
-
-    for (const i of s.themes.items) {
-      const title = i.cluster_title ? `**${collapse(i.cluster_title)}** — ` : "";
-
-      lines.push(`- [${i.id}] ${glyph(i.kind)} ${title}${collapse(i.content)}${tag(i)}`);
     }
   }
 
