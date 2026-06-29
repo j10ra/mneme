@@ -73,12 +73,12 @@ erDiagram
 | Nap pagination | `meta.last_napped_at: timestamptz` |
 | Dream pagination | `meta.last_dreamed_at: timestamptz` (watermark for round-robin seed selection) |
 | Digest pagination | `meta.last_digested_at: timestamptz` (watermark for Op1 cluster window + Op2 candidates) |
-| Concept stable id | `meta.concept_id: "kebab-slug"` — stable upsert key; `(repo, meta.concept_id)` is unique |
+| Concept stable id | `meta.concept_id: "kebab-slug"` — stable upsert key; `(repo, meta.concept_id)` is unique by convention, enforced in `writeConcepts` (not a DB constraint — a partial unique index is a follow-up for the future curation write path) |
 | Concept type | `meta.concept_type: "Overview \| Component \| Workflow \| Decision \| Constraint \| ..."` |
 | Concept display title | `meta.title: "..."` — short phrase shown in the surface **Concepts** section |
-| Concept cross-links | `meta.related_to: ["<uuid>", ...]` — reused field; on concepts these resolve to sibling concept ids |
+| Concept cross-links | `meta.related_to: ["<slug>", ...]` — reused field; for `kind='concept'` rows, entries are concept_id slugs (e.g. `github.com/j10ra/mneme/overview/capture-pipeline`), not UUIDs |
 | Concept source members | `meta.source_member_ids: ["<uuid>", ...]` — cluster or memory ids used to generate this concept |
-| Concept edit history | `meta.history: [{ body, refreshed_at }, ...]` — capped at 10 entries; oldest evicted on overflow |
+| Concept edit history | `meta.history: [{ content, at }, ...]` — capped at 10 entries; oldest evicted on overflow |
 | Concept curation guard | `meta.confirmed: true` — set by user/operator; blocks body overwrite by crystallize cycles |
 | Concept refresh timestamp | `meta.refreshed_at: timestamptz` — last crystallize write, even when body is confirmed-locked |
 

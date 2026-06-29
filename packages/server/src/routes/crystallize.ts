@@ -158,6 +158,19 @@ export async function writeConcepts(
   return { written, updated };
 }
 
+export async function listCrystallizeRepos(machineId: string): Promise<string[]> {
+  const rows = await sql<{ repo: string }[]>`
+    SELECT DISTINCT repo FROM memories
+    WHERE archived_at IS NULL
+      AND kind <> 'concept'
+      AND (meta->>'superseded_by') IS NULL
+      AND (private = false OR machine_id = ${machineId})
+      AND repo IS NOT NULL AND repo <> ''
+    ORDER BY repo`;
+
+  return rows.map((r) => r.repo);
+}
+
 export function mountCrystallizeRoutes(app: Hono): void {
   app.post(
     "/api/crystallize/lock",
@@ -199,16 +212,9 @@ export function mountCrystallizeRoutes(app: Hono): void {
       const auth = currentAuth();
 
       if (!auth?.machineId) return c.json({ error: "repos requires per-machine token" }, 400);
-      const machineId = auth.machineId;
-      const rows = await sql<{ repo: string }[]>`
-        SELECT DISTINCT repo FROM memories
-        WHERE kind = 'cluster' AND archived_at IS NULL
-          AND (meta->>'superseded_by') IS NULL
-          AND (private = false OR machine_id = ${machineId})
-          AND repo IS NOT NULL AND repo <> ''
-        ORDER BY repo`;
+      const repos = await listCrystallizeRepos(auth.machineId);
 
-      return c.json({ repos: rows.map((r) => r.repo) });
+      return c.json({ repos });
     },
   );
 

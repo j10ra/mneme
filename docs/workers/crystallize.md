@@ -84,11 +84,11 @@ Concepts are the **one exception to Mneme's append-only rule**. The server does 
 
 - `content` (the body) is updated in place.
 - `meta.title`, `meta.concept_type`, `meta.related_to`, `meta.source_member_ids`, `meta.refreshed_at` are updated.
-- `meta.history[]` receives a new entry `{ body, refreshed_at }` (capped at 10 entries — oldest evicted first). Full version history survives rollback if a concept regresses.
+- `meta.history[]` receives a new entry `{ content, at }` (capped at 10 entries — oldest evicted first). Full version history survives rollback if a concept regresses.
 - **`meta.confirmed` is a write guard.** If a user or operator has set `meta.confirmed = true` on a concept, the server refuses to overwrite the `content` field (the body). The crystallize cycle may still update `refreshed_at` and `meta.source_member_ids` so staleness metadata stays accurate, but the curated body is protected.
 - `importance` is fixed at **0.85** — above normal cluster importance (0.8) so concepts outrank clusters in recall, below pinned/constraint highs so user curation remains the top signal.
 
-**Cap per repo: 25 concepts.** The server enforces this at write time. If a crystallize cycle returns more, the payload is truncated by importance (descending) before upsert. Existing concepts beyond the cap are not deleted — they persist until nap's decay eventually drops their importance below the recall threshold.
+**Cap per repo: 25 concepts.** The cap is applied daemon-side via `drafts.slice(0, CRYSTALLIZE_MAX_CONCEPTS_PER_REPO)` in LLM-emit order before submission; the server does not cap or re-sort by importance. Existing concepts beyond the cap are not deleted — they persist until nap's decay eventually drops their importance below the recall threshold.
 
 ---
 
@@ -100,7 +100,7 @@ Concepts are the **one exception to Mneme's append-only rule**. The server does 
 | Concept identity across cycles | `(repo, meta.concept_id)` ON CONFLICT upsert — same slug → same row |
 | Body curation protection | `meta.confirmed = true` blocks content overwrite |
 | Audit trail | `meta.history[]` (cap 10) tracks body evolution |
-| Provenance | `meta.crystallizer_provider`, `meta.crystallizer_model` on each row |
+| Provenance | `meta.distiller_provider = "anthropic"`, `meta.distiller_model = "claude-sonnet"` on each row (`"claude-sonnet"` is a fixed label, not the resolved model id) |
 
 ---
 
