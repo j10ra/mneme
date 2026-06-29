@@ -20,7 +20,15 @@ import { basename, dirname, join } from "node:path";
 import { Logger, configureLogger, configureTraceStore, getTraceStore, mnemeFn } from "@mneme/core";
 import { Hono } from "hono";
 import { pickAgent } from "./agents/index.ts";
+import { synthesizeConcepts } from "./agents/claude.ts";
 import { type DreamDeps, getActiveDreamWindow, resumeDreamCycles, runDreamCycle } from "./dream.ts";
+import {
+  type CrystallizeDeps,
+  getActiveCrystallizeWindow,
+  mountCrystallizeRoute,
+  resumeCrystallizeCycles,
+  runCrystallizeCycle,
+} from "./crystallize.ts";
 import { createDreamOutbox } from "./dream-outbox.ts";
 import { disposeIfIdle, embedBatch } from "./embed.ts";
 import { createOutbox } from "./outbox.ts";
@@ -62,6 +70,7 @@ const EXTRACT_IDLE_MS = 2 * 60_000;
 const EXTRACT_FORCE_MS = 5 * 60_000;
 
 const DREAM_SCHEDULE_MS = 8 * 3600_000;
+const CRYSTALLIZE_SCHEDULE_MS = 24 * 3600_000;
 const HEARTBEAT_SCHEDULE_MS = 60_000;
 const EMBEDDER_REAP_SCHEDULE_MS = 60_000;
 
@@ -139,6 +148,7 @@ export async function startDaemon(): Promise<void> {
   const dreamOutboxRoot = join(homedir(), ".mneme", "outbox", "dream");
   const outbox = createOutbox(captureOutboxRoot);
   const dreamOutbox = createDreamOutbox(dreamOutboxRoot);
+  const crystallizeOutbox = createDreamOutbox(join(homedir(), ".mneme", "outbox", "crystallize"));
   const agent = pickAgent(config.agent_provider);
 
   // Wire span forwarding to the server's /api/ingest/spans before any
@@ -244,12 +254,41 @@ export async function startDaemon(): Promise<void> {
     Logger.error("daemon: dream resume crashed", err);
   }
 
+  try {
+    const crystallizeResumed = await resumeCrystallizeCycles({
+      serverUrl: config.server_url,
+      token: config.token,
+      machineId: config.machine_id,
+      fetch: (u, init) => fetch(u, init),
+      embed: embedBatch,
+      outbox: crystallizeOutbox,
+    });
+
+    if (crystallizeResumed.resumed > 0) {
+      Logger.info("daemon: crystallize resume complete", crystallizeResumed);
+    }
+  } catch (err) {
+    Logger.error("daemon: crystallize resume crashed", err);
+  }
+
+  const crystallizeDeps: CrystallizeDeps = {
+    serverUrl: config.server_url,
+    token: config.token,
+    machineId: config.machine_id,
+    fetch: (u, init) => fetch(u, init),
+    synthesize: synthesizeConcepts,
+    embed: embedBatch,
+    outbox: crystallizeOutbox,
+  };
+  const runCrystallize = () => runCrystallizeCycle(crystallizeDeps);
+
   const app = new Hono();
 
   mountOpsRoutes(app, runtime);
   mountCaptureRoute(app, runtime);
   mountEmbedRoute(app);
   mountDreamRoute(app, runDream);
+  mountCrystallizeRoute(app, runCrystallize);
   mountDashboardRoutes(app, forceDream);
 
   Bun.serve({
@@ -371,6 +410,11 @@ export async function startDaemon(): Promise<void> {
     run: () => withRootTrace("daemon.dream", "daemon", runDream).then(() => undefined),
   });
   register({
+    name: "crystallize",
+    scheduleMs: CRYSTALLIZE_SCHEDULE_MS,
+    run: () => withRootTrace("daemon.crystallize", "daemon", runCrystallize).then(() => undefined),
+  });
+  register({
     name: "heartbeat",
     scheduleMs: HEARTBEAT_SCHEDULE_MS,
     run: () => withRootTrace("daemon.heartbeat", "daemon", postHeartbeat),
@@ -416,6 +460,27 @@ export async function startDaemon(): Promise<void> {
         else Logger.warn(`dream lock release returned ${resp.status}`, { window_key: window });
       } catch (err) {
         Logger.warn("dream lock release on shutdown failed", err);
+      }
+    }
+
+    const cwin = getActiveCrystallizeWindow();
+
+    if (cwin !== null) {
+      try {
+        const resp = await fetch(`${config.server_url}/api/crystallize/lock/release`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.token}`,
+          },
+          body: JSON.stringify({ window_key: cwin }),
+          signal: AbortSignal.timeout(2000),
+        });
+
+        if (resp.ok) Logger.info("daemon: released crystallize lock", { window_key: cwin });
+        else Logger.warn(`crystallize lock release returned ${resp.status}`, { window_key: cwin });
+      } catch (err) {
+        Logger.warn("crystallize lock release on shutdown failed", err);
       }
     }
 

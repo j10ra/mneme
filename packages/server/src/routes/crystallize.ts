@@ -192,6 +192,27 @@ export function mountCrystallizeRoutes(app: Hono): void {
   );
 
   app.get(
+    "/api/crystallize/repos",
+    mnemeRoute("api.crystallize.repos"),
+    requireAuth("capture"),
+    async (c) => {
+      const auth = currentAuth();
+
+      if (!auth?.machineId) return c.json({ error: "repos requires per-machine token" }, 400);
+      const machineId = auth.machineId;
+      const rows = await sql<{ repo: string }[]>`
+        SELECT DISTINCT repo FROM memories
+        WHERE kind = 'cluster' AND archived_at IS NULL
+          AND (meta->>'superseded_by') IS NULL
+          AND (private = false OR machine_id = ${machineId})
+          AND repo IS NOT NULL AND repo <> ''
+        ORDER BY repo`;
+
+      return c.json({ repos: rows.map((r) => r.repo) });
+    },
+  );
+
+  app.get(
     "/api/crystallize/candidates",
     mnemeRoute("api.crystallize.candidates"),
     requireAuth("capture"),
