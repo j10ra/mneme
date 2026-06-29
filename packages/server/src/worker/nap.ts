@@ -1,5 +1,6 @@
 import { Logger, mnemeFn } from "@mneme/core";
 import {
+  CRYSTALLIZE_STALE_LOCK_AGE_MS,
   DREAM_STALE_LOCK_AGE_MS,
   NAP_ARCHIVE_IMPORTANCE_MAX,
   NAP_ARCHIVE_MIN_AGE_DAYS,
@@ -18,6 +19,7 @@ import {
   SUPERSEDE_RULE_PER_CYCLE_CAP,
 } from "../infra/config.ts";
 import { sql } from "../infra/db.ts";
+import { clearStaleCrystallizeLocks } from "../routes/crystallize.ts";
 import { clearStaleDreamLocks } from "../routes/dream.ts";
 
 const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
@@ -60,6 +62,7 @@ export type NapResult = {
   related: number;
   superseded: number;
   dream_locks_reaped: number;
+  crystallize_locks_reaped: number;
 };
 
 const NAP_DECAY_BATCH = 5000;
@@ -349,7 +352,24 @@ export async function napReapStaleDreamLocks(): Promise<{
   return { reaped: cleared, window_keys };
 }
 
-/** Run one nap cycle as seven independent phases. No phase holds locks
+/** Phase 8: window-agnostic stale crystallize-lock reap. Mirrors Phase 7
+ *  for _ops.crystallize_runs: the opportunistic reap inside
+ *  acquireCrystallizeLock only fires when a new acquire targets the same
+ *  window_key (24h slot), which a crashed daemon will never contend again.
+ *  This sweep deletes any claim with completed_at IS NULL older than
+ *  CRYSTALLIZE_STALE_LOCK_AGE_MS, every nap cycle, regardless of window. */
+export async function napReapStaleCrystallizeLocks(): Promise<{
+  reaped: number;
+  window_keys: number[];
+}> {
+  const { cleared, window_keys } = await clearStaleCrystallizeLocks(
+    CRYSTALLIZE_STALE_LOCK_AGE_MS / 1000,
+  );
+
+  return { reaped: cleared, window_keys };
+}
+
+/** Run one nap cycle as eight independent phases. No phase holds locks
  *  for the whole cycle, and a slow phase fails in isolation instead of
  *  rolling back the rest. Order matters between the cluster and member
  *  archive phases: clusters die first so the transitive member pass in
@@ -362,22 +382,22 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
   let t = Date.now();
   const decayed = await napDecayImportance();
 
-  Logger.info("nap: 1/7 importance decay", { rows: decayed, ms: Date.now() - t });
+  Logger.info("nap: 1/8 importance decay", { rows: decayed, ms: Date.now() - t });
 
   t = Date.now();
   const ltpDecayed = await napDecayRecallWeight();
 
-  Logger.info("nap: 2/7 recall_weight decay (LTP)", { rows: ltpDecayed, ms: Date.now() - t });
+  Logger.info("nap: 2/8 recall_weight decay (LTP)", { rows: ltpDecayed, ms: Date.now() - t });
 
   t = Date.now();
   const archived = await napArchiveOrphans();
 
-  Logger.info("nap: 3/7 archive orphan atoms", { archived, ms: Date.now() - t });
+  Logger.info("nap: 3/8 archive orphan atoms", { archived, ms: Date.now() - t });
 
   t = Date.now();
   const clusterArchived = await napArchiveDeadClusters();
 
-  Logger.info("nap: 4/7 archive dead clusters", {
+  Logger.info("nap: 4/8 archive dead clusters", {
     archived: clusterArchived,
     ms: Date.now() - t,
   });
@@ -385,7 +405,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
   t = Date.now();
   const memberArchived = await napArchiveOrphanedMembers();
 
-  Logger.info("nap: 5/7 archive orphaned members", {
+  Logger.info("nap: 5/8 archive orphaned members", {
     archived: memberArchived,
     ms: Date.now() - t,
   });
@@ -393,7 +413,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
   t = Date.now();
   const seed = await napSeedPhase();
 
-  Logger.info("nap: 6/7 seed (relate + rule supersede)", {
+  Logger.info("nap: 6/8 seed (relate + rule supersede)", {
     related: seed.related,
     superseded: seed.superseded,
     ms: Date.now() - t,
@@ -402,9 +422,18 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
   t = Date.now();
   const dreamLocks = await napReapStaleDreamLocks();
 
-  Logger.info("nap: 7/7 reap stale dream locks", {
+  Logger.info("nap: 7/8 reap stale dream locks", {
     reaped: dreamLocks.reaped,
     window_keys: dreamLocks.window_keys,
+    ms: Date.now() - t,
+  });
+
+  t = Date.now();
+  const crystallizeLocks = await napReapStaleCrystallizeLocks();
+
+  Logger.info("nap: 8/8 reap stale crystallize locks", {
+    reaped: crystallizeLocks.reaped,
+    window_keys: crystallizeLocks.window_keys,
     ms: Date.now() - t,
   });
 
@@ -417,6 +446,7 @@ export const runNapOnce = mnemeFn("worker.nap.once", async (): Promise<NapResult
     related: seed.related,
     superseded: seed.superseded,
     dream_locks_reaped: dreamLocks.reaped,
+    crystallize_locks_reaped: crystallizeLocks.reaped,
   };
 
   Logger.info("nap: done", { ...result, total_ms: Date.now() - cycleStart });

@@ -258,3 +258,8 @@ export const CRYSTALLIZE_CONCEPT_IMPORTANCE = 0.85;
 /** Max prior bodies kept in meta.history per concept. Older entries are
  *  trimmed (most-recent preserved) so the JSONB column stays bounded. */
 export const CRYSTALLIZE_HISTORY_LIMIT = 10;
+
+/** Age after which an unfinished _ops.crystallize_runs claim is treated
+ *  as a crashed cycle and eligible for reaping. Mirrors DREAM_STALE_LOCK_AGE_MS
+ *  so both workers agree on what "crashed" means. */
+export const CRYSTALLIZE_STALE_LOCK_AGE_MS = 30 * 60_000;

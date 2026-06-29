@@ -74,7 +74,7 @@ One Sonnet call per repo, fed the full candidate set. Returns an array of concep
 
 **`concept_id`** is a stable kebab slug the model proposes and maintains across cycles. The upsert key is `(repo, meta.concept_id)`, so concepts evolve in place rather than accumulating duplicate rows.
 
-**`related_to`** uses concept slugs (not UUIDs) in the LLM output. The daemon resolves them to UUIDs against the current candidate set before submitting to the server — unknown slugs are silently dropped rather than rejected.
+**`related_to`** uses concept slugs (not UUIDs) in the LLM output. The daemon resolves them to `concept_id` slugs within the current batch's candidate set before submitting to the server — unknown slugs are silently dropped rather than rejected.
 
 ---
 
@@ -85,7 +85,7 @@ Concepts are the **one exception to Mneme's append-only rule**. The server does 
 - `content` (the body) is updated in place.
 - `meta.title`, `meta.concept_type`, `meta.related_to`, `meta.source_member_ids`, `meta.refreshed_at` are updated.
 - `meta.history[]` receives a new entry `{ content, at }` (capped at 10 entries — oldest evicted first). Full version history survives rollback if a concept regresses.
-- **`meta.confirmed` is a write guard.** If a user or operator has set `meta.confirmed = true` on a concept, the server refuses to overwrite the `content` field (the body). The crystallize cycle may still update `refreshed_at` and `meta.source_member_ids` so staleness metadata stays accurate, but the curated body is protected.
+- **`meta.confirmed` is a write guard.** If a user or operator has set `meta.confirmed = true` on a concept, the server refuses to overwrite the `content` field (the body). The crystallize cycle may still update `related_to`, `source_member_ids`, and `refreshed_at` so edge and staleness metadata stays accurate, but the curated body is protected.
 - `importance` is fixed at **0.85** — above normal cluster importance (0.8) so concepts outrank clusters in recall, below pinned/constraint highs so user curation remains the top signal.
 
 **Cap per repo: 25 concepts.** The cap is applied daemon-side via `drafts.slice(0, CRYSTALLIZE_MAX_CONCEPTS_PER_REPO)` in LLM-emit order before submission; the server does not cap or re-sort by importance. Existing concepts beyond the cap are not deleted — they persist until nap's decay eventually drops their importance below the recall threshold.

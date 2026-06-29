@@ -86,7 +86,7 @@ Add typed columns or a fourth table only when a reader needs them. Current candi
 
 ### Concept tier
 
-`kind='concept'` rows are the **one exception to Mneme's append-only rule**. They are upserted in place by the crystallize worker (`(repo, meta.concept_id)` is the conflict key) rather than appended as new rows. The body is overwritten on each cycle unless `meta.confirmed = true`, in which case only provenance fields (`refreshed_at`, `source_member_ids`) are updated and the body is left as curated.
+`kind='concept'` rows are the **one exception to Mneme's append-only rule**. They are upserted in place by the crystallize worker (`(repo, meta.concept_id)` is the conflict key) rather than appended as new rows. The body is overwritten on each cycle unless `meta.confirmed = true`, in which case only provenance fields (`related_to`, `source_member_ids`, and `refreshed_at`) are updated and the body is left as curated.
 
 Key properties:
 - `importance = 0.85` — above cluster importance (0.8) so concepts outrank clusters in recall; below user-curated pins so manual curation remains the top signal.

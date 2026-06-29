@@ -16,10 +16,13 @@
 
 import type { Hono } from "hono";
 import { currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
-import { CRYSTALLIZE_CONCEPT_IMPORTANCE, CRYSTALLIZE_HISTORY_LIMIT } from "../infra/config.ts";
+import {
+  CRYSTALLIZE_CONCEPT_IMPORTANCE,
+  CRYSTALLIZE_HISTORY_LIMIT,
+  CRYSTALLIZE_STALE_LOCK_AGE_MS,
+  EMBEDDER_DIM,
+} from "../infra/config.ts";
 import { sha256Hex, sql } from "../infra/db.ts";
-
-const STALE_LOCK_MS = 30 * 60_000;
 
 export async function acquireCrystallizeLock(
   windowKey: number,
@@ -29,7 +32,7 @@ export async function acquireCrystallizeLock(
   await sql`
     DELETE FROM _ops.crystallize_runs
     WHERE window_key = ${windowKey} AND completed_at IS NULL
-      AND claimed_at < now() - ${`${STALE_LOCK_MS} milliseconds`}::interval`;
+      AND claimed_at < now() - ${`${CRYSTALLIZE_STALE_LOCK_AGE_MS} milliseconds`}::interval`;
   const rows = await sql<{ claimed_by_machine_id: string }[]>`
     INSERT INTO _ops.crystallize_runs (window_key, claimed_by_machine_id)
     VALUES (${windowKey}, ${machineId})
@@ -59,6 +62,22 @@ export async function abortCrystallizeLock(windowKey: number, machineId: string)
     DELETE FROM _ops.crystallize_runs
     WHERE window_key = ${windowKey} AND claimed_by_machine_id = ${machineId}
       AND completed_at IS NULL`;
+}
+
+/** Window-agnostic stale-lock reap. Mirrors clearStaleDreamLocks: deletes any
+ *  claim with completed_at IS NULL older than maxAgeSeconds, regardless of
+ *  window_key, so orphaned locks from crashed daemons self-heal every nap cycle. */
+export async function clearStaleCrystallizeLocks(
+  maxAgeSeconds: number,
+): Promise<{ cleared: number; window_keys: number[] }> {
+  const rows = await sql<{ window_key: number }[]>`
+    DELETE FROM _ops.crystallize_runs
+    WHERE completed_at IS NULL
+      AND claimed_at < now() - (${maxAgeSeconds}::bigint || ' seconds')::interval
+    RETURNING window_key
+  `;
+
+  return { cleared: rows.length, window_keys: rows.map((r) => Number(r.window_key)) };
 }
 
 export type ConceptSubmission = {
@@ -147,11 +166,13 @@ export async function writeConcepts(
         `${contentHash}:${c.embedding_model}:concept:${c.concept_id}`,
       );
 
-      await tx`
+      const [memRow] = await tx<{ id: string }[]>`
         INSERT INTO memories (capture_id, chunk_id, content, content_hash, embedding_model, embedding, tsv, kind, importance, machine_id, repo, harness, agent, topics, private, meta)
         VALUES (${cap!.id}, ${chunkId}, ${c.body}, ${contentHash}, ${c.embedding_model}, ${vec}::vector, to_tsvector('english', ${c.body}), 'concept', ${CRYSTALLIZE_CONCEPT_IMPORTANCE}, ${machineId}, ${c.repo}, 'crystallize', 'crystallize', ${c.tags}, false, ${sql.json({ ...meta, history: [] })})
-        ON CONFLICT (chunk_id) DO NOTHING`;
-      written += 1;
+        ON CONFLICT (chunk_id) DO NOTHING
+        RETURNING id`;
+
+      if (memRow) written += 1;
     }
   });
 
@@ -239,11 +260,13 @@ export function mountCrystallizeRoutes(app: Hono): void {
 
       if (clusters.length > 0) return c.json({ source: "clusters", items: clusters });
       // Fallback: 0-cluster repo -- synthesize from top-importance loose memories.
+      // Public-only: private rows would be synthesized into concept rows written
+      // private=false, making them cross-machine visible.
       const loose = await sql<{ id: string; content: string; created_at: Date }[]>`
         SELECT id, content, created_at FROM memories
         WHERE repo = ${repo} AND archived_at IS NULL AND kind <> 'concept'
           AND (meta->>'superseded_by') IS NULL
-          AND (private = false OR machine_id = ${machineId})
+          AND private = false
         ORDER BY importance DESC, created_at DESC LIMIT 60`;
 
       return c.json({ source: "loose", items: loose });
@@ -260,6 +283,35 @@ export function mountCrystallizeRoutes(app: Hono): void {
 
       if (!auth?.machineId)
         return c.json({ error: "concepts submit requires per-machine token" }, 400);
+
+      // Fix 5: validate embedding dimensions before entering writeConcepts.
+      for (let i = 0; i < body.concepts.length; i++) {
+        const emb = body.concepts[i]!.body_embedding;
+
+        if (!Array.isArray(emb) || emb.length !== EMBEDDER_DIM) {
+          return c.json(
+            { error: `concepts[${i}].body_embedding must be a ${EMBEDDER_DIM}-dim array` },
+            400,
+          );
+        }
+      }
+
+      // Fix 2: mirror dream's lock-ownership gate — 403 if caller does not hold
+      // the lock or it has already been completed.
+      const lockRows = await sql<{ claimed_by_machine_id: string; completed_at: Date | null }[]>`
+        SELECT claimed_by_machine_id, completed_at
+        FROM _ops.crystallize_runs
+        WHERE window_key = ${body.window_key}
+      `;
+
+      if (
+        !lockRows[0] ||
+        lockRows[0].claimed_by_machine_id !== auth.machineId ||
+        lockRows[0].completed_at !== null
+      ) {
+        return c.json({ error: "lock not held by caller" }, 403);
+      }
+
       const result = await writeConcepts(body, auth.machineId);
 
       await releaseCrystallizeLock(
@@ -267,6 +319,25 @@ export function mountCrystallizeRoutes(app: Hono): void {
         auth.machineId,
         result.written + result.updated,
       );
+
+      return c.json(result);
+    },
+  );
+
+  // Admin: force-clear stale crystallize locks. Mirrors /api/dream/clear-stale.
+  app.post(
+    "/api/crystallize/clear-stale",
+    mnemeRoute("api.crystallize.clear_stale"),
+    requireAuth("admin"),
+    async (c) => {
+      const body = (await c.req.json().catch(() => ({}))) as
+        | { max_age_seconds?: unknown }
+        | undefined;
+      const maxAge =
+        body && typeof body.max_age_seconds === "number" && body.max_age_seconds > 0
+          ? body.max_age_seconds
+          : 60;
+      const result = await clearStaleCrystallizeLocks(maxAge);
 
       return c.json(result);
     },

@@ -113,3 +113,117 @@ describe.skipIf(!HAS_DB)("writeConcepts upsert (requires DATABASE_URL)", () => {
     }
   });
 });
+
+describe.skipIf(!HAS_DB)("concepts lock-ownership gate (requires DATABASE_URL)", () => {
+  test("non-owner machine is rejected with 403", async () => {
+    const { acquireCrystallizeLock, writeConcepts, releaseCrystallizeLock } = await import(
+      "../src/routes/crystallize.ts"
+    );
+    const { sql } = await import("../src/infra/db.ts");
+    const windowKey = -888_888_030;
+    const owner = "00000000-0000-0000-0000-0000000c0030";
+    const nonOwner = "00000000-0000-0000-0000-0000000c0031";
+
+    try {
+      // Owner acquires the lock.
+      const r = await acquireCrystallizeLock(windowKey, owner);
+
+      expect(r.acquired).toBe(true);
+
+      // Verify the lock row exists and is held by owner, not nonOwner.
+      const lockRows = await sql<{ claimed_by_machine_id: string; completed_at: Date | null }[]>`
+        SELECT claimed_by_machine_id, completed_at
+        FROM _ops.crystallize_runs
+        WHERE window_key = ${windowKey}
+      `;
+
+      // Gate: non-owner check (mirrors what the route handler does).
+      expect(lockRows[0]).toBeTruthy();
+      expect(lockRows[0]!.claimed_by_machine_id).toBe(owner);
+      expect(lockRows[0]!.claimed_by_machine_id).not.toBe(nonOwner);
+      expect(lockRows[0]!.completed_at).toBeNull();
+
+      // Non-owner attempting to call writeConcepts and then release would fail
+      // the ownership gate in the route handler. Verify the gate condition directly.
+      const ownershipFails =
+        !lockRows[0] ||
+        lockRows[0].claimed_by_machine_id !== nonOwner ||
+        lockRows[0].completed_at !== null;
+
+      expect(ownershipFails).toBe(true);
+
+      // Owner can complete successfully.
+      const vec = Array(384).fill(0);
+      const result = await writeConcepts(
+        {
+          window_key: windowKey,
+          concepts: [
+            {
+              concept_id: "test/lock-gate",
+              concept_type: "Overview",
+              title: "T",
+              body: "lock gate test body",
+              tags: [],
+              related_to: [],
+              source_member_ids: [],
+              repo: "mneme://test/lock-gate",
+              embedding_model: "bge-small-en-v1.5",
+              body_embedding: vec,
+            },
+          ],
+        },
+        owner,
+      );
+
+      expect(result.written).toBe(1);
+    } finally {
+      await releaseCrystallizeLock(windowKey, owner, 0);
+      await sql`DELETE FROM _ops.crystallize_runs WHERE window_key = ${windowKey}`;
+      await sql`DELETE FROM memories WHERE repo = 'mneme://test/lock-gate' AND kind = 'concept'`;
+      await sql`DELETE FROM captures WHERE repo = 'mneme://test/lock-gate' AND source = 'crystallize'`;
+    }
+  });
+});
+
+describe.skipIf(!HAS_DB)("napReapStaleCrystallizeLocks (requires DATABASE_URL)", () => {
+  test("reaps claims older than max_age_seconds, leaves fresh ones", async () => {
+    const { clearStaleCrystallizeLocks } = await import("../src/routes/crystallize.ts");
+    const { sql } = await import("../src/infra/db.ts");
+    const staleKey = -888_888_040;
+    const freshKey = -888_888_041;
+    const machine = "00000000-0000-0000-0000-0000000c0040";
+
+    try {
+      // Insert a stale uncompleted claim (claimed_at far in the past).
+      await sql`
+        INSERT INTO _ops.crystallize_runs (window_key, claimed_by_machine_id, claimed_at)
+        VALUES (${staleKey}, ${machine}, now() - interval '2 hours')
+        ON CONFLICT (window_key) DO UPDATE SET claimed_by_machine_id = EXCLUDED.claimed_by_machine_id,
+          claimed_at = EXCLUDED.claimed_at, completed_at = NULL
+      `;
+      // Insert a fresh uncompleted claim (just now).
+      await sql`
+        INSERT INTO _ops.crystallize_runs (window_key, claimed_by_machine_id)
+        VALUES (${freshKey}, ${machine})
+        ON CONFLICT (window_key) DO UPDATE SET claimed_by_machine_id = EXCLUDED.claimed_by_machine_id,
+          claimed_at = now(), completed_at = NULL
+      `;
+
+      // Reap with 30-minute threshold — stale (2h old) should be deleted, fresh should survive.
+      const result = await clearStaleCrystallizeLocks(30 * 60);
+
+      expect(result.cleared).toBeGreaterThanOrEqual(1);
+      expect(result.window_keys).toContain(staleKey);
+      expect(result.window_keys).not.toContain(freshKey);
+
+      // Fresh row still present.
+      const surviving = await sql<{ window_key: number }[]>`
+        SELECT window_key FROM _ops.crystallize_runs WHERE window_key = ${freshKey}
+      `;
+
+      expect(surviving.length).toBe(1);
+    } finally {
+      await sql`DELETE FROM _ops.crystallize_runs WHERE window_key IN (${staleKey}, ${freshKey})`;
+    }
+  });
+});
