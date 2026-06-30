@@ -13,6 +13,10 @@ describe("normalizeRepo - empties", () => {
   test("whitespace becomes null", () => {
     expect(normalizeRepo("   ")).toBeNull();
   });
+
+  test("undefined stays null", () => {
+    expect(normalizeRepo(undefined)).toBeNull();
+  });
 });
 
 describe("normalizeRepo - already canonical", () => {
@@ -55,6 +59,14 @@ describe("normalizeRepo - raw remote URLs that bypass canonicalRepo", () => {
   test("ssh scp-style URL", () => {
     expect(normalizeRepo("git@github.com:owner/repo.git")).toBe("github.com/owner/repo");
   });
+
+  test("git:// scheme URL", () => {
+    expect(normalizeRepo("git://github.com/owner/repo.git")).toBe("github.com/owner/repo");
+  });
+
+  test("ssh:// with explicit port keeps the port (documented non-equivalence)", () => {
+    expect(normalizeRepo("ssh://git@github.com:22/owner/repo")).toBe("github.com:22/owner/repo");
+  });
 });
 
 describe("normalizeRepo - suffix and case", () => {
@@ -78,5 +90,9 @@ describe("normalizeRepo - dir fallback is left intact", () => {
 
   test("dir: with trailing slash trimmed only", () => {
     expect(normalizeRepo("dir:agent-abc123/")).toBe("dir:agent-abc123");
+  });
+
+  test("dir: with absolute path keeps the path, trims trailing slash", () => {
+    expect(normalizeRepo("dir:/absolute/path/")).toBe("dir:/absolute/path");
   });
 });

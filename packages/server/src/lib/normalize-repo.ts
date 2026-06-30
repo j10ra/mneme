@@ -30,6 +30,10 @@ export function normalizeRepo(repo: string | null | undefined): string | null {
   if (at !== -1 && (slash === -1 || at < slash)) s = s.slice(at + 1);
 
   // scp-style `host:path` -> `host/path` (skip a `host:port` numeric segment).
+  // Known non-equivalence: a `ssh://host:22/owner/repo` form keeps the explicit
+  // `:22` (the negative lookahead preserves the numeric port), so it does not
+  // collapse onto the portless `git@host:owner/repo`. Git remotes almost never
+  // carry an explicit port, so this is left as-is rather than special-casing 22.
   s = s.replace(/^([^/:]+):(?!\d+\/)/, "$1/");
 
   // Trim a `.git` suffix and any trailing slashes.

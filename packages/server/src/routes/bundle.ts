@@ -123,6 +123,10 @@ export type InsertResult = {
 };
 
 export async function insertBundle(bundle: BundleBody, machineId: string): Promise<InsertResult> {
+  // No scrub() here, unlike the ingest.ts path: the bundle path is scrub-free by
+  // design (the daemon is trusted to send already-scrubbed content). normalizeRepo
+  // still strips any userinfo from the remote, so a credentialed repo URL drops the
+  // token rather than storing it — same end state as scrub, reached structurally.
   const repo = normalizeRepo(bundle.capture.repo);
 
   return sql.begin(async (tx) => {
