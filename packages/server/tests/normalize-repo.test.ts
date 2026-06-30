@@ -32,7 +32,9 @@ describe("normalizeRepo - already canonical", () => {
 describe("normalizeRepo - credential stripping", () => {
   test("user:token@host (canonicalRepo's schemeless leak form) drops credentials", () => {
     expect(
-      normalizeRepo("jalipalo-bc:ghp_secret123@github.com/blockchain/service-superapp-web-wallet"),
+      normalizeRepo(
+        "jalipalo-bc:ghp_FAKE0000000000000000000000@github.com/blockchain/service-superapp-web-wallet",
+      ),
     ).toBe("github.com/blockchain/service-superapp-web-wallet");
   });
 
