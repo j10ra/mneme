@@ -19,6 +19,7 @@ import {
   type TraceContext,
 } from "@mneme/core";
 import { scrub, scrubData } from "@mneme/shared";
+import { normalizeRepo } from "../lib/normalize-repo.ts";
 
 // Establishes a TraceContext for AsyncLocalStorage-dependent middleware
 // (requireAuth writes auth into the store) without emitting a root span.
@@ -152,7 +153,7 @@ export function mountIngestRoutes(app: Hono): void {
 
     const cleaned = scrub(body.content);
     const hash = await sha256Hex(cleaned);
-    const cleanedRepo = body.repo ? scrub(body.repo) : null;
+    const cleanedRepo = body.repo ? normalizeRepo(scrub(body.repo)) : null;
     const cleanedSource = scrub(body.source);
     const cleanedHostname = scrub(body.hostname);
     const cleanedHarness = scrub(body.harness);
@@ -258,7 +259,7 @@ export function mountIngestRoutes(app: Hono): void {
     const importance = Math.max(0.1, Math.min(1, body.importance ?? 1.0));
     const pinned = body.pinned ?? false;
 
-    const cleanedRepo = body.repo ? scrub(body.repo) : null;
+    const cleanedRepo = body.repo ? normalizeRepo(scrub(body.repo)) : null;
     const cleanedHostname = scrub(body.hostname);
     const cleanedHarness = scrub(body.harness);
     const cleanedAgent = body.agent ? scrub(body.agent) : null;
