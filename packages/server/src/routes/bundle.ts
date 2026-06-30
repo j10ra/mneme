@@ -20,6 +20,7 @@ import { Logger, currentAuth, mnemeRoute, requireAuth } from "@mneme/core";
 import { sql } from "../infra/db.ts";
 import { actuateRawMeta } from "../lib/actuate.ts";
 import { EMBEDDER_DIM } from "../infra/config.ts";
+import { normalizeRepo } from "../lib/normalize-repo.ts";
 
 type CaptureBody = {
   content: string;
@@ -122,6 +123,12 @@ export type InsertResult = {
 };
 
 export async function insertBundle(bundle: BundleBody, machineId: string): Promise<InsertResult> {
+  // No scrub() here, unlike the ingest.ts path: the bundle path is scrub-free by
+  // design (the daemon is trusted to send already-scrubbed content). normalizeRepo
+  // still strips any userinfo from the remote, so a credentialed repo URL drops the
+  // token rather than storing it — same end state as scrub, reached structurally.
+  const repo = normalizeRepo(bundle.capture.repo);
+
   return sql.begin(async (tx) => {
     const captureRows = await tx<{ id: string; created: boolean }[]>`
       INSERT INTO captures (
@@ -131,7 +138,7 @@ export async function insertBundle(bundle: BundleBody, machineId: string): Promi
       VALUES (
         ${bundle.capture.content}, ${bundle.capture.content_sha256},
         ${bundle.capture.source}, ${machineId}, ${bundle.capture.hostname},
-        ${bundle.capture.repo}, ${bundle.capture.harness},
+        ${repo}, ${bundle.capture.harness},
         ${bundle.capture.agent}, ${bundle.capture.session_id},
         ${bundle.capture.topics ?? []}, ${bundle.capture.private ?? false},
         ${sql.json((bundle.capture.raw_meta ?? {}) as never)}
@@ -160,7 +167,7 @@ export async function insertBundle(bundle: BundleBody, machineId: string): Promi
           ${m.embedding_model}, ${vectorLiteral}::vector,
           to_tsvector('english', ${m.content}),
           ${m.kind}, ${m.importance},
-          ${machineId}, ${bundle.capture.repo},
+          ${machineId}, ${repo},
           ${bundle.capture.harness}, ${bundle.capture.agent},
           ${m.topics ?? []}, ${bundle.capture.private ?? false},
           ${sql.json((m.meta ?? {}) as never)}
