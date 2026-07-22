@@ -1,0 +1,19 @@
+# node_modules must never enter the build context: it holds platform-specific
+# native binaries (sharp, onnxruntime-node) built for the developer's machine,
+# which would shadow the ones bun install produces for the image.
+node_modules
+**/node_modules
+
+.git
+.github
+.embed-cache
+
+# Local env and editor state
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Docs and test artifacts are not needed at runtime
+docs
+**/*.test.ts
