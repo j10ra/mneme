@@ -291,7 +291,7 @@ export async function startDaemon(): Promise<void> {
   mountEmbedRoute(app);
   mountDreamRoute(app, runDream);
   mountCrystallizeRoute(app, runCrystallize);
-  mountDashboardRoutes(app, forceDream, forceCrystallize);
+  mountDashboardRoutes(app, forceDream, forceCrystallize, outbox, config.machine_id);
 
   Bun.serve({
     port: config.daemon_port,

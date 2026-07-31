@@ -116,4 +116,36 @@ describe("outbox", () => {
 
     expect(ids).toEqual(["abc-006"]);
   });
+
+  test("rehydrateFailed retries files from their last completed stage", async () => {
+    const outbox = createOutbox(root);
+
+    await outbox.writeRaw("raw", { content: "raw" });
+    await outbox.markFailed("raw", "captured", "extract failed");
+    await outbox.writeRaw("observed", { content: "observed" });
+    await outbox.transition("observed", "captured", "observations", {
+      capture: { content: "observed" },
+      memories: [{ content: "memory" }],
+    });
+    await outbox.markFailed("observed", "observations", "embed failed");
+
+    expect(await outbox.rehydrateFailed()).toBe(2);
+    expect(await outbox.list("failed")).toEqual([]);
+    expect(await outbox.list("captured")).toEqual(["raw"]);
+    expect(await outbox.list("observations")).toEqual(["observed"]);
+    expect(await readdir(join(root, "failed"))).toEqual([]);
+  });
+
+  test("deleteFailed permanently removes failed captures and errors", async () => {
+    const outbox = createOutbox(root);
+
+    await outbox.writeRaw("abc-007", { content: "x" });
+    await outbox.markFailed("abc-007", "captured", "extract failed");
+    await outbox.writeRaw("abc-008", { content: "y" });
+    await outbox.markFailed("abc-008", "captured", "extract failed");
+
+    expect(await outbox.deleteFailed()).toBe(2);
+    expect(await outbox.list("failed")).toEqual([]);
+    expect(await readdir(join(root, "failed"))).toEqual([]);
+  });
 });

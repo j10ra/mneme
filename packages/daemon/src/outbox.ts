@@ -42,6 +42,9 @@ export interface Outbox {
   /** On daemon startup: move all failed/ entries back to their inferred
    *  origin stage so they get a fresh retry budget. Returns the count moved. */
   rehydrateFailed(): Promise<number>;
+  /** Permanently remove every failed capture and its recorded error.
+   *  Returns the number of capture files removed. */
+  deleteFailed(): Promise<number>;
 }
 
 function fileFor(root: string, state: OutboxState, id: string): string {
@@ -171,6 +174,20 @@ export function createOutbox(rootPath: string): Outbox {
       }
 
       return moved;
+    },
+
+    async deleteFailed() {
+      await ensureDirs();
+      const ids = await this.list("failed");
+
+      await Promise.all(
+        ids.flatMap((id) => [
+          rm(fileFor(rootPath, "failed", id), { force: true }),
+          rm(join(rootPath, "failed", `${id}.error.txt`), { force: true }),
+        ]),
+      );
+
+      return ids.length;
     },
   };
 }

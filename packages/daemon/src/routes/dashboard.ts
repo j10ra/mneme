@@ -26,6 +26,9 @@ import { Logger, mnemeRoute } from "@mneme/core";
 import type { CrystallizeCycleResult } from "../crystallize.ts";
 import type { DreamCycleResult } from "../dream.ts";
 import { embedBatch } from "../embed.ts";
+import type { Outbox } from "../outbox.ts";
+
+type DashboardOutbox = Pick<Outbox, "deleteFailed" | "list" | "rehydrateFailed">;
 
 /** Absolute path to `<plugin-root>/dashboard/dist/`.
  *  Resolution order:
@@ -81,6 +84,8 @@ export function mountDashboardRoutes(
   app: Hono,
   forceDream: () => Promise<DreamCycleResult>,
   forceCrystallize: () => Promise<CrystallizeCycleResult>,
+  outbox: DashboardOutbox,
+  machineId: string,
 ): void {
   const distDir = dashboardDist();
 
@@ -195,14 +200,47 @@ export function mountDashboardRoutes(
     },
   );
 
-  // GET /dashboard/api/machines — proxies /api/auth/machines (read-scoped).
+  // GET /dashboard/api/machines — proxies /api/auth/machines (read-scoped)
+  // and stamps the id of the loopback daemon serving this dashboard. Failed
+  // outbox controls are local-only, so the SPA uses this id to place them on
+  // the one row this daemon can safely operate.
   // Explicit "machine" scope: /api/auth/machines is one of the few server
   // routes that's still read-scoped — gating it to admin would force a
   // password prompt just to list machines, which is over-strict.
   app.get(
     "/dashboard/api/machines",
     mnemeRoute("daemon.dashboard.machines"),
-    proxyHandler("/api/auth/machines", "dashboard.machines", "machine"),
+    proxyMachines(machineId),
+  );
+
+  // POST /dashboard/api/outbox/failed/:action — operate on this daemon's
+  // failed capture files. Retry restores each capture to its last completed
+  // pipeline stage. Delete permanently removes the capture and its error file.
+  app.post(
+    "/dashboard/api/outbox/failed/:action",
+    mnemeRoute("daemon.dashboard.outbox_failed"),
+    async (c) => {
+      const action = c.req.param("action");
+      let affected: number;
+
+      if (action === "retry") {
+        affected = await outbox.rehydrateFailed();
+      } else if (action === "delete") {
+        affected = await outbox.deleteFailed();
+      } else {
+        return c.json({ error: "unknown action" }, 400);
+      }
+
+      const remaining = (await outbox.list("failed")).length;
+
+      Logger.info(`dashboard: ${action} failed captures`, {
+        machine_id: machineId,
+        affected,
+        remaining,
+      });
+
+      return c.json({ ok: true, action, affected, remaining });
+    },
   );
 
   // GET /dashboard/api/daemon-schedule — local-only read of the
@@ -364,6 +402,35 @@ function proxyHandler(upstreamPath: string, traceTag: string, scope: ProxyScope 
       });
     } catch (err) {
       Logger.warn(`${traceTag}: upstream fetch failed`, err);
+
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  };
+}
+
+function proxyMachines(machineId: string) {
+  return async (c: Context) => {
+    const cfg = await readDaemonConfig();
+
+    if (!cfg) return c.json({ error: "config not loaded" }, 503);
+
+    try {
+      const resp = await fetch(`${cfg.serverUrl}/api/auth/machines`, {
+        headers: { Authorization: `Bearer ${bearerFor(cfg, "machine")}` },
+      });
+      const body = await resp.text();
+
+      if (!resp.ok) {
+        return c.body(body, resp.status as 200, {
+          "content-type": resp.headers.get("content-type") ?? "application/json",
+        });
+      }
+
+      const data = JSON.parse(body) as Record<string, unknown>;
+
+      return c.json({ ...data, local_machine_id: machineId });
+    } catch (err) {
+      Logger.warn("dashboard.machines: upstream fetch failed", err);
 
       return c.json({ error: "upstream unavailable" }, 502);
     }

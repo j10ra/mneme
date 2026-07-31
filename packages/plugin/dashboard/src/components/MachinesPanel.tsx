@@ -1,12 +1,13 @@
 // Machines panel — registered machines split into Live (heartbeat fresh)
 // and Known (everyone else); revoked rows summarised by name.
 
-import { Laptop } from "lucide-react";
+import { Laptop, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { ApiError, apiGet } from "../lib/api.ts";
+import { ApiError, apiGet, apiPost } from "../lib/api.ts";
 import { cn } from "../lib/cn.ts";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert.tsx";
 import { Badge } from "./ui/badge.tsx";
+import { Button } from "./ui/button.tsx";
 import { Card, CardDescription, CardHeader, CardTitle } from "./ui/card.tsx";
 import { Skeleton } from "./ui/skeleton.tsx";
 
@@ -26,7 +27,14 @@ type MachineRow = {
   heartbeat_posted_at: string | null;
 };
 
-type MachinesResponse = { machines: MachineRow[] };
+type MachinesResponse = { machines: MachineRow[]; local_machine_id: string };
+type FailedAction = "retry" | "delete";
+type FailedActionResponse = {
+  ok: true;
+  action: FailedAction;
+  affected: number;
+  remaining: number;
+};
 
 type FetchState =
   | { kind: "loading" }
@@ -61,6 +69,24 @@ function isLive(m: MachineRow): boolean {
 
 export function MachinesPanel() {
   const [state, setState] = useState<FetchState>({ kind: "loading" });
+
+  const updateFailedCount = (machineId: string, remaining: number) => {
+    setState((prev) => {
+      if (prev.kind !== "ok" && prev.kind !== "stale") return prev;
+
+      return {
+        ...prev,
+        data: {
+          ...prev.data,
+          machines: prev.data.machines.map((machine) =>
+            machine.machine_id === machineId
+              ? { ...machine, heartbeat_failed: remaining }
+              : machine,
+          ),
+        },
+      };
+    });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -146,7 +172,7 @@ export function MachinesPanel() {
                 </AlertDescription>
               </Alert>
             )}
-            <MachinesContent data={state.data} />
+            <MachinesContent data={state.data} onFailedCountChange={updateFailedCount} />
           </>
         )}
       </div>
@@ -174,7 +200,13 @@ function CountBadges({ data }: { data: MachinesResponse }) {
   );
 }
 
-function MachinesContent({ data }: { data: MachinesResponse }) {
+function MachinesContent({
+  data,
+  onFailedCountChange,
+}: {
+  data: MachinesResponse;
+  onFailedCountChange: (machineId: string, remaining: number) => void;
+}) {
   if (data.machines.length === 0) {
     return <Empty>No machines registered yet.</Empty>;
   }
@@ -200,14 +232,26 @@ function MachinesContent({ data }: { data: MachinesResponse }) {
       {live.length > 0 && (
         <Section title="Live" hint={`${live.length} online now`}>
           {live.map((m) => (
-            <Row key={m.id} m={m} live />
+            <Row
+              key={m.id}
+              m={m}
+              live
+              local={m.machine_id === data.local_machine_id}
+              onFailedCountChange={onFailedCountChange}
+            />
           ))}
         </Section>
       )}
       {known.length > 0 && (
         <Section title="Known" hint="registered but not currently heartbeating">
           {known.map((m) => (
-            <Row key={m.id} m={m} live={false} />
+            <Row
+              key={m.id}
+              m={m}
+              live={false}
+              local={m.machine_id === data.local_machine_id}
+              onFailedCountChange={onFailedCountChange}
+            />
           ))}
         </Section>
       )}
@@ -236,7 +280,17 @@ function Section({
   );
 }
 
-function Row({ m, live }: { m: MachineRow; live: boolean }) {
+function Row({
+  m,
+  live,
+  local,
+  onFailedCountChange,
+}: {
+  m: MachineRow;
+  live: boolean;
+  local: boolean;
+  onFailedCountChange: (machineId: string, remaining: number) => void;
+}) {
   const heartbeatAge = ageMs(m.heartbeat_posted_at);
   const lastUsedAge = ageMs(m.last_used_at);
   const pending = m.heartbeat_pending ?? 0;
@@ -264,12 +318,104 @@ function Row({ m, live }: { m: MachineRow; live: boolean }) {
         {pending > 0 && (
           <Badge variant={pending > 100 ? "warning" : "secondary"}>{pending} pending</Badge>
         )}
-        {failed > 0 && <Badge variant="destructive">{failed} failed</Badge>}
+        {failed > 0 && (
+          <div className="flex items-center gap-1">
+            <Badge
+              variant="destructive"
+              title={
+                local
+                  ? "Failed captures stored on this machine"
+                  : "Open this machine's local dashboard to manage failed captures"
+              }
+            >
+              {failed} failed
+            </Badge>
+            {local && (
+              <FailedActions
+                machine={m}
+                failed={failed}
+                onComplete={(remaining) => {
+                  if (m.machine_id) onFailedCountChange(m.machine_id, remaining);
+                }}
+              />
+            )}
+          </div>
+        )}
         <span title="last token use" className="whitespace-nowrap">
           used {fmtAge(lastUsedAge)} ago
         </span>
       </div>
     </div>
+  );
+}
+
+function FailedActions({
+  machine,
+  failed,
+  onComplete,
+}: {
+  machine: MachineRow;
+  failed: number;
+  onComplete: (remaining: number) => void;
+}) {
+  const [busy, setBusy] = useState<FailedAction | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (action: FailedAction) => {
+    if (
+      action === "delete" &&
+      !window.confirm(
+        `Permanently delete ${failed} failed capture${failed === 1 ? "" : "s"} from ${machine.name}?`,
+      )
+    ) {
+      return;
+    }
+
+    setBusy(action);
+    setError(null);
+
+    try {
+      const result = await apiPost<FailedActionResponse>(`/outbox/failed/${action}`);
+
+      onComplete(result.remaining);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <fieldset className="flex items-center gap-0.5">
+      <legend className="sr-only">Failed capture actions</legend>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6"
+        title={`Retry ${failed} failed capture${failed === 1 ? "" : "s"}`}
+        aria-label={`Retry ${failed} failed capture${failed === 1 ? "" : "s"}`}
+        disabled={busy !== null}
+        onClick={() => void run("retry")}
+      >
+        <RotateCcw className={cn("h-3.5 w-3.5", busy === "retry" && "animate-spin")} />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6 text-destructive hover:bg-destructive/10 hover:text-destructive"
+        title={`Delete ${failed} failed capture${failed === 1 ? "" : "s"}`}
+        aria-label={`Delete ${failed} failed capture${failed === 1 ? "" : "s"}`}
+        disabled={busy !== null}
+        onClick={() => void run("delete")}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+      {error && (
+        <span className="sr-only" role="alert">
+          {error}
+        </span>
+      )}
+    </fieldset>
   );
 }
 

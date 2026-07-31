@@ -2139,6 +2139,15 @@ function createOutbox(rootPath) {
         } catch {}
       }
       return moved;
+    },
+    async deleteFailed() {
+      await ensureDirs();
+      const ids = await this.list("failed");
+      await Promise.all(ids.flatMap((id) => [
+        rm2(fileFor(rootPath, "failed", id), { force: true }),
+        rm2(join3(rootPath, "failed", `${id}.error.txt`), { force: true })
+      ]));
+      return ids.length;
     }
   };
 }
@@ -2205,7 +2214,7 @@ the bundle, or you're running from a fresh dev checkout where
 <pre>cd packages/plugin/dashboard &amp;&amp; bun install &amp;&amp; bun run build</pre>
 <p>Then re-run <code>/plugin update mneme</code> &amp; <code>/reload-plugins</code>.</p>
 </body></html>`;
-function mountDashboardRoutes(app, forceDream, forceCrystallize) {
+function mountDashboardRoutes(app, forceDream, forceCrystallize, outbox, machineId) {
   const distDir = dashboardDist();
   app.get("/dashboard", mnemeRoute("daemon.dashboard"), async (c) => {
     const indexPath = join4(distDir, "index.html");
@@ -2267,7 +2276,25 @@ function mountDashboardRoutes(app, forceDream, forceCrystallize) {
     }
     return c.json({ error: "unknown worker" }, 400);
   });
-  app.get("/dashboard/api/machines", mnemeRoute("daemon.dashboard.machines"), proxyHandler("/api/auth/machines", "dashboard.machines", "machine"));
+  app.get("/dashboard/api/machines", mnemeRoute("daemon.dashboard.machines"), proxyMachines(machineId));
+  app.post("/dashboard/api/outbox/failed/:action", mnemeRoute("daemon.dashboard.outbox_failed"), async (c) => {
+    const action = c.req.param("action");
+    let affected;
+    if (action === "retry") {
+      affected = await outbox.rehydrateFailed();
+    } else if (action === "delete") {
+      affected = await outbox.deleteFailed();
+    } else {
+      return c.json({ error: "unknown action" }, 400);
+    }
+    const remaining = (await outbox.list("failed")).length;
+    Logger.info(`dashboard: ${action} failed captures`, {
+      machine_id: machineId,
+      affected,
+      remaining
+    });
+    return c.json({ ok: true, action, affected, remaining });
+  });
   app.get("/dashboard/api/daemon-schedule", mnemeRoute("daemon.dashboard.daemon_schedule"), async (c) => {
     try {
       const { readFile: readFile3 } = await import("fs/promises");
@@ -2335,6 +2362,29 @@ function proxyHandler(upstreamPath, traceTag, scope = "admin") {
       });
     } catch (err) {
       Logger.warn(`${traceTag}: upstream fetch failed`, err);
+      return c.json({ error: "upstream unavailable" }, 502);
+    }
+  };
+}
+function proxyMachines(machineId) {
+  return async (c) => {
+    const cfg = await readDaemonConfig();
+    if (!cfg)
+      return c.json({ error: "config not loaded" }, 503);
+    try {
+      const resp = await fetch(`${cfg.serverUrl}/api/auth/machines`, {
+        headers: { Authorization: `Bearer ${bearerFor(cfg, "machine")}` }
+      });
+      const body = await resp.text();
+      if (!resp.ok) {
+        return c.body(body, resp.status, {
+          "content-type": resp.headers.get("content-type") ?? "application/json"
+        });
+      }
+      const data = JSON.parse(body);
+      return c.json({ ...data, local_machine_id: machineId });
+    } catch (err) {
+      Logger.warn("dashboard.machines: upstream fetch failed", err);
       return c.json({ error: "upstream unavailable" }, 502);
     }
   };
@@ -3785,7 +3835,7 @@ async function startDaemon() {
   mountEmbedRoute(app);
   mountDreamRoute(app, runDream);
   mountCrystallizeRoute(app, runCrystallize);
-  mountDashboardRoutes(app, forceDream, forceCrystallize);
+  mountDashboardRoutes(app, forceDream, forceCrystallize, outbox, config.machine_id);
   Bun.serve({
     port: config.daemon_port,
     hostname: "127.0.0.1",
