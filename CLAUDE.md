@@ -48,6 +48,46 @@ Greek muse of memory. Personal cross-machine memory layer for one user, three ma
 
 Prefer `mneme_sql` over `psql` for any read — same scrubbing + reader role + RLS path the agent uses in production.
 
+## Deployment
+
+Two environments run the same code. Railway is still the live one; the self-hosted NUC instance is
+being cut over to.
+
+| | Railway (live) | Coolify / NUC |
+|---|---|---|
+| URL | `web-production-3d8a7.up.railway.app` | `https://mneme.jalipalo.dev` |
+| Build | `nixpacks.toml` + `Procfile` | `Dockerfile` |
+| Postgres | Railway `pgvector` service | `pgvector/pgvector:0.8.2-pg18` |
+
+**Both build paths must keep working.** `Dockerfile` is not a replacement for `nixpacks.toml` —
+Railway uses the latter, self-hosters the former. Nixpacks cannot build this repo: its Nix-built
+Bun resolves shared libraries only under `/nix/store`, so `onnxruntime-node` and `sharp` fail to
+`dlopen libstdc++.so.6` even though it is present in `/usr/lib`, and adding apt packages does not
+help. The Dockerfile uses a glibc base to sidestep it.
+
+Infra lives in a **separate repo**, `homelab-inference` (`nuc/guests/coolify/`): the LXC scripts,
+the Cloudflare tunnel, and `03-migrate-from-railway.sh`. Credentials are gitignored `.env` files
+beside each guest there (`nuc/guests/coolify/.env` holds `COOLIFY_URL` + `COOLIFY_TOKEN`); the
+deployed app's own env lives in Coolify's encrypted store, reachable via its API or UI. Nothing
+deployment-related is committed to *this* repo except the `Dockerfile`.
+
+### Known bugs a self-hosted deploy hits (not yet fixed here)
+
+- **`migrations/0004_pgcron.sql:20` and `0008_logs_prune.sql:36`** use
+  `EXCEPTION WHEN undefined_schema`, which is **not a valid PL/pgSQL condition name** (it is
+  `invalid_schema_name`, SQLSTATE 3F000). Migrating a *fresh* database without `pg_cron` dies
+  there. It never fired on Railway because that DB descends from Supabase, where `cron` existed and
+  the handler was never reached. Restoring a dump first masks it, since the dump carries
+  `_ops.schema_migrations` and the migrate then no-ops.
+- **`mneme_reader` does not survive `pg_dump`.** Roles are cluster-level, so a restore fails on the
+  RLS policies (0009/0010/0011) with `role "mneme_reader" does not exist` unless it is created
+  first. `0005_reader_role.sql` creates it `NOLOGIN` and leaves LOGIN + password to the operator.
+
+Machine PATs in `_ops.api_keys` are hashed and origin-independent, so they survive a restore and a
+URL change; OAuth grants are pinned to the old origin and do not. Daemons cache `server.url` at
+startup — editing `config.json` without restarting the daemon splits reads and writes across two
+servers.
+
 ## Invariants — easy to break, hard to find out
 
 | Rule | Pointer |
