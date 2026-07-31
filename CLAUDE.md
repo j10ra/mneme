@@ -59,9 +59,9 @@ being cut over to.
 | Build | `nixpacks.toml` + `Procfile` | `Dockerfile` |
 | Postgres | Railway `pgvector` service | `pgvector/pgvector:0.8.2-pg18` |
 
-**Both build paths must keep working.** `Dockerfile` is not a replacement for `nixpacks.toml` —
-Railway uses the latter, self-hosters the former. Nixpacks cannot build this repo: its Nix-built
-Bun resolves shared libraries only under `/nix/store`, so `onnxruntime-node` and `sharp` fail to
+**Both build paths must keep working.** `Dockerfile` is not a replacement for `nixpacks.toml`.
+Railway uses the latter, self-hosters the former. The self-hosted environment could not use Nixpacks
+because its Nix-built Bun resolves shared libraries only under `/nix/store`, so `onnxruntime-node` and `sharp` fail to
 `dlopen libstdc++.so.6` even though it is present in `/usr/lib`, and adding apt packages does not
 help. The Dockerfile uses a glibc base to sidestep it.
 
@@ -69,7 +69,8 @@ Infra lives in a **separate repo**, `homelab-inference` (`nuc/guests/coolify/`):
 the Cloudflare tunnel, and `03-migrate-from-railway.sh`. Credentials are gitignored `.env` files
 beside each guest there (`nuc/guests/coolify/.env` holds `COOLIFY_URL` + `COOLIFY_TOKEN`); the
 deployed app's own env lives in Coolify's encrypted store, reachable via its API or UI. Nothing
-deployment-related is committed to *this* repo except the `Dockerfile`.
+self-host-infrastructure-related is committed to *this* repo except the `Dockerfile`; Railway's
+deployment files remain `nixpacks.toml` and `Procfile`.
 
 ### Known bugs a self-hosted deploy hits (not yet fixed here)
 

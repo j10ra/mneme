@@ -20,7 +20,13 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends libstdc++6 libgomp1 libvips42 \
  && rm -rf /var/lib/apt/lists/*
 
-COPY . .
+RUN chown bun:bun /app
+USER bun
+
+COPY --chown=bun:bun package.json bun.lock ./
+COPY --chown=bun:bun packages ./packages
+COPY --chown=bun:bun scripts ./scripts
+COPY --chown=bun:bun migrations ./migrations
 RUN bun install --frozen-lockfile
 
 # Bake the bge-small embedder into the image so the first semantic query is a
